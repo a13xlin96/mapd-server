@@ -169,27 +169,29 @@ app.post('/debug/page-snapshot', async (req, res) => {
     await page.waitForTimeout(5000);
 
     const snapshot = await page.evaluate(() => {
-      // Get the final URL after redirects
       const finalUrl = window.location.href;
-      // Get all links
-      const allLinks = Array.from(document.querySelectorAll('a')).slice(0, 50).map(a => ({
+      const title = document.title;
+      const hasConsent = !!document.querySelector('[aria-label*="consent"], [aria-label*="cookie"], [aria-label*="Accept"]');
+
+      // Get ALL text content from the page body, trimmed
+      const bodyText = document.body?.innerText?.slice(0, 3000) || '';
+
+      // Get all elements and their tags/classes to understand DOM structure
+      const allElements = Array.from(document.querySelectorAll('*')).slice(0, 200).map(el => ({
+        tag: el.tagName,
+        role: el.getAttribute('role'),
+        class: el.className?.toString?.()?.slice(0, 80),
+        ariaLabel: el.getAttribute('aria-label')?.slice(0, 80),
+        childCount: el.children.length,
+      })).filter(el => el.role || el.ariaLabel);
+
+      // Check for links anywhere
+      const allLinks = Array.from(document.querySelectorAll('a')).slice(0, 30).map(a => ({
         href: a.href?.slice(0, 200),
         text: a.textContent?.trim().slice(0, 100),
-        ariaLabel: a.getAttribute('aria-label')?.slice(0, 100),
       }));
-      // Get all aria-labels
-      const ariaLabels = Array.from(document.querySelectorAll('[aria-label]')).slice(0, 50).map(el => ({
-        tag: el.tagName,
-        label: el.getAttribute('aria-label')?.slice(0, 100),
-        role: el.getAttribute('role'),
-      }));
-      // Get text from feed items
-      const feedItems = Array.from(document.querySelectorAll('div[role="feed"] > div, div[role="listbox"] > div')).slice(0, 20).map(el => el.textContent?.trim().slice(0, 200));
-      // Get page title
-      const title = document.title;
-      // Check for consent/cookie dialogs
-      const hasConsent = !!document.querySelector('[aria-label*="consent"], [aria-label*="cookie"], [aria-label*="Accept"]');
-      return { finalUrl, title, hasConsent, linksCount: document.querySelectorAll('a').length, allLinks, ariaLabels, feedItems };
+
+      return { finalUrl, title, hasConsent, bodyText, allElements, allLinks };
     });
 
     await browser.close();
