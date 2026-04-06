@@ -179,50 +179,90 @@ app.post('/import/google-maps-list', async (req, res) => {
     const page = await browser.newPage();
     await page.setViewportSize({ width: 1280, height: 900 });
 
-    // Navigate to the list URL
-    await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
+    // Navigate to the list URL and wait for content to render
+    await page.goto(url, { waitUntil: 'networkidle', timeout: 45000 });
 
-    // Wait for place items to load — Google Maps renders them as role="article" or in a scrollable feed
-    await page.waitForTimeout(3000);
+    // Google Maps lists load content dynamically — wait for the feed to appear
+    // Try multiple selectors since Google's DOM changes frequently
+    try {
+      await page.waitForSelector('div[role="feed"], div[role="listbox"], a[href*="/place/"]', { timeout: 10000 });
+    } catch {
+      // Selector didn't appear — page might still have content, continue
+    }
+    await page.waitForTimeout(2000);
 
-    // Extract places from the list page
-    // Google Maps list pages render places with links containing /place/ paths
+    // Scroll down to trigger lazy-loaded items
+    for (let i = 0; i < 5; i++) {
+      await page.evaluate(() => {
+        const feed = document.querySelector('div[role="feed"]') || document.querySelector('div[role="main"]');
+        if (feed) feed.scrollTop = feed.scrollHeight;
+        else window.scrollBy(0, 800);
+      });
+      await page.waitForTimeout(1000);
+    }
+
+    // Extract places using multiple strategies
     const places = await page.evaluate(() => {
       const results = [];
+      const seen = new Set();
 
-      // Strategy 1: Find all place links in the page
-      const links = document.querySelectorAll('a[href*="/maps/place/"]');
-      for (const link of links) {
+      function addPlace(name, url, lat, lng) {
+        const clean = name.trim();
+        if (clean.length < 2 || clean.length > 100) return;
+        if (seen.has(clean.toLowerCase())) return;
+        // Skip generic/UI text
+        const skip = ['directions', 'share', 'save', 'send', 'google maps', 'map', 'list', 'more', 'open', 'close', 'reviews', 'photos', 'about', 'overview'];
+        if (skip.includes(clean.toLowerCase())) return;
+        // Skip if it's just a number or rating
+        if (/^[\d.]+$/.test(clean)) return;
+        seen.add(clean.toLowerCase());
+        results.push({ name: clean, url: url || null, lat: lat || null, lng: lng || null });
+      }
+
+      // Strategy 1: Links with /place/ in href (most reliable)
+      const placeLinks = document.querySelectorAll('a[href*="/maps/place/"], a[href*="/place/"]');
+      for (const link of placeLinks) {
         const href = link.getAttribute('href') || '';
-        const nameMatch = href.match(/\/place\/([^/]+)/);
+        const nameMatch = href.match(/\/place\/([^/@?]+)/);
         if (nameMatch) {
           const name = decodeURIComponent(nameMatch[1]).replace(/\+/g, ' ');
-          // Skip if it's a generic/navigation link
-          if (name.length < 2 || name === 'place') continue;
-          // Avoid duplicates
-          if (!results.find((r) => r.name === name)) {
-            // Try to extract coordinates
-            const coordMatch = href.match(/@(-?\d+\.?\d*),(-?\d+\.?\d*)/);
-            results.push({
-              name,
-              url: href.startsWith('http') ? href : `https://www.google.com${href}`,
-              lat: coordMatch ? parseFloat(coordMatch[1]) : null,
-              lng: coordMatch ? parseFloat(coordMatch[2]) : null,
-            });
+          const coordMatch = href.match(/@(-?\d+\.?\d*),(-?\d+\.?\d*)/);
+          const fullUrl = href.startsWith('http') ? href : `https://www.google.com${href}`;
+          addPlace(name, fullUrl, coordMatch?.[1], coordMatch?.[2]);
+        }
+      }
+
+      // Strategy 2: aria-label on clickable elements (Google Maps uses these heavily)
+      if (results.length === 0) {
+        const labeled = document.querySelectorAll('a[aria-label], div[aria-label][role="button"]');
+        for (const el of labeled) {
+          const label = el.getAttribute('aria-label') || '';
+          // Filter: place names are usually short, don't contain action verbs
+          if (label.length > 3 && label.length < 80 && !label.includes('Close') && !label.includes('Back')) {
+            const href = el.getAttribute('href') || '';
+            addPlace(label, href.includes('/place/') ? href : null, null, null);
           }
         }
       }
 
-      // Strategy 2: If no place links found, look for text content in list items
+      // Strategy 3: fontHeadlineSmall class (Google Maps place name styling)
       if (results.length === 0) {
-        // Google Maps lists sometimes use div[role="article"] or similar
-        const articles = document.querySelectorAll('[role="article"], .fontTitleSmall, .fontBodyMedium');
-        for (const el of articles) {
-          const text = el.textContent?.trim();
-          if (text && text.length > 2 && text.length < 100) {
-            if (!results.find((r) => r.name === text)) {
-              results.push({ name: text, url: null, lat: null, lng: null });
-            }
+        const headings = document.querySelectorAll('.fontHeadlineSmall, .fontTitleSmall, [data-item-id] .fontBodyMedium:first-child');
+        for (const el of headings) {
+          const text = el.textContent?.trim() || '';
+          addPlace(text, null, null, null);
+        }
+      }
+
+      // Strategy 4: Feed items — each item in a role="feed" typically has a place name as the first bold text
+      if (results.length === 0) {
+        const feedItems = document.querySelectorAll('div[role="feed"] > div');
+        for (const item of feedItems) {
+          // Find the first text element that looks like a place name (bold, short)
+          const bold = item.querySelector('span[style*="font-weight"], b, strong, .fontBodyMedium');
+          if (bold) {
+            const text = bold.textContent?.trim() || '';
+            addPlace(text, null, null, null);
           }
         }
       }
