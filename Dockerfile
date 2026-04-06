@@ -1,6 +1,6 @@
 FROM node:20-slim
 
-# Install Python, yt-dlp, and Playwright browser dependencies
+# Install Python and yt-dlp
 RUN apt-get update && \
     apt-get install -y python3 python3-pip && \
     pip3 install --break-system-packages yt-dlp && \
@@ -10,9 +10,6 @@ WORKDIR /app
 
 COPY package.json .
 RUN npm install --production
-
-# Install Playwright Chromium browser
-RUN npx playwright install chromium --with-deps
 
 COPY . .
 
