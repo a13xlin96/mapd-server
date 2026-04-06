@@ -1,12 +1,39 @@
 const express = require('express');
 const cors = require('cors');
 const { spawn } = require('child_process');
+const Anthropic = require('@anthropic-ai/sdk').default;
+const { chromium } = require('playwright');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
 const TIMEOUT_MS = 30000;
+const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+const anthropic = new Anthropic();
+
+// --- In-memory URL cache for extraction results ---
+const extractionCache = new Map();
+
+function getCached(url) {
+  const entry = extractionCache.get(url);
+  if (!entry) return null;
+  if (Date.now() - entry.timestamp > CACHE_TTL_MS) {
+    extractionCache.delete(url);
+    return null;
+  }
+  return entry.data;
+}
+
+function setCache(url, data) {
+  // Cap cache size to prevent memory leaks (LRU-style: delete oldest if over 5000)
+  if (extractionCache.size > 5000) {
+    const oldest = extractionCache.keys().next().value;
+    extractionCache.delete(oldest);
+  }
+  extractionCache.set(url, { data, timestamp: Date.now() });
+}
 
 // Health check
 app.get('/', (req, res) => {
@@ -21,15 +48,205 @@ app.post('/extract', async (req, res) => {
     return res.status(400).json({ error: 'URL is required' });
   }
 
+  // Check cache first
+  const cached = getCached(url);
+  if (cached) {
+    console.log('Cache hit:', url.slice(0, 60));
+    return res.json(cached);
+  }
+
   console.log('Extracting:', url);
 
   try {
     const data = await runYtDlp(url);
     console.log('Extracted:', data.title?.slice(0, 60));
+    setCache(url, data);
     res.json(data);
   } catch (error) {
     console.error('Extraction failed:', error.message);
     res.status(422).json({ error: error.message, code: error.code || 'UNKNOWN' });
+  }
+});
+
+// AI Step 2b: Extract place name from caption text when regex fails
+app.post('/ai/extract-place', async (req, res) => {
+  const { title, description } = req.body;
+
+  if (!title && !description) {
+    return res.status(400).json({ error: 'title or description required' });
+  }
+
+  // Cache by caption content
+  const cacheKey = `ai:extract:${(title || '').slice(0, 50)}:${(description || '').slice(0, 50)}`;
+  const cached = getCached(cacheKey);
+  if (cached) return res.json(cached);
+
+  try {
+    // Truncate to keep token usage low
+    const caption = `${title || ''}\n${(description || '').slice(0, 800)}`.trim();
+
+    const message = await anthropic.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 100,
+      messages: [{
+        role: 'user',
+        content: `Extract the real-world place (restaurant, bar, shop, attraction, etc.) from this social media caption. Return ONLY valid JSON, nothing else.\n\nCaption:\n${caption}\n\nReturn: {"name": "place name", "city": "city name", "country": "country name"}\nIf no specific place is mentioned, return: null`,
+      }],
+    });
+
+    const text = message.content[0]?.type === 'text' ? message.content[0].text.trim() : '';
+
+    if (!text || text === 'null') {
+      return res.json({ place: null });
+    }
+
+    const parsed = JSON.parse(text);
+    if (parsed?.name) {
+      const result = { place: parsed };
+      setCache(cacheKey, result);
+      return res.json(result);
+    }
+    const result = { place: null };
+    setCache(cacheKey, result);
+    res.json(result);
+  } catch (error) {
+    console.error('AI extract-place failed:', error.message);
+    res.json({ place: null });
+  }
+});
+
+// AI Step 4b: Verify if a Google Places result matches what the caption describes
+app.post('/ai/verify-place', async (req, res) => {
+  const { title, description, placeName, placeAddress, placeTypes } = req.body;
+
+  if (!description && !title) {
+    return res.status(400).json({ error: 'title or description required' });
+  }
+
+  try {
+    const caption = `${title || ''}\n${(description || '').slice(0, 600)}`.trim();
+
+    const message = await anthropic.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 120,
+      messages: [{
+        role: 'user',
+        content: `A social media post mentions a place. We searched Google Places and got a result. Does the result match what the post is actually about?\n\nCaption:\n${caption}\n\nGoogle Places result:\n- Name: ${placeName}\n- Address: ${placeAddress}\n- Types: ${(placeTypes || []).join(', ')}\n\nReturn ONLY valid JSON: {"match": true/false, "betterQuery": "refined search query if not a match, or null"}`,
+      }],
+    });
+
+    const text = message.content[0]?.type === 'text' ? message.content[0].text.trim() : '';
+
+    if (!text) {
+      return res.json({ match: true, betterQuery: null });
+    }
+
+    const parsed = JSON.parse(text);
+    res.json({
+      match: parsed?.match ?? true,
+      betterQuery: parsed?.betterQuery || null,
+    });
+  } catch (error) {
+    console.error('AI verify-place failed:', error.message);
+    res.json({ match: true, betterQuery: null });
+  }
+});
+
+// Import places from a shared Google Maps list link
+app.post('/import/google-maps-list', async (req, res) => {
+  const { url } = req.body;
+
+  if (!url) {
+    return res.status(400).json({ error: 'URL is required' });
+  }
+
+  // Validate it's a Google Maps URL
+  const isGoogleMaps = url.includes('google.com/maps') || url.includes('maps.google')
+    || url.includes('goo.gl/maps') || url.includes('maps.app.goo.gl');
+  if (!isGoogleMaps) {
+    return res.status(400).json({ error: 'Not a Google Maps URL' });
+  }
+
+  console.log('Importing Google Maps list:', url);
+
+  let browser = null;
+  try {
+    browser = await chromium.launch({
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+    });
+
+    const page = await browser.newPage();
+    await page.setViewportSize({ width: 1280, height: 900 });
+
+    // Navigate to the list URL
+    await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
+
+    // Wait for place items to load — Google Maps renders them as role="article" or in a scrollable feed
+    await page.waitForTimeout(3000);
+
+    // Extract places from the list page
+    // Google Maps list pages render places with links containing /place/ paths
+    const places = await page.evaluate(() => {
+      const results = [];
+
+      // Strategy 1: Find all place links in the page
+      const links = document.querySelectorAll('a[href*="/maps/place/"]');
+      for (const link of links) {
+        const href = link.getAttribute('href') || '';
+        const nameMatch = href.match(/\/place\/([^/]+)/);
+        if (nameMatch) {
+          const name = decodeURIComponent(nameMatch[1]).replace(/\+/g, ' ');
+          // Skip if it's a generic/navigation link
+          if (name.length < 2 || name === 'place') continue;
+          // Avoid duplicates
+          if (!results.find((r) => r.name === name)) {
+            // Try to extract coordinates
+            const coordMatch = href.match(/@(-?\d+\.?\d*),(-?\d+\.?\d*)/);
+            results.push({
+              name,
+              url: href.startsWith('http') ? href : `https://www.google.com${href}`,
+              lat: coordMatch ? parseFloat(coordMatch[1]) : null,
+              lng: coordMatch ? parseFloat(coordMatch[2]) : null,
+            });
+          }
+        }
+      }
+
+      // Strategy 2: If no place links found, look for text content in list items
+      if (results.length === 0) {
+        // Google Maps lists sometimes use div[role="article"] or similar
+        const articles = document.querySelectorAll('[role="article"], .fontTitleSmall, .fontBodyMedium');
+        for (const el of articles) {
+          const text = el.textContent?.trim();
+          if (text && text.length > 2 && text.length < 100) {
+            if (!results.find((r) => r.name === text)) {
+              results.push({ name: text, url: null, lat: null, lng: null });
+            }
+          }
+        }
+      }
+
+      return results;
+    });
+
+    await browser.close();
+    browser = null;
+
+    if (places.length === 0) {
+      return res.json({
+        places: [],
+        listName: 'Google Maps Import',
+        error: 'No places found in this list. Make sure the list is shared publicly.',
+      });
+    }
+
+    console.log(`Found ${places.length} places in Google Maps list`);
+    res.json({ places, listName: 'Google Maps Import' });
+  } catch (error) {
+    console.error('Google Maps list import failed:', error.message);
+    if (browser) await browser.close();
+    res.status(500).json({ error: 'Failed to load Google Maps list. Make sure the link is a shared list.' });
   }
 });
 
