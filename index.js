@@ -35,7 +35,9 @@ app.post('/extract', async (req, res) => {
 
 function runYtDlp(url) {
   return new Promise((resolve, reject) => {
-    const proc = spawn('yt-dlp', ['--dump-json', '--no-download', url]);
+    // --dump-single-json outputs one JSON object for the whole post (including
+    // playlist-level caption for carousels) instead of one object per slide.
+    const proc = spawn('yt-dlp', ['--dump-single-json', '--no-download', url]);
 
     let stdout = '';
     let stderr = '';
@@ -63,32 +65,34 @@ function runYtDlp(url) {
       }
 
       try {
-        // yt-dlp outputs one JSON object per media item (e.g. carousel slides).
-        // Take the first valid JSON object from stdout.
-        const firstLine = stdout.split('\n').find((line) => line.trim().startsWith('{'));
-        if (!firstLine) {
-          return reject({ message: 'No JSON output from yt-dlp', code: 'UNKNOWN' });
-        }
-        let json = JSON.parse(firstLine);
+        const json = JSON.parse(stdout);
 
-        // yt-dlp sometimes wraps carousels/playlists in a single object with entries[]
-        // (common with TikTok slideshows). Unwrap to the first entry.
-        if (json._type === 'playlist' && json.entries?.length > 0) {
-          json = json.entries[0];
-        }
+        // For carousels/playlists, the caption lives at the top level.
+        // Individual entries only have generic titles like "Video 2".
+        // Prefer top-level fields, fall back to first entry for thumbnails.
+        const firstEntry = json.entries?.[0];
+        const title = json.title || firstEntry?.title || '';
+        const description = json.description || firstEntry?.description || title;
+        const thumbnail = json.thumbnail
+          || json.thumbnails?.[0]?.url
+          || firstEntry?.thumbnail
+          || firstEntry?.thumbnails?.[0]?.url
+          || '';
+        const uploader = json.uploader || json.channel || json.creator
+          || firstEntry?.uploader || firstEntry?.channel || '';
+        const location = json.location || firstEntry?.location || null;
 
-        const description = json.description || json.title || '';
         const hashtags = (description.match(/#[a-zA-Z][a-zA-Z0-9_]*/g) || [])
           .map((t) => t.slice(1).toLowerCase());
 
         resolve({
-          title: json.title || json.playlist_title || '',
+          title,
           description,
-          thumbnail_url: json.thumbnail || json.thumbnails?.[0]?.url || '',
-          uploader: json.uploader || json.channel || json.creator || '',
+          thumbnail_url: thumbnail,
+          uploader,
           hashtags: [...new Set(hashtags)],
           webpage_url: json.webpage_url || url,
-          location: json.location || null,
+          location,
         });
       } catch {
         reject({ message: 'Failed to parse extraction output', code: 'UNKNOWN' });
