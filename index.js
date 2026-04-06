@@ -69,16 +69,23 @@ function runYtDlp(url) {
         if (!firstLine) {
           return reject({ message: 'No JSON output from yt-dlp', code: 'UNKNOWN' });
         }
-        const json = JSON.parse(firstLine);
+        let json = JSON.parse(firstLine);
+
+        // yt-dlp sometimes wraps carousels/playlists in a single object with entries[]
+        // (common with TikTok slideshows). Unwrap to the first entry.
+        if (json._type === 'playlist' && json.entries?.length > 0) {
+          json = json.entries[0];
+        }
+
         const description = json.description || json.title || '';
         const hashtags = (description.match(/#[a-zA-Z][a-zA-Z0-9_]*/g) || [])
           .map((t) => t.slice(1).toLowerCase());
 
         resolve({
-          title: json.title || '',
+          title: json.title || json.playlist_title || '',
           description,
-          thumbnail_url: json.thumbnail || '',
-          uploader: json.uploader || json.channel || '',
+          thumbnail_url: json.thumbnail || json.thumbnails?.[0]?.url || '',
+          uploader: json.uploader || json.channel || json.creator || '',
           hashtags: [...new Set(hashtags)],
           webpage_url: json.webpage_url || url,
           location: json.location || null,
