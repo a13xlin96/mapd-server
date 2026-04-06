@@ -152,6 +152,54 @@ app.post('/ai/verify-place', async (req, res) => {
   }
 });
 
+// Debug: see what Playwright renders for a Google Maps list page
+app.post('/debug/page-snapshot', async (req, res) => {
+  const { url } = req.body;
+  if (!url) return res.status(400).json({ error: 'URL required' });
+
+  let browser = null;
+  try {
+    browser = await chromium.launch({
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+    });
+    const page = await browser.newPage();
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.goto(url, { waitUntil: 'networkidle', timeout: 45000 });
+    await page.waitForTimeout(5000);
+
+    const snapshot = await page.evaluate(() => {
+      // Get the final URL after redirects
+      const finalUrl = window.location.href;
+      // Get all links
+      const allLinks = Array.from(document.querySelectorAll('a')).slice(0, 50).map(a => ({
+        href: a.href?.slice(0, 200),
+        text: a.textContent?.trim().slice(0, 100),
+        ariaLabel: a.getAttribute('aria-label')?.slice(0, 100),
+      }));
+      // Get all aria-labels
+      const ariaLabels = Array.from(document.querySelectorAll('[aria-label]')).slice(0, 50).map(el => ({
+        tag: el.tagName,
+        label: el.getAttribute('aria-label')?.slice(0, 100),
+        role: el.getAttribute('role'),
+      }));
+      // Get text from feed items
+      const feedItems = Array.from(document.querySelectorAll('div[role="feed"] > div, div[role="listbox"] > div')).slice(0, 20).map(el => el.textContent?.trim().slice(0, 200));
+      // Get page title
+      const title = document.title;
+      // Check for consent/cookie dialogs
+      const hasConsent = !!document.querySelector('[aria-label*="consent"], [aria-label*="cookie"], [aria-label*="Accept"]');
+      return { finalUrl, title, hasConsent, linksCount: document.querySelectorAll('a').length, allLinks, ariaLabels, feedItems };
+    });
+
+    await browser.close();
+    res.json(snapshot);
+  } catch (error) {
+    if (browser) await browser.close();
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Import places from a shared Google Maps list link
 app.post('/import/google-maps-list', async (req, res) => {
   const { url } = req.body;
