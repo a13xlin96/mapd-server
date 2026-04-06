@@ -63,7 +63,13 @@ function runYtDlp(url) {
       }
 
       try {
-        const json = JSON.parse(stdout);
+        // yt-dlp outputs one JSON object per media item (e.g. carousel slides).
+        // Take the first valid JSON object from stdout.
+        const firstLine = stdout.split('\n').find((line) => line.trim().startsWith('{'));
+        if (!firstLine) {
+          return reject({ message: 'No JSON output from yt-dlp', code: 'UNKNOWN' });
+        }
+        const json = JSON.parse(firstLine);
         const description = json.description || json.title || '';
         const hashtags = (description.match(/#[a-zA-Z][a-zA-Z0-9_]*/g) || [])
           .map((t) => t.slice(1).toLowerCase());
