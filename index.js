@@ -121,7 +121,7 @@ If the post does NOT mention any specific named place (just a generic "best pizz
     res.json(result);
   } catch (error) {
     console.error('AI extract-place failed:', error.message);
-    res.json({ place: null });
+    res.json({ place: null, _debug: error.message });
   }
 });
 
