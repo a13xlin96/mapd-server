@@ -89,7 +89,18 @@ app.post('/ai/extract-place', async (req, res) => {
       max_tokens: 100,
       messages: [{
         role: 'user',
-        content: `Extract the real-world place (restaurant, bar, shop, attraction, etc.) from this social media caption. Return ONLY valid JSON, nothing else.\n\nCaption:\n${caption}\n\nReturn: {"name": "place name", "city": "city name", "country": "country name"}\nIf no specific place is mentioned, return: null`,
+        content: `You are extracting the specific place name from a social media post about a real-world location (restaurant, bar, cafe, shop, attraction, hotel, etc.).
+
+Look for:
+- Named businesses ("at Ichiran Ramen", "the Sandwich Board", "visited Bavel")
+- Places after prepositions ("at", "in", "visited", "tried", "went to")
+- Places before locations ("Cafe Luna in Brooklyn", "Weng Yao Chicken, Jiaoxi")
+
+Caption:
+${caption}
+
+Return ONLY valid JSON: {"name": "place name", "city": "city or neighborhood", "country": "country"}
+If the post does NOT mention any specific named place (just a generic "best pizza" with no name), return: null`,
       }],
     });
 
