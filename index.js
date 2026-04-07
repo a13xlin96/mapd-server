@@ -166,6 +166,60 @@ app.post('/ai/verify-place', async (req, res) => {
   }
 });
 
+// AI Vision: Extract place names from carousel slide images
+app.post('/ai/vision-extract', async (req, res) => {
+  const { imageUrls } = req.body;
+
+  if (!imageUrls || !Array.isArray(imageUrls) || imageUrls.length === 0) {
+    return res.status(400).json({ error: 'imageUrls array required' });
+  }
+
+  // Cache by first image URL
+  const cacheKey = `ai:vision:${imageUrls[0]?.slice(0, 60)}`;
+  const cached = getCached(cacheKey);
+  if (cached) return res.json(cached);
+
+  try {
+    // Send up to 5 slide images to Claude vision
+    const imageContent = imageUrls.slice(0, 5).map((url) => ({
+      type: 'image',
+      source: { type: 'url', url },
+    }));
+
+    const message = await anthropic.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 200,
+      messages: [{
+        role: 'user',
+        content: [
+          ...imageContent,
+          {
+            type: 'text',
+            text: 'These are slides from a social media carousel post about places to visit. Read any place names, restaurant names, bar names, cafe names, or location names that appear as text overlays in the images. Return ONLY valid JSON: {"places": ["Place Name 1", "Place Name 2"]} or {"places": []} if no place names are visible.',
+          },
+        ],
+      }],
+    });
+
+    let text = message.content[0]?.type === 'text' ? message.content[0].text.trim() : '';
+    text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+
+    if (!text || text === 'null') {
+      const result = { places: [] };
+      setCache(cacheKey, result);
+      return res.json(result);
+    }
+
+    const parsed = JSON.parse(text);
+    const result = { places: parsed?.places || [] };
+    setCache(cacheKey, result);
+    res.json(result);
+  } catch (error) {
+    console.error('AI vision-extract failed:', error.message);
+    res.json({ places: [] });
+  }
+});
+
 function runYtDlp(url) {
   return new Promise((resolve, reject) => {
     // --dump-single-json outputs one JSON object for the whole post (including
@@ -218,6 +272,13 @@ function runYtDlp(url) {
         const hashtags = (description.match(/#[a-zA-Z][a-zA-Z0-9_]*/g) || [])
           .map((t) => t.slice(1).toLowerCase());
 
+        // Collect slide thumbnails for carousels (for vision-based place extraction)
+        const entries = json.entries || [];
+        const slideThumbnails = entries
+          .map((e) => e.thumbnail || e.thumbnails?.[0]?.url || null)
+          .filter(Boolean)
+          .slice(0, 10); // Cap at 10 slides
+
         resolve({
           title,
           description,
@@ -226,6 +287,9 @@ function runYtDlp(url) {
           hashtags: [...new Set(hashtags)],
           webpage_url: json.webpage_url || url,
           location,
+          is_carousel: entries.length > 1,
+          slide_count: entries.length,
+          slide_thumbnails: slideThumbnails,
         });
       } catch {
         reject({ message: 'Failed to parse extraction output', code: 'UNKNOWN' });
