@@ -104,7 +104,10 @@ If the post does NOT mention any specific named place (just a generic "best pizz
       }],
     });
 
-    const text = message.content[0]?.type === 'text' ? message.content[0].text.trim() : '';
+    let text = message.content[0]?.type === 'text' ? message.content[0].text.trim() : '';
+
+    // Strip markdown code fences if present (```json ... ```)
+    text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
 
     if (!text || text === 'null') {
       return res.json({ place: null });
@@ -121,7 +124,7 @@ If the post does NOT mention any specific named place (just a generic "best pizz
     res.json(result);
   } catch (error) {
     console.error('AI extract-place failed:', error.message);
-    res.json({ place: null, _debug: error.message });
+    res.json({ place: null });
   }
 });
 
@@ -145,13 +148,14 @@ app.post('/ai/verify-place', async (req, res) => {
       }],
     });
 
-    const text = message.content[0]?.type === 'text' ? message.content[0].text.trim() : '';
+    let text2 = message.content[0]?.type === 'text' ? message.content[0].text.trim() : '';
+    text2 = text2.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
 
-    if (!text) {
+    if (!text2) {
       return res.json({ match: true, betterQuery: null });
     }
 
-    const parsed = JSON.parse(text);
+    const parsed = JSON.parse(text2);
     res.json({
       match: parsed?.match ?? true,
       betterQuery: parsed?.betterQuery || null,
