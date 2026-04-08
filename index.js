@@ -67,6 +67,53 @@ app.post('/extract', async (req, res) => {
   }
 });
 
+// AI: Extract ALL places from a social media post (single consolidated call)
+app.post('/ai/extract-places', async (req, res) => {
+  const { title, description, hashtags, uploader } = req.body;
+
+  if (!title && !description) {
+    return res.status(400).json({ error: 'title or description required' });
+  }
+
+  try {
+    const context = [
+      title ? `Title: ${title}` : '',
+      description ? `Caption: ${(description || '').slice(0, 1200)}` : '',
+      uploader ? `Uploader: ${uploader}` : '',
+      hashtags?.length ? `Hashtags: ${hashtags.join(', ')}` : '',
+    ].filter(Boolean).join('\n');
+
+    const message = await anthropic.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 400,
+      messages: [{
+        role: 'user',
+        content: `Extract ALL specific place names (restaurants, bars, cafes, shops, attractions, hotels) from this social media post.
+
+Rules:
+- Only extract NAMED businesses or attractions (not generic descriptions like "best pizza spot")
+- Include the city/neighborhood if mentioned or inferrable from context
+- If a full address is given, include it
+- If there are multiple places, return all of them
+- If NO specific named place is found, return an empty list
+
+${context}
+
+Return ONLY valid JSON: {"places": [{"name": "Place Name", "city": "City", "address": "full address if given, otherwise empty string"}], "count": N}`,
+      }],
+    });
+
+    let text = message.content[0]?.type === 'text' ? message.content[0].text.trim() : '';
+    text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+
+    const parsed = JSON.parse(text);
+    res.json(parsed);
+  } catch (error) {
+    console.error('AI extract-places failed:', error.message);
+    res.json({ places: [], count: 0 });
+  }
+});
+
 // AI Step 2b: Extract place name from caption text when regex fails
 app.post('/ai/extract-place', async (req, res) => {
   const { title, description } = req.body;
