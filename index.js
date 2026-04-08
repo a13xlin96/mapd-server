@@ -224,7 +224,7 @@ function runYtDlp(url) {
   return new Promise((resolve, reject) => {
     // --dump-single-json outputs one JSON object for the whole post (including
     // playlist-level caption for carousels) instead of one object per slide.
-    const proc = spawn('yt-dlp', ['--dump-single-json', '--no-download', '--impersonate', 'chrome', url]);
+    const proc = spawn('yt-dlp', ['--dump-single-json', '--no-download', '--impersonate', 'chrome', '--no-check-certificates', '-v', url]);
 
     let stdout = '';
     let stderr = '';
@@ -246,9 +246,9 @@ function runYtDlp(url) {
           return reject({ message: 'This video is private.', code: 'PRIVATE' });
         }
         if (lower.includes('deleted') || lower.includes('not available')) {
-          return reject({ message: 'This video is unavailable.', code: 'DELETED' });
+          return reject({ message: `This video is unavailable. Debug: ${stderr.slice(-300)}`, code: 'DELETED' });
         }
-        return reject({ message: `Extraction failed: ${stderr.slice(0, 200)}`, code: 'UNKNOWN' });
+        return reject({ message: `Extraction failed: ${stderr.slice(-300)}`, code: 'UNKNOWN' });
       }
 
       try {
