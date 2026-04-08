@@ -75,6 +75,11 @@ app.post('/ai/extract-places', async (req, res) => {
     return res.status(400).json({ error: 'title or description required' });
   }
 
+  // Cache by caption content
+  const cacheKey = `ai:places:${(title || '').slice(0, 50)}:${(description || '').slice(0, 50)}`;
+  const cached = getCached(cacheKey);
+  if (cached) return res.json(cached);
+
   try {
     const context = [
       title ? `Title: ${title}` : '',
@@ -107,6 +112,7 @@ Return ONLY valid JSON: {"places": [{"name": "Place Name", "city": "City", "addr
     text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
 
     const parsed = JSON.parse(text);
+    setCache(cacheKey, parsed);
     res.json(parsed);
   } catch (error) {
     console.error('AI extract-places failed:', error.message);
