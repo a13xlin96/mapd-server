@@ -224,7 +224,7 @@ function runYtDlp(url) {
   return new Promise((resolve, reject) => {
     // --dump-single-json outputs one JSON object for the whole post (including
     // playlist-level caption for carousels) instead of one object per slide.
-    const proc = spawn('yt-dlp', ['--dump-single-json', '--no-download', url]);
+    const proc = spawn('yt-dlp', ['--dump-single-json', '--no-download', '--impersonate', 'chrome', url]);
 
     let stdout = '';
     let stderr = '';
