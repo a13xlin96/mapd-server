@@ -1,12 +1,9 @@
-FROM node:20
+FROM node:20-slim
 
-# Install Python and yt-dlp with impersonation support
+# Install Python and yt-dlp
 RUN apt-get update && \
-    apt-get install -y python3 python3-pip python3-venv && \
-    python3 -m venv /opt/ytdlp-env && \
-    /opt/ytdlp-env/bin/pip install yt-dlp "curl_cffi>=0.7" && \
-    ln -sf /opt/ytdlp-env/bin/yt-dlp /usr/local/bin/yt-dlp && \
-    yt-dlp --list-impersonate-targets 2>&1 | head -5 && \
+    apt-get install -y python3 python3-pip && \
+    pip3 install --break-system-packages yt-dlp && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
