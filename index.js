@@ -98,10 +98,13 @@ app.post('/extract', async (req, res) => {
     return res.status(400).json({ error: 'URL is required' });
   }
 
-  // Check cache — try both the raw URL and resolved canonical URL
-  const cached = await getCached(url);
+  // Normalize URL for cache lookups (strip tracking params)
+  const normalizedUrl = normalizeUrlForCache(url);
+
+  // Check cache — try normalized URL first
+  const cached = await getCached(normalizedUrl);
   if (cached) {
-    console.log('Cache hit (raw):', url.slice(0, 60));
+    console.log('Cache hit:', normalizedUrl.slice(0, 60));
     return res.json(cached);
   }
 
@@ -140,11 +143,11 @@ app.post('/extract', async (req, res) => {
   try {
     const data = await runYtDlp(url);
     console.log('Extracted:', data.title?.slice(0, 60));
-    // Cache by raw URL and normalized canonical URL
-    await setCache(url, data);
+    // Cache by normalized URL and normalized canonical URL
+    await setCache(normalizedUrl, data);
     if (data.webpage_url) {
       const normalizedCanonical = normalizeUrlForCache(data.webpage_url);
-      if (normalizedCanonical !== url) {
+      if (normalizedCanonical !== normalizedUrl) {
         await setCache(normalizedCanonical, data);
       }
     }
