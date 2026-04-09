@@ -72,6 +72,19 @@ async function setCache(key, data) {
   memoryCache.set(key, { data, timestamp: Date.now() });
 }
 
+/** Strip tracking params from a URL for cache key normalization */
+function normalizeUrlForCache(rawUrl) {
+  try {
+    const parsed = new URL(rawUrl);
+    for (const param of ['_r', '_t', '_d', '_svg', 'igsh', 'igshid', 'utm_source', 'utm_medium', 'utm_campaign', 'fbclid', 'ref', 'share_id', 'g_st', 'g_ep', 'entry', 'coh', 'skid']) {
+      parsed.searchParams.delete(param);
+    }
+    return parsed.origin + parsed.pathname.replace(/\/+$/, '') + (parsed.searchParams.toString() ? '?' + parsed.searchParams.toString() : '');
+  } catch {
+    return rawUrl;
+  }
+}
+
 // Health check
 app.get('/', (req, res) => {
   res.json({ status: 'ok', service: 'mapd-link-extractor' });
@@ -85,11 +98,41 @@ app.post('/extract', async (req, res) => {
     return res.status(400).json({ error: 'URL is required' });
   }
 
-  // Check cache first
+  // Check cache — try both the raw URL and resolved canonical URL
   const cached = await getCached(url);
   if (cached) {
-    console.log('Cache hit:', url.slice(0, 60));
+    console.log('Cache hit (raw):', url.slice(0, 60));
     return res.json(cached);
+  }
+
+  // For short URLs, try resolving to canonical and check cache again
+  if (url.includes('/t/') || url.includes('vm.tiktok') || url.includes('instagr.am')) {
+    try {
+      const resolved = await new Promise((resolve) => {
+        const mod = url.startsWith('https') ? require('https') : require('http');
+        const req = mod.request(url, { method: 'HEAD', timeout: 5000 }, (response) => {
+          // Follow redirects manually
+          if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
+            resolve(response.headers.location);
+          } else {
+            resolve(url);
+          }
+        });
+        req.on('error', () => resolve(url));
+        req.on('timeout', () => { req.destroy(); resolve(url); });
+        req.end();
+      });
+      if (resolved !== url) {
+        const normalizedCanonical = normalizeUrlForCache(resolved);
+        const cachedCanonical = await getCached(normalizedCanonical);
+        if (cachedCanonical) {
+          console.log('Cache hit (canonical):', normalizedCanonical.slice(0, 60));
+          return res.json(cachedCanonical);
+        }
+      }
+    } catch {
+      // Resolve failed — continue with yt-dlp
+    }
   }
 
   console.log('Extracting:', url);
@@ -97,7 +140,14 @@ app.post('/extract', async (req, res) => {
   try {
     const data = await runYtDlp(url);
     console.log('Extracted:', data.title?.slice(0, 60));
+    // Cache by raw URL and normalized canonical URL
     await setCache(url, data);
+    if (data.webpage_url) {
+      const normalizedCanonical = normalizeUrlForCache(data.webpage_url);
+      if (normalizedCanonical !== url) {
+        await setCache(normalizedCanonical, data);
+      }
+    }
     res.json(data);
   } catch (error) {
     console.error('Extraction failed:', error.message);
