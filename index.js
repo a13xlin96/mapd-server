@@ -1,6 +1,9 @@
 const express = require('express');
 const cors = require('cors');
 const { spawn } = require('child_process');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const Anthropic = require('@anthropic-ai/sdk').default;
 
 const app = express();
@@ -69,14 +72,14 @@ app.post('/extract', async (req, res) => {
 
 // AI: Extract ALL places from a social media post (single consolidated call)
 app.post('/ai/extract-places', async (req, res) => {
-  const { title, description, hashtags, uploader } = req.body;
+  const { title, description, hashtags, uploader, subtitles } = req.body;
 
-  if (!title && !description) {
-    return res.status(400).json({ error: 'title or description required' });
+  if (!title && !description && !subtitles) {
+    return res.status(400).json({ error: 'title, description, or subtitles required' });
   }
 
-  // Cache by caption content
-  const cacheKey = `ai:places:${(title || '').slice(0, 50)}:${(description || '').slice(0, 50)}`;
+  // Cache by caption + subtitle content
+  const cacheKey = `ai:places:${(title || '').slice(0, 50)}:${(description || '').slice(0, 50)}:${(subtitles || '').slice(0, 30)}`;
   const cached = getCached(cacheKey);
   if (cached) return res.json(cached);
 
@@ -85,6 +88,7 @@ app.post('/ai/extract-places', async (req, res) => {
       title ? `Title: ${title}` : '',
       description ? `Caption: ${(description || '').slice(0, 1200)}` : '',
       uploader ? `Uploader: ${uploader}` : '',
+      subtitles ? `Video transcript/subtitles: ${(subtitles || '').slice(0, 1500)}` : '',
       hashtags?.length ? `Hashtags: ${hashtags.join(', ')}` : '',
     ].filter(Boolean).join('\n');
 
@@ -332,17 +336,35 @@ function runYtDlp(url) {
           .filter(Boolean)
           .slice(0, 10); // Cap at 10 slides
 
-        resolve({
-          title,
-          description,
-          thumbnail_url: thumbnail,
-          uploader,
-          hashtags: [...new Set(hashtags)],
-          webpage_url: json.webpage_url || url,
-          location,
-          is_carousel: entries.length > 1,
-          slide_count: entries.length,
-          slide_thumbnails: slideThumbnails,
+        // Try to extract subtitles/captions (non-blocking)
+        extractSubtitles(json.webpage_url || url).then((subtitles) => {
+          resolve({
+            title,
+            description,
+            thumbnail_url: thumbnail,
+            uploader,
+            hashtags: [...new Set(hashtags)],
+            webpage_url: json.webpage_url || url,
+            location,
+            is_carousel: entries.length > 1,
+            slide_count: entries.length,
+            slide_thumbnails: slideThumbnails,
+            subtitles,
+          });
+        }).catch(() => {
+          resolve({
+            title,
+            description,
+            thumbnail_url: thumbnail,
+            uploader,
+            hashtags: [...new Set(hashtags)],
+            webpage_url: json.webpage_url || url,
+            location,
+            is_carousel: entries.length > 1,
+            slide_count: entries.length,
+            slide_thumbnails: slideThumbnails,
+            subtitles: null,
+          });
         });
       } catch {
         reject({ message: 'Failed to parse extraction output', code: 'UNKNOWN' });
@@ -354,6 +376,82 @@ function runYtDlp(url) {
       reject({ message: err.message, code: 'UNKNOWN' });
     });
   });
+}
+
+/** Extract subtitles/captions from a video URL via yt-dlp */
+function extractSubtitles(url) {
+  return new Promise((resolve) => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ytdlp-subs-'));
+    const outTemplate = path.join(tmpDir, 'subs');
+
+    const proc = spawn('yt-dlp', [
+      '--write-auto-subs',
+      '--write-subs',
+      '--sub-lang', 'en',
+      '--sub-format', 'vtt/srt/best',
+      '--skip-download',
+      '-o', outTemplate,
+      url,
+    ]);
+
+    let stderr = '';
+    proc.stderr.on('data', (d) => { stderr += d.toString(); });
+
+    const timeout = setTimeout(() => {
+      proc.kill();
+      cleanup(tmpDir);
+      resolve(null);
+    }, 15000);
+
+    proc.on('close', (code) => {
+      clearTimeout(timeout);
+
+      // Find any subtitle file that was written
+      try {
+        const files = fs.readdirSync(tmpDir).filter((f) => f.endsWith('.vtt') || f.endsWith('.srt'));
+        if (files.length === 0) {
+          cleanup(tmpDir);
+          return resolve(null);
+        }
+
+        const subText = fs.readFileSync(path.join(tmpDir, files[0]), 'utf-8');
+        cleanup(tmpDir);
+
+        // Parse VTT/SRT: strip timestamps and formatting, keep just the text
+        const lines = subText.split('\n')
+          .filter((line) => {
+            // Skip VTT header, timestamps, empty lines, and position tags
+            if (line.startsWith('WEBVTT')) return false;
+            if (line.startsWith('Kind:') || line.startsWith('Language:')) return false;
+            if (/^\d{2}:\d{2}/.test(line)) return false;
+            if (/^\d+$/.test(line.trim())) return false;
+            if (line.trim() === '') return false;
+            return true;
+          })
+          .map((line) => line.replace(/<[^>]+>/g, '').trim()) // strip HTML tags
+          .filter(Boolean);
+
+        // Deduplicate consecutive identical lines (VTT often repeats)
+        const deduped = lines.filter((line, i) => i === 0 || line !== lines[i - 1]);
+        const transcript = deduped.join(' ').slice(0, 3000); // cap at 3000 chars
+
+        resolve(transcript || null);
+      } catch {
+        cleanup(tmpDir);
+        resolve(null);
+      }
+    });
+
+    proc.on('error', () => {
+      clearTimeout(timeout);
+      cleanup(tmpDir);
+      resolve(null);
+    });
+  });
+}
+
+function cleanup(dir) {
+  try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
 }
 
 const PORT = process.env.PORT || 3000;
