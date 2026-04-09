@@ -387,7 +387,7 @@ function extractSubtitles(url) {
     const proc = spawn('yt-dlp', [
       '--write-auto-subs',
       '--write-subs',
-      '--sub-lang', 'en',
+      '--sub-lang', 'en.*,eng.*',
       '--sub-format', 'vtt/srt/best',
       '--skip-download',
       '-o', outTemplate,
