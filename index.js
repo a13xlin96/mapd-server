@@ -5,36 +5,71 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const Anthropic = require('@anthropic-ai/sdk').default;
+const { Redis } = require('@upstash/redis');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
 const TIMEOUT_MS = 30000;
-const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const CACHE_TTL_SECONDS = 60 * 60 * 24; // 24 hours
 
 const anthropic = new Anthropic();
 
-// --- In-memory URL cache for extraction results ---
-const extractionCache = new Map();
+// --- Persistent Redis cache with in-memory fallback ---
+let redis = null;
+try {
+  if (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) {
+    redis = new Redis({
+      url: process.env.UPSTASH_REDIS_REST_URL,
+      token: process.env.UPSTASH_REDIS_REST_TOKEN,
+    });
+    console.log('Redis cache connected (Upstash)');
+  } else {
+    console.log('Redis not configured — using in-memory cache (not persistent across restarts)');
+  }
+} catch (err) {
+  console.warn('Redis init failed, using in-memory fallback:', err.message);
+}
 
-function getCached(url) {
-  const entry = extractionCache.get(url);
+// In-memory fallback cache (used when Redis is unavailable)
+const memoryCache = new Map();
+
+async function getCached(key) {
+  // Try Redis first
+  if (redis) {
+    try {
+      const data = await redis.get(key);
+      if (data) return data;
+    } catch (err) {
+      console.warn('Redis get failed, falling back to memory:', err.message);
+    }
+  }
+  // Fallback to in-memory
+  const entry = memoryCache.get(key);
   if (!entry) return null;
-  if (Date.now() - entry.timestamp > CACHE_TTL_MS) {
-    extractionCache.delete(url);
+  if (Date.now() - entry.timestamp > CACHE_TTL_SECONDS * 1000) {
+    memoryCache.delete(key);
     return null;
   }
   return entry.data;
 }
 
-function setCache(url, data) {
-  // Cap cache size to prevent memory leaks (LRU-style: delete oldest if over 5000)
-  if (extractionCache.size > 5000) {
-    const oldest = extractionCache.keys().next().value;
-    extractionCache.delete(oldest);
+async function setCache(key, data) {
+  // Write to Redis
+  if (redis) {
+    try {
+      await redis.set(key, data, { ex: CACHE_TTL_SECONDS });
+    } catch (err) {
+      console.warn('Redis set failed, using memory only:', err.message);
+    }
   }
-  extractionCache.set(url, { data, timestamp: Date.now() });
+  // Always write to in-memory too (fast local reads)
+  if (memoryCache.size > 5000) {
+    const oldest = memoryCache.keys().next().value;
+    memoryCache.delete(oldest);
+  }
+  memoryCache.set(key, { data, timestamp: Date.now() });
 }
 
 // Health check
@@ -51,7 +86,7 @@ app.post('/extract', async (req, res) => {
   }
 
   // Check cache first
-  const cached = getCached(url);
+  const cached = await getCached(url);
   if (cached) {
     console.log('Cache hit:', url.slice(0, 60));
     return res.json(cached);
@@ -62,7 +97,7 @@ app.post('/extract', async (req, res) => {
   try {
     const data = await runYtDlp(url);
     console.log('Extracted:', data.title?.slice(0, 60));
-    setCache(url, data);
+    await setCache(url, data);
     res.json(data);
   } catch (error) {
     console.error('Extraction failed:', error.message);
@@ -80,7 +115,7 @@ app.post('/ai/extract-places', async (req, res) => {
 
   // Cache by caption + subtitle content
   const cacheKey = `ai:places:${(title || '').slice(0, 50)}:${(description || '').slice(0, 50)}:${(subtitles || '').slice(0, 30)}`;
-  const cached = getCached(cacheKey);
+  const cached = await getCached(cacheKey);
   if (cached) return res.json(cached);
 
   try {
@@ -116,7 +151,7 @@ Return ONLY valid JSON: {"places": [{"name": "Place Name", "city": "City", "addr
     text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
 
     const parsed = JSON.parse(text);
-    setCache(cacheKey, parsed);
+    await setCache(cacheKey, parsed);
     res.json(parsed);
   } catch (error) {
     console.error('AI extract-places failed:', error.message);
@@ -134,7 +169,7 @@ app.post('/ai/extract-place', async (req, res) => {
 
   // Cache by caption content
   const cacheKey = `ai:extract:${(title || '').slice(0, 50)}:${(description || '').slice(0, 50)}`;
-  const cached = getCached(cacheKey);
+  const cached = await getCached(cacheKey);
   if (cached) return res.json(cached);
 
   try {
@@ -173,11 +208,11 @@ If the post does NOT mention any specific named place (just a generic "best pizz
     const parsed = JSON.parse(text);
     if (parsed?.name) {
       const result = { place: parsed };
-      setCache(cacheKey, result);
+      await setCache(cacheKey, result);
       return res.json(result);
     }
     const result = { place: null };
-    setCache(cacheKey, result);
+    await setCache(cacheKey, result);
     res.json(result);
   } catch (error) {
     console.error('AI extract-place failed:', error.message);
@@ -233,7 +268,7 @@ app.post('/ai/vision-extract', async (req, res) => {
 
   // Cache by first image URL
   const cacheKey = `ai:vision:${imageUrls[0]?.slice(0, 60)}`;
-  const cached = getCached(cacheKey);
+  const cached = await getCached(cacheKey);
   if (cached) return res.json(cached);
 
   try {
@@ -263,13 +298,13 @@ app.post('/ai/vision-extract', async (req, res) => {
 
     if (!text || text === 'null') {
       const result = { places: [] };
-      setCache(cacheKey, result);
+      await setCache(cacheKey, result);
       return res.json(result);
     }
 
     const parsed = JSON.parse(text);
     const result = { places: parsed?.places || [] };
-    setCache(cacheKey, result);
+    await setCache(cacheKey, result);
     res.json(result);
   } catch (error) {
     console.error('AI vision-extract failed:', error.message);
