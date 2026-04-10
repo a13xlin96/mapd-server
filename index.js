@@ -90,6 +90,109 @@ app.get('/', (req, res) => {
   res.json({ status: 'ok', service: 'mapd-link-extractor' });
 });
 
+// Invite landing page — opens app if installed, shows download page if not
+app.get('/invite/:token', (req, res) => {
+  const { token } = req.params;
+  const appScheme = `mapd://join/${token}`;
+
+  res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Join a list on Mapd</title>
+  <meta property="og:title" content="You've been invited to a list on Mapd">
+  <meta property="og:description" content="Mapd turns your saved Instagram and TikTok posts into pins on a map.">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #F9F8F6;
+      color: #1C1917;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 24px;
+      text-align: center;
+    }
+    .logo { font-size: 64px; margin-bottom: 16px; }
+    h1 { font-size: 24px; font-weight: 700; margin-bottom: 8px; }
+    .subtitle { font-size: 16px; color: #78716C; margin-bottom: 32px; line-height: 1.5; }
+    .code {
+      background: #FDE8DE;
+      color: #D4622A;
+      font-weight: 600;
+      padding: 4px 12px;
+      border-radius: 8px;
+      font-size: 18px;
+      letter-spacing: 1px;
+      display: inline-block;
+      margin-bottom: 32px;
+    }
+    .btn {
+      display: block;
+      width: 100%;
+      max-width: 300px;
+      padding: 14px 24px;
+      border-radius: 12px;
+      font-size: 16px;
+      font-weight: 600;
+      text-decoration: none;
+      margin-bottom: 12px;
+    }
+    .btn-primary { background: #D4622A; color: #fff; }
+    .btn-secondary { background: #fff; color: #1C1917; border: 1px solid #E7E5E4; }
+    .stores { display: flex; gap: 12px; margin-top: 24px; }
+    .stores a {
+      padding: 10px 20px;
+      background: #1C1917;
+      color: #fff;
+      border-radius: 8px;
+      text-decoration: none;
+      font-size: 14px;
+      font-weight: 500;
+    }
+    .divider { color: #A8A29E; font-size: 14px; margin: 16px 0; }
+    .footer { margin-top: 40px; font-size: 12px; color: #A8A29E; }
+  </style>
+</head>
+<body>
+  <div class="logo">📍</div>
+  <h1>You're invited to a list on Mapd</h1>
+  <p class="subtitle">Save places from Instagram & TikTok to a shared map with friends.</p>
+
+  <a href="${appScheme}" class="btn btn-primary" id="openApp">Open in Mapd</a>
+
+  <p class="divider">Don't have the app yet?</p>
+
+  <p class="subtitle">Enter this invite code in the app:</p>
+  <div class="code">${token}</div>
+
+  <div class="stores">
+    <a href="#">App Store</a>
+    <a href="#">Google Play</a>
+  </div>
+
+  <p class="footer">Mapd — your places, on your map</p>
+
+  <script>
+    // Try to open the app, fall back gracefully
+    document.getElementById('openApp').addEventListener('click', function(e) {
+      e.preventDefault();
+      var appUrl = '${appScheme}';
+      window.location.href = appUrl;
+      // If app doesn't open after 1.5s, stay on this page
+      setTimeout(function() {
+        // User is still here — app didn't open
+      }, 1500);
+    });
+  </script>
+</body>
+</html>`);
+});
+
 // Extract metadata from a social media link
 app.post('/extract', async (req, res) => {
   const { url } = req.body;
