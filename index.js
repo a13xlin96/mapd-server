@@ -167,7 +167,7 @@ app.get('/privacy', (req, res) => {
   <p>We may update this policy from time to time. We will notify you of significant changes through the app or by updating the date at the top of this page.</p>
 
   <h2>Contact Us</h2>
-  <p>If you have questions about this privacy policy or your data, contact us at: <a href="mailto:mapd.app.contact@gmail.com">mapd.app.contact@gmail.com</a></p>
+  <p>If you have questions about this privacy policy or your data, contact us at: <a href="mailto:mapdnyc@gmail.com">mapdnyc@gmail.com</a></p>
 </body>
 </html>`);
 });
