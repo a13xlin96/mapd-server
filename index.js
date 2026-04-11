@@ -90,6 +90,88 @@ app.get('/', (req, res) => {
   res.json({ status: 'ok', service: 'mapd-link-extractor' });
 });
 
+// Privacy Policy
+app.get('/privacy', (req, res) => {
+  res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mapd — Privacy Policy</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #F9F8F6; color: #1C1917; line-height: 1.7; padding: 24px; max-width: 720px; margin: 0 auto; }
+    h1 { font-size: 28px; font-weight: 700; margin-bottom: 8px; }
+    h2 { font-size: 20px; font-weight: 600; margin-top: 32px; margin-bottom: 8px; }
+    p, li { font-size: 15px; color: #44403C; margin-bottom: 12px; }
+    ul { padding-left: 20px; }
+    .updated { font-size: 13px; color: #A8A29E; margin-bottom: 24px; }
+    a { color: #D4622A; }
+  </style>
+</head>
+<body>
+  <h1>Privacy Policy</h1>
+  <p class="updated">Last updated: April 10, 2026</p>
+
+  <p>Mapd ("we", "our", or "us") operates the Mapd mobile application. This policy describes how we collect, use, and protect your information.</p>
+
+  <h2>Information We Collect</h2>
+  <ul>
+    <li><strong>Account Information:</strong> When you sign in with Google, we receive your name, email address, and profile photo. This is used solely for authentication and displaying your profile within the app.</li>
+    <li><strong>Saved Places:</strong> Places you save (pins), lists you create, and notes you add are stored in our database to provide the core app functionality.</li>
+    <li><strong>Shared Links:</strong> When you share links from Instagram, TikTok, or Google Maps to Mapd, we process the URL to extract place information. The URLs and extracted metadata are logged for analytics and to improve the service.</li>
+    <li><strong>Location Data:</strong> With your permission, we access your device's precise location to show your position on the map and to improve place search results. We do not store your location history on our servers.</li>
+    <li><strong>Usage Data:</strong> We collect analytics events (such as pins saved, links processed, and features used) to understand how the app is used and to improve it. These events are linked to your user ID.</li>
+    <li><strong>Diagnostics:</strong> We collect crash reports and performance data to maintain app stability. This data is not linked to your identity.</li>
+  </ul>
+
+  <h2>How We Use Your Information</h2>
+  <ul>
+    <li>To provide and maintain the app's core features (saving places, creating lists, sharing with friends)</li>
+    <li>To authenticate your account and secure your data</li>
+    <li>To process shared links and extract place information</li>
+    <li>To analyze usage patterns and improve the app</li>
+    <li>To diagnose technical issues and fix bugs</li>
+  </ul>
+
+  <h2>Third-Party Services</h2>
+  <p>We use the following third-party services to operate the app:</p>
+  <ul>
+    <li><strong>Google Firebase:</strong> Authentication, database, and crash reporting</li>
+    <li><strong>Google Places API:</strong> Place search and details</li>
+    <li><strong>Google Maps:</strong> Map display</li>
+    <li><strong>Anthropic (Claude AI):</strong> Extracting place names from social media post captions (text only, no personal data is sent)</li>
+  </ul>
+  <p>We do not sell, rent, or share your personal information with third parties for advertising or marketing purposes.</p>
+
+  <h2>Data Storage and Security</h2>
+  <p>Your data is stored in Google Firebase (Cloud Firestore) with security rules that restrict access to authenticated users. Each user can only read and modify their own data. We use industry-standard security measures to protect your information.</p>
+
+  <h2>Data Retention</h2>
+  <p>Your account data and saved places are retained as long as your account is active. Cached data (link extractions, place lookups) expires automatically after 7–30 days. You can delete your account and all associated data at any time by contacting us.</p>
+
+  <h2>Your Rights</h2>
+  <p>You have the right to:</p>
+  <ul>
+    <li>Access your personal data</li>
+    <li>Request correction of inaccurate data</li>
+    <li>Request deletion of your account and data</li>
+    <li>Export your saved places data</li>
+  </ul>
+  <p>To exercise any of these rights, contact us at the email below.</p>
+
+  <h2>Children's Privacy</h2>
+  <p>Mapd is not intended for children under 13. We do not knowingly collect personal information from children under 13.</p>
+
+  <h2>Changes to This Policy</h2>
+  <p>We may update this policy from time to time. We will notify you of significant changes through the app or by updating the date at the top of this page.</p>
+
+  <h2>Contact Us</h2>
+  <p>If you have questions about this privacy policy or your data, contact us at: <a href="mailto:mapd.app.contact@gmail.com">mapd.app.contact@gmail.com</a></p>
+</body>
+</html>`);
+});
+
 // Invite landing page — opens app if installed, shows download page if not
 app.get('/invite/:token', (req, res) => {
   const { token } = req.params;
