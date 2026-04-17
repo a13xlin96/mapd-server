@@ -496,6 +496,99 @@ app.post('/ai/verify-place', async (req, res) => {
   }
 });
 
+// AI: Infer city/country for each place using ALL siblings in the list as context.
+// Used by the Google Takeout import flow and by the "Re-resolve from link" pin action
+// when the original URL doesn't carry coordinates.
+app.post('/ai/infer-place-regions', async (req, res) => {
+  const { places, listName, siblingPlaces } = req.body;
+
+  if (!Array.isArray(places) || places.length === 0) {
+    return res.status(400).json({ error: 'places array required' });
+  }
+
+  const cleanPlaces = places
+    .map((p) => ({ name: String(p?.name || '').trim(), url: String(p?.url || '').trim() }))
+    .filter((p) => p.name);
+  const cleanSiblings = Array.isArray(siblingPlaces)
+    ? siblingPlaces.map((s) => String(s || '').trim()).filter(Boolean)
+    : [];
+  const cleanListName = String(listName || '').trim();
+
+  if (cleanPlaces.length === 0) {
+    return res.status(400).json({ error: 'no valid place names' });
+  }
+
+  const cacheKey = `ai:infer-regions:${cleanListName}:${JSON.stringify(cleanPlaces)}:${JSON.stringify(cleanSiblings)}`;
+  const cached = await getCached(cacheKey);
+  if (cached) return res.json(cached);
+
+  try {
+    const allContextNames = Array.from(new Set([
+      ...cleanPlaces.map((p) => p.name),
+      ...cleanSiblings,
+    ]));
+
+    const placesBlock = cleanPlaces
+      .map((p, i) => `${i + 1}. "${p.name}"${p.url ? `\n   URL: ${p.url}` : ''}`)
+      .join('\n');
+
+    const prompt = `You are identifying the location of places saved in a user's map list.
+
+Use ALL available context to disambiguate. A place name alone ("Joe's Pizza") is often ambiguous because the same name exists in many cities worldwide. But when sibling places in the same list clearly point to one region, use that regional context to place the ambiguous ones.
+
+Priority of signals (strongest first):
+1. The place name itself if it's unique or tied to a landmark ("Sagrada Familia")
+2. Sibling places in the same list — if most siblings are in Barcelona, an ambiguous "Joe's Pizza" in that list is very likely also in Barcelona
+3. The list name if it names a place ("Spain", "Tokyo Trip")
+4. Any hints in the URL slug
+
+Return "confidence": "low" and null city/country ONLY if the name is so generic AND the siblings give no regional signal. When siblings cluster in one region, treat that as strong evidence and use "medium" or "high".
+
+List name: ${cleanListName ? `"${cleanListName}"` : '(none)'}
+All places in this list (for regional context): ${allContextNames.map((n) => `"${n}"`).join(', ')}
+
+Places to identify:
+${placesBlock}
+
+Return ONLY valid JSON in this exact shape:
+{"results":[{"name":"<exact input name>","city":"<city or null>","country":"<country or null>","confidence":"high|medium|low"}]}`;
+
+    const message = await anthropic.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 800,
+      messages: [{ role: 'user', content: prompt }],
+    });
+
+    let text = message.content[0]?.type === 'text' ? message.content[0].text.trim() : '';
+    text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+
+    const parsed = JSON.parse(text);
+    const results = Array.isArray(parsed?.results) ? parsed.results : [];
+
+    // Normalize: ensure every input place has a corresponding result.
+    const byName = new Map(results.map((r) => [String(r?.name || '').trim(), r]));
+    const normalized = cleanPlaces.map((p) => {
+      const r = byName.get(p.name) || {};
+      const confidence = ['high', 'medium', 'low'].includes(r.confidence) ? r.confidence : 'low';
+      return {
+        name: p.name,
+        city: r.city || null,
+        country: r.country || null,
+        confidence,
+      };
+    });
+
+    const response = { results: normalized };
+    await setCache(cacheKey, response);
+    res.json(response);
+  } catch (error) {
+    console.error('AI infer-place-regions failed:', error.message);
+    res.json({
+      results: cleanPlaces.map((p) => ({ name: p.name, city: null, country: null, confidence: 'low' })),
+    });
+  }
+});
+
 // AI Vision: Extract place names from carousel slide images
 app.post('/ai/vision-extract', async (req, res) => {
   const { imageUrls } = req.body;
