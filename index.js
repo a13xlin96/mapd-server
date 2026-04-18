@@ -1,89 +1,14 @@
 const express = require('express');
 const cors = require('cors');
-const { spawn } = require('child_process');
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
-const Anthropic = require('@anthropic-ai/sdk').default;
-const { Redis } = require('@upstash/redis');
+const { anthropic } = require('./lib/anthropic');
+const { firestore } = require('./lib/firestore');
+const { getCached, setCache, normalizeUrlForCache } = require('./lib/cache');
+const { runYtDlp } = require('./lib/ytdlp');
+const { runEnrichment } = require('./enrich');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
-
-const TIMEOUT_MS = 30000;
-const CACHE_TTL_SECONDS = 60 * 60 * 24; // 24 hours
-
-const anthropic = new Anthropic();
-
-// --- Persistent Redis cache with in-memory fallback ---
-let redis = null;
-try {
-  if (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) {
-    redis = new Redis({
-      url: process.env.UPSTASH_REDIS_REST_URL,
-      token: process.env.UPSTASH_REDIS_REST_TOKEN,
-    });
-    console.log('Redis cache connected (Upstash)');
-  } else {
-    console.log('Redis not configured — using in-memory cache (not persistent across restarts)');
-  }
-} catch (err) {
-  console.warn('Redis init failed, using in-memory fallback:', err.message);
-}
-
-// In-memory fallback cache (used when Redis is unavailable)
-const memoryCache = new Map();
-
-async function getCached(key) {
-  // Try Redis first
-  if (redis) {
-    try {
-      const data = await redis.get(key);
-      if (data) return data;
-    } catch (err) {
-      console.warn('Redis get failed, falling back to memory:', err.message);
-    }
-  }
-  // Fallback to in-memory
-  const entry = memoryCache.get(key);
-  if (!entry) return null;
-  if (Date.now() - entry.timestamp > CACHE_TTL_SECONDS * 1000) {
-    memoryCache.delete(key);
-    return null;
-  }
-  return entry.data;
-}
-
-async function setCache(key, data) {
-  // Write to Redis
-  if (redis) {
-    try {
-      await redis.set(key, data, { ex: CACHE_TTL_SECONDS });
-    } catch (err) {
-      console.warn('Redis set failed, using memory only:', err.message);
-    }
-  }
-  // Always write to in-memory too (fast local reads)
-  if (memoryCache.size > 5000) {
-    const oldest = memoryCache.keys().next().value;
-    memoryCache.delete(oldest);
-  }
-  memoryCache.set(key, { data, timestamp: Date.now() });
-}
-
-/** Strip tracking params from a URL for cache key normalization */
-function normalizeUrlForCache(rawUrl) {
-  try {
-    const parsed = new URL(rawUrl);
-    for (const param of ['_r', '_t', '_d', '_svg', 'igsh', 'igshid', 'utm_source', 'utm_medium', 'utm_campaign', 'fbclid', 'ref', 'share_id', 'g_st', 'g_ep', 'entry', 'coh', 'skid']) {
-      parsed.searchParams.delete(param);
-    }
-    return parsed.origin + parsed.pathname.replace(/\/+$/, '') + (parsed.searchParams.toString() ? '?' + parsed.searchParams.toString() : '');
-  } catch {
-    return rawUrl;
-  }
-}
 
 // Health check
 app.get('/', (req, res) => {
@@ -643,181 +568,54 @@ app.post('/ai/vision-extract', async (req, res) => {
   }
 });
 
-function runYtDlp(url) {
-  return new Promise((resolve, reject) => {
-    // --dump-single-json outputs one JSON object for the whole post (including
-    // playlist-level caption for carousels) instead of one object per slide.
-    const proc = spawn('yt-dlp', ['--dump-single-json', '--no-download', url]);
+// Server-side enrichment. Client POSTs URL + jobId, receives 202 immediately,
+// processing continues async and writes results to enrichmentJobs/{jobId}.
+app.post('/enrich', async (req, res) => {
+  const { url, userId, captionText, jobId } = req.body || {};
 
-    let stdout = '';
-    let stderr = '';
+  if (!url || !userId || !jobId) {
+    return res.status(400).json({ error: 'url, userId, and jobId are required' });
+  }
+  if (!firestore) {
+    return res.status(503).json({ error: 'Firestore not configured on server' });
+  }
 
-    proc.stdout.on('data', (d) => { stdout += d.toString(); });
-    proc.stderr.on('data', (d) => { stderr += d.toString(); });
+  try {
+    const jobRef = firestore.collection('enrichmentJobs').doc(jobId);
+    const snap = await jobRef.get();
 
-    const timeout = setTimeout(() => {
-      proc.kill();
-      reject({ message: 'Extraction timed out', code: 'TIMEOUT' });
-    }, TIMEOUT_MS);
-
-    proc.on('close', (code) => {
-      clearTimeout(timeout);
-
-      if (code !== 0) {
-        const lower = stderr.toLowerCase();
-        if (lower.includes('private') || lower.includes('login required')) {
-          return reject({ message: 'This video is private.', code: 'PRIVATE' });
-        }
-        if (lower.includes('deleted') || lower.includes('not available')) {
-          return reject({ message: 'This video is unavailable.', code: 'DELETED' });
-        }
-        return reject({ message: `Extraction failed: ${stderr.slice(0, 200)}`, code: 'UNKNOWN' });
+    if (snap.exists) {
+      const existing = snap.data();
+      if (existing.status && existing.status !== 'processing') {
+        return res.status(200).json({ jobId, status: existing.status });
       }
+      // A processing job with same id — treat as idempotent retry
+      return res.status(202).json({ jobId, status: 'processing' });
+    }
 
-      try {
-        const json = JSON.parse(stdout);
-
-        // For carousels/playlists, the caption lives at the top level.
-        // Individual entries only have generic titles like "Video 2".
-        // Prefer top-level fields, fall back to first entry for thumbnails.
-        const firstEntry = json.entries?.[0];
-        const title = json.title || firstEntry?.title || '';
-        const description = json.description || firstEntry?.description || title;
-        const thumbnail = json.thumbnail
-          || json.thumbnails?.[0]?.url
-          || firstEntry?.thumbnail
-          || firstEntry?.thumbnails?.[0]?.url
-          || '';
-        const uploader = json.uploader || json.channel || json.creator
-          || firstEntry?.uploader || firstEntry?.channel || '';
-        const location = json.location || firstEntry?.location || null;
-
-        const hashtags = (description.match(/#[a-zA-Z][a-zA-Z0-9_]*/g) || [])
-          .map((t) => t.slice(1).toLowerCase());
-
-        // Collect slide thumbnails for carousels (for vision-based place extraction)
-        const entries = json.entries || [];
-        const slideThumbnails = entries
-          .map((e) => e.thumbnail || e.thumbnails?.[0]?.url || null)
-          .filter(Boolean)
-          .slice(0, 10); // Cap at 10 slides
-
-        // Try to extract subtitles/captions (non-blocking)
-        extractSubtitles(json.webpage_url || url).then((subtitles) => {
-          resolve({
-            title,
-            description,
-            thumbnail_url: thumbnail,
-            uploader,
-            hashtags: [...new Set(hashtags)],
-            webpage_url: json.webpage_url || url,
-            location,
-            is_carousel: entries.length > 1,
-            slide_count: entries.length,
-            slide_thumbnails: slideThumbnails,
-            subtitles,
-          });
-        }).catch(() => {
-          resolve({
-            title,
-            description,
-            thumbnail_url: thumbnail,
-            uploader,
-            hashtags: [...new Set(hashtags)],
-            webpage_url: json.webpage_url || url,
-            location,
-            is_carousel: entries.length > 1,
-            slide_count: entries.length,
-            slide_thumbnails: slideThumbnails,
-            subtitles: null,
-          });
-        });
-      } catch {
-        reject({ message: 'Failed to parse extraction output', code: 'UNKNOWN' });
-      }
-    });
-
-    proc.on('error', (err) => {
-      clearTimeout(timeout);
-      reject({ message: err.message, code: 'UNKNOWN' });
-    });
-  });
-}
-
-/** Extract subtitles/captions from a video URL via yt-dlp */
-function extractSubtitles(url) {
-  return new Promise((resolve) => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ytdlp-subs-'));
-    const outTemplate = path.join(tmpDir, 'subs');
-
-    const proc = spawn('yt-dlp', [
-      '--write-auto-subs',
-      '--write-subs',
-      '--sub-lang', 'en.*,eng.*',
-      '--sub-format', 'vtt/srt/best',
-      '--skip-download',
-      '-o', outTemplate,
+    await jobRef.set({
+      userId,
       url,
-    ]);
-
-    let stderr = '';
-    proc.stderr.on('data', (d) => { stderr += d.toString(); });
-
-    const timeout = setTimeout(() => {
-      proc.kill();
-      cleanup(tmpDir);
-      resolve(null);
-    }, 15000);
-
-    proc.on('close', (code) => {
-      clearTimeout(timeout);
-
-      // Find any subtitle file that was written
-      try {
-        const files = fs.readdirSync(tmpDir).filter((f) => f.endsWith('.vtt') || f.endsWith('.srt'));
-        if (files.length === 0) {
-          cleanup(tmpDir);
-          return resolve(null);
-        }
-
-        const subText = fs.readFileSync(path.join(tmpDir, files[0]), 'utf-8');
-        cleanup(tmpDir);
-
-        // Parse VTT/SRT: strip timestamps and formatting, keep just the text
-        const lines = subText.split('\n')
-          .filter((line) => {
-            // Skip VTT header, timestamps, empty lines, and position tags
-            if (line.startsWith('WEBVTT')) return false;
-            if (line.startsWith('Kind:') || line.startsWith('Language:')) return false;
-            if (/^\d{2}:\d{2}/.test(line)) return false;
-            if (/^\d+$/.test(line.trim())) return false;
-            if (line.trim() === '') return false;
-            return true;
-          })
-          .map((line) => line.replace(/<[^>]+>/g, '').trim()) // strip HTML tags
-          .filter(Boolean);
-
-        // Deduplicate consecutive identical lines (VTT often repeats)
-        const deduped = lines.filter((line, i) => i === 0 || line !== lines[i - 1]);
-        const transcript = deduped.join(' ').slice(0, 3000); // cap at 3000 chars
-
-        resolve(transcript || null);
-      } catch {
-        cleanup(tmpDir);
-        resolve(null);
-      }
+      status: 'processing',
+      createdAt: firestoreTs(),
+      updatedAt: firestoreTs(),
     });
 
-    proc.on('error', () => {
-      clearTimeout(timeout);
-      cleanup(tmpDir);
-      resolve(null);
+    // Fire-and-forget: the response returns immediately; the pipeline runs in the background
+    runEnrichment(jobId, url, userId, captionText || '').catch((err) => {
+      console.error(`runEnrichment unhandled error for ${jobId}:`, err);
     });
-  });
-}
 
-function cleanup(dir) {
-  try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+    return res.status(202).json({ jobId, status: 'processing' });
+  } catch (err) {
+    console.error('/enrich failed:', err);
+    return res.status(500).json({ error: err.message || 'Internal error' });
+  }
+});
+
+function firestoreTs() {
+  const admin = require('firebase-admin');
+  return admin.firestore.FieldValue.serverTimestamp();
 }
 
 const PORT = process.env.PORT || 3000;
