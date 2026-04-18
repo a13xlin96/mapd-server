@@ -572,6 +572,7 @@ app.post('/ai/vision-extract', async (req, res) => {
 // processing continues async and writes results to enrichmentJobs/{jobId}.
 app.post('/enrich', async (req, res) => {
   const { url, userId, captionText, jobId } = req.body || {};
+  console.log(`[/enrich] job=${jobId || '?'} user=${userId || '?'} url=${url || '?'}`);
 
   if (!url || !userId || !jobId) {
     return res.status(400).json({ error: 'url, userId, and jobId are required' });

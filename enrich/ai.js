@@ -10,6 +10,40 @@ function textOf(message) {
   return first && first.type === 'text' ? (first.text || '').trim() : '';
 }
 
+// Claude sometimes appends prose after the JSON it promised to return.
+// Pull out the first balanced {...} or [...] block and parse just that.
+function parseFirstJson(text) {
+  if (!text) return null;
+  const trimmed = text.trim();
+  if (trimmed === 'null') return null;
+
+  for (let i = 0; i < trimmed.length; i++) {
+    const ch = trimmed[i];
+    if (ch !== '{' && ch !== '[') continue;
+    const open = ch;
+    const close = ch === '{' ? '}' : ']';
+    let depth = 0;
+    let inStr = false;
+    let escape = false;
+    for (let j = i; j < trimmed.length; j++) {
+      const c = trimmed[j];
+      if (escape) { escape = false; continue; }
+      if (c === '\\') { escape = true; continue; }
+      if (c === '"') { inStr = !inStr; continue; }
+      if (inStr) continue;
+      if (c === open) depth++;
+      else if (c === close) {
+        depth--;
+        if (depth === 0) {
+          const slice = trimmed.slice(i, j + 1);
+          try { return JSON.parse(slice); } catch { return null; }
+        }
+      }
+    }
+  }
+  return null;
+}
+
 /** Extract place name from title/description caption when structured methods fail. */
 async function aiExtractPlace(ogData) {
   const title = ogData.title || '';
@@ -45,11 +79,7 @@ If the post does NOT mention any specific named place (just a generic "best pizz
     });
 
     const text = stripFences(textOf(message));
-    if (!text || text === 'null') {
-      await setCache(cacheKey, { place: null });
-      return null;
-    }
-    const parsed = JSON.parse(text);
+    const parsed = parseFirstJson(text);
     if (parsed && parsed.name) {
       await setCache(cacheKey, { place: parsed });
       return `${parsed.name} ${parsed.city || ''}`.trim();
@@ -77,12 +107,11 @@ async function aiVerifyPlace(ogData, placeName, placeAddress, placeTypes) {
     });
 
     const text = stripFences(textOf(message));
-    if (!text) return { match: true, betterQuery: null };
-
-    const parsed = JSON.parse(text);
+    const parsed = parseFirstJson(text);
+    if (!parsed) return { match: true, betterQuery: null };
     return {
-      match: parsed && parsed.match != null ? parsed.match : true,
-      betterQuery: (parsed && parsed.betterQuery) || null,
+      match: parsed.match != null ? parsed.match : true,
+      betterQuery: parsed.betterQuery || null,
     };
   } catch (err) {
     console.error('aiVerifyPlace failed:', err.message);
@@ -126,7 +155,7 @@ Return ONLY valid JSON: {"places": [{"name": "Place Name", "city": "City", "addr
     });
 
     const text = stripFences(textOf(message));
-    const parsed = JSON.parse(text);
+    const parsed = parseFirstJson(text);
     const result = {
       places: Array.isArray(parsed && parsed.places) ? parsed.places : [],
       count: (parsed && parsed.count) || 0,
