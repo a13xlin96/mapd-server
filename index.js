@@ -286,13 +286,13 @@ app.post('/ai/extract-places', async (req, res) => {
       title ? `Title: ${title}` : '',
       description ? `Caption: ${(description || '').slice(0, 1200)}` : '',
       uploader ? `Uploader: ${uploader}` : '',
-      subtitles ? `Video transcript/subtitles: ${(subtitles || '').slice(0, 1500)}` : '',
+      subtitles ? `Video transcript/subtitles: ${(subtitles || '').slice(0, 3000)}` : '',
       hashtags?.length ? `Hashtags: ${hashtags.join(', ')}` : '',
     ].filter(Boolean).join('\n');
 
     const message = await anthropic.messages.create({
       model: 'claude-haiku-4-5-20251001',
-      max_tokens: 400,
+      max_tokens: 1500,
       messages: [{
         role: 'user',
         content: `Extract ALL specific place names (restaurants, bars, cafes, shops, attractions, hotels) from this social media post.
