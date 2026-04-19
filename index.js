@@ -5,6 +5,7 @@ const { firestore, admin } = require('./lib/firestore');
 const { getCached, setCache, normalizeUrlForCache } = require('./lib/cache');
 const { runYtDlp } = require('./lib/ytdlp');
 const { runEnrichment } = require('./enrich');
+require('./lib/enrichmentSweeper'); // boots the orphan-job sweeper
 
 const app = express();
 app.use(cors());
