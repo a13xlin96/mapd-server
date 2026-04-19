@@ -18,6 +18,7 @@ const { calculateConfidence } = require('./enrich/confidence');
 const { mapToCategory } = require('./enrich/categories');
 const { searchGooglePlaces, getPlaceDetails, findPlaceFromUrl } = require('./enrich/places');
 const { aiExtractPlaces, aiExtractPlace, aiVerifyPlace } = require('./enrich/ai');
+const { sendPushForJob } = require('./lib/push');
 
 const ts = () => (admin && admin.firestore && admin.firestore.FieldValue.serverTimestamp());
 
@@ -330,6 +331,7 @@ async function runEnrichment(jobId, url, userId, captionText) {
     const existingByUrl = await findPinByUrl(userId, url);
     if (existingByUrl) {
       await updateJob(jobId, { status: 'duplicate', existingPinId: existingByUrl.id, completedAt: ts() });
+      await sendPushForJob(jobId, userId, 'duplicate', { placeName: existingByUrl.placeName, pinId: existingByUrl.id });
       return;
     }
 
@@ -339,6 +341,7 @@ async function runEnrichment(jobId, url, userId, captionText) {
       if (pin) {
         const pinId = await writePin(pin, { title: pin.placeName });
         await updateJob(jobId, { status: 'complete', pinId, completedAt: ts() });
+        await sendPushForJob(jobId, userId, 'complete', { placeName: pin.placeName, pinId });
         return;
       }
     }
@@ -347,12 +350,14 @@ async function runEnrichment(jobId, url, userId, captionText) {
     const ai = await runAIPipeline({ url, userId, captionText });
     if (ai.duplicate) {
       await updateJob(jobId, { status: 'duplicate', existingPinId: ai.duplicate.id, completedAt: ts() });
+      await sendPushForJob(jobId, userId, 'duplicate', { placeName: ai.duplicate.placeName, pinId: ai.duplicate.id });
       return;
     }
 
     if (ai.candidates.length === 1) {
       const pinId = await writePin(ai.candidates[0], ai.ogData);
       await updateJob(jobId, { status: 'complete', pinId, completedAt: ts() });
+      await sendPushForJob(jobId, userId, 'complete', { placeName: ai.candidates[0].placeName, pinId });
       return;
     }
 
@@ -364,6 +369,7 @@ async function runEnrichment(jobId, url, userId, captionText) {
         ogImage: (ai.ogData && ai.ogData.image) || '',
         completedAt: ts(),
       });
+      await sendPushForJob(jobId, userId, 'needs_selection');
       return;
     }
 
@@ -371,11 +377,13 @@ async function runEnrichment(jobId, url, userId, captionText) {
     const fallback = await runOGFallback({ url, userId, captionText, ogData: ai.ogData });
     if (fallback && fallback.duplicate) {
       await updateJob(jobId, { status: 'duplicate', existingPinId: fallback.duplicate.id, completedAt: ts() });
+      await sendPushForJob(jobId, userId, 'duplicate', { placeName: fallback.duplicate.placeName, pinId: fallback.duplicate.id });
       return;
     }
     if (fallback && fallback.pin) {
       const pinId = await writePin(fallback.pin, ai.ogData);
       await updateJob(jobId, { status: 'complete', pinId, completedAt: ts() });
+      await sendPushForJob(jobId, userId, 'complete', { placeName: fallback.pin.placeName, pinId });
       return;
     }
 
@@ -387,6 +395,7 @@ async function runEnrichment(jobId, url, userId, captionText) {
       ogImage: (ai.ogData && ai.ogData.image) || '',
       completedAt: ts(),
     });
+    await sendPushForJob(jobId, userId, 'failed');
   } catch (err) {
     console.error(`runEnrichment failed for job ${jobId}:`, err);
     try {
@@ -395,6 +404,7 @@ async function runEnrichment(jobId, url, userId, captionText) {
         error: String((err && err.message) || err).slice(0, 500),
         completedAt: ts(),
       });
+      await sendPushForJob(jobId, userId, 'failed');
     } catch (writeErr) {
       console.error('Also failed to write failure status:', writeErr.message);
     }

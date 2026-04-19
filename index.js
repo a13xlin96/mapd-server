@@ -1,7 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const { anthropic } = require('./lib/anthropic');
-const { firestore } = require('./lib/firestore');
+const { firestore, admin } = require('./lib/firestore');
 const { getCached, setCache, normalizeUrlForCache } = require('./lib/cache');
 const { runYtDlp } = require('./lib/ytdlp');
 const { runEnrichment } = require('./enrich');
@@ -568,14 +568,35 @@ app.post('/ai/vision-extract', async (req, res) => {
   }
 });
 
+// Verify a Firebase ID token on the Authorization header and attach the decoded
+// uid to req.authUid. Rejects with 401 on missing/invalid token.
+async function authenticateRequest(req, res, next) {
+  const authHeader = req.headers.authorization || '';
+  const match = authHeader.match(/^Bearer (.+)$/);
+  if (!match) {
+    return res.status(401).json({ error: 'Missing or invalid Authorization header' });
+  }
+  try {
+    const decoded = await admin.auth().verifyIdToken(match[1]);
+    req.authUid = decoded.uid;
+    return next();
+  } catch (err) {
+    console.warn('Auth verify failed:', err.message);
+    return res.status(401).json({ error: 'Invalid ID token' });
+  }
+}
+
 // Server-side enrichment. Client POSTs URL + jobId, receives 202 immediately,
 // processing continues async and writes results to enrichmentJobs/{jobId}.
-app.post('/enrich', async (req, res) => {
+app.post('/enrich', authenticateRequest, async (req, res) => {
   const { url, userId, captionText, jobId } = req.body || {};
   console.log(`[/enrich] job=${jobId || '?'} user=${userId || '?'} url=${url || '?'}`);
 
   if (!url || !userId || !jobId) {
     return res.status(400).json({ error: 'url, userId, and jobId are required' });
+  }
+  if (userId !== req.authUid) {
+    return res.status(403).json({ error: 'userId does not match authenticated user' });
   }
   if (!firestore) {
     return res.status(503).json({ error: 'Firestore not configured on server' });
