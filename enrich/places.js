@@ -222,6 +222,9 @@ async function getPlaceDetails(placeId) {
             },
           }))
         : null,
+      weekday_descriptions: (r.regularOpeningHours && Array.isArray(r.regularOpeningHours.weekdayDescriptions))
+        ? r.regularOpeningHours.weekdayDescriptions
+        : null,
       utc_offset_minutes: typeof r.utcOffsetMinutes === 'number' ? r.utcOffsetMinutes : null,
     };
 

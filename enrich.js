@@ -112,6 +112,7 @@ function buildPinFromDetails({ url, userId, ogData, details, topResult, category
     delivery: details ? details.delivery : null,
     reservable: details ? details.reservable : null,
     openingPeriods: (details && details.opening_periods) || null,
+    weekdayDescriptions: (details && details.weekday_descriptions) || null,
     utcOffsetMinutes: details && typeof details.utc_offset_minutes === 'number' ? details.utc_offset_minutes : null,
     website: (details && details.website) || null,
     phoneNumber: (details && details.formatted_phone_number) || null,
