@@ -259,9 +259,9 @@ async function runAIPipeline({ url, userId, captionText }) {
         hashtags: extracted.hashtags || [],
         subtitles: extracted.subtitles || '',
       });
-      visionPlaces = (vres.places || []).map((name) => ({
-        name,
-        city: '',
+      visionPlaces = (vres.places || []).map((p) => ({
+        name: p && typeof p === 'object' ? p.name : String(p || ''),
+        city: p && typeof p === 'object' ? (p.location || '') : '',
         address: '',
         source: 'vision',
       }));
