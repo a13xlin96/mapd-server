@@ -5,6 +5,7 @@ const { firestore, admin } = require('./lib/firestore');
 const { getCached, setCache, normalizeUrlForCache } = require('./lib/cache');
 const { runYtDlp } = require('./lib/ytdlp');
 const { fetchTikTokPhotoPost, isTikTokPhotoUrl } = require('./lib/tiktokPhoto');
+const { fetchInstagramCarouselPost, isInstagramPostUrl } = require('./lib/instagramCarousel');
 const { extractPlacesFromSlides } = require('./lib/vision');
 const { resolveOneRedirect, isShortSocialUrl } = require('./lib/urlResolve');
 const { runEnrichment } = require('./enrich');
@@ -250,6 +251,14 @@ app.post('/extract', async (req, res) => {
     if (isTikTokPhotoUrl(canonicalUrl)) {
       console.log('Using custom TikTok photo extractor for', canonicalUrl.slice(0, 80));
       data = await fetchTikTokPhotoPost(canonicalUrl);
+    } else if (isInstagramPostUrl(canonicalUrl)) {
+      console.log('Using custom Instagram embed extractor for', canonicalUrl.slice(0, 80));
+      try {
+        data = await fetchInstagramCarouselPost(canonicalUrl);
+      } catch (igErr) {
+        console.warn('IG embed extract failed, falling back to yt-dlp:', igErr.message);
+        data = await runYtDlp(url);
+      }
     } else {
       data = await runYtDlp(url);
     }

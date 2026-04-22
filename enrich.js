@@ -1,6 +1,7 @@
 const { admin, firestore } = require('./lib/firestore');
 const { runYtDlp } = require('./lib/ytdlp');
 const { fetchTikTokPhotoPost, isTikTokPhotoUrl } = require('./lib/tiktokPhoto');
+const { fetchInstagramCarouselPost, isInstagramPostUrl } = require('./lib/instagramCarousel');
 const { extractPlacesFromSlides } = require('./lib/vision');
 const { normalizePlaceName, dedupe, parseMentionedAccounts } = require('./lib/placeNameNormalize');
 const { resolveOneRedirect, isShortSocialUrl } = require('./lib/urlResolve');
@@ -202,6 +203,13 @@ async function runAIPipeline({ url, userId, captionText }) {
     try {
       if (isTikTokPhotoUrl(resolvedUrl)) {
         extracted = await fetchTikTokPhotoPost(resolvedUrl);
+      } else if (isInstagramPostUrl(resolvedUrl)) {
+        try {
+          extracted = await fetchInstagramCarouselPost(resolvedUrl);
+        } catch (igErr) {
+          console.warn('IG embed extract failed, falling back to yt-dlp:', igErr.message);
+          extracted = await runYtDlp(url);
+        }
       } else {
         extracted = await runYtDlp(url);
       }
