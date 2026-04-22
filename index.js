@@ -201,6 +201,36 @@ app.get('/invite/:token', (req, res) => {
 </html>`);
 });
 
+// TEMPORARY — remove after Phase 2a verification in plan
+// okay-now-let-s-focus-jazzy-castle. Validates Render can fetch TikTok
+// photo pages anonymously (IP-block risk check).
+app.get('/debug/tiktok-probe', async (req, res) => {
+  const probeUrl = req.query.url;
+  if (!probeUrl || typeof probeUrl !== 'string') {
+    return res.status(400).json({ error: 'url query param required' });
+  }
+  try {
+    const response = await fetch(probeUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
+        'Accept': 'text/html,application/xhtml+xml',
+      },
+      redirect: 'follow',
+    });
+    const body = await response.text();
+    const hasRehydrationPayload = body.includes('__UNIVERSAL_DATA_FOR_REHYDRATION__');
+    res.json({
+      status: response.status,
+      finalUrl: response.url,
+      bodyLength: body.length,
+      hasRehydrationPayload,
+      bodyPrefix: body.slice(0, 500),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message, code: err.code });
+  }
+});
+
 // Extract metadata from a social media link
 app.post('/extract', async (req, res) => {
   const { url } = req.body;
