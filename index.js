@@ -5,6 +5,8 @@ const { firestore, admin } = require('./lib/firestore');
 const { getCached, setCache, normalizeUrlForCache } = require('./lib/cache');
 const { runYtDlp } = require('./lib/ytdlp');
 const { fetchTikTokPhotoPost, isTikTokPhotoUrl } = require('./lib/tiktokPhoto');
+const { extractPlacesFromSlides } = require('./lib/vision');
+const { resolveOneRedirect, isShortSocialUrl } = require('./lib/urlResolve');
 const { runEnrichment } = require('./enrich');
 require('./lib/enrichmentSweeper'); // boots the orphan-job sweeper
 
@@ -220,26 +222,13 @@ app.post('/extract', async (req, res) => {
     return res.json(cached);
   }
 
-  // For short URLs, try resolving to canonical and check cache again.
-  // We also preserve the resolved URL so the extractor router below can
-  // decide between yt-dlp (videos) and the custom TikTok photo extractor.
+  // For short URLs, resolve canonical once. Lets us:
+  //   (a) route TikTok photo URLs to the custom extractor (yt-dlp can't handle /photo/)
+  //   (b) check cache by the canonical form for cross-share dedup
   let canonicalUrl = url;
-  if (url.includes('/t/') || url.includes('vm.tiktok') || url.includes('instagr.am')) {
+  if (isShortSocialUrl(url)) {
     try {
-      const resolved = await new Promise((resolve) => {
-        const mod = url.startsWith('https') ? require('https') : require('http');
-        const req = mod.request(url, { method: 'HEAD', timeout: 5000 }, (response) => {
-          // Follow redirects manually
-          if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
-            resolve(response.headers.location);
-          } else {
-            resolve(url);
-          }
-        });
-        req.on('error', () => resolve(url));
-        req.on('timeout', () => { req.destroy(); resolve(url); });
-        req.end();
-      });
+      const resolved = await resolveOneRedirect(url);
       if (resolved !== url) {
         canonicalUrl = resolved;
         const normalizedCanonical = normalizeUrlForCache(resolved);
@@ -549,82 +538,16 @@ Return ONLY valid JSON in this exact shape:
   }
 });
 
-// AI Vision: Extract place names from carousel slide images
+// AI Vision: Extract place names from carousel slide images.
+// Thin wrapper around lib/vision.js so the shared helper can be reused
+// by /enrich without duplicating cache/prompt logic.
 app.post('/ai/vision-extract', async (req, res) => {
   const { imageUrls, contentId, caption, hashtags, subtitles } = req.body;
-
   if (!imageUrls || !Array.isArray(imageUrls) || imageUrls.length === 0) {
     return res.status(400).json({ error: 'imageUrls array required' });
   }
-
-  // Prefer content-ID for cache key so shares of the same post dedupe across
-  // users (IG/TikTok CDN URLs carry rotating signed query params otherwise).
-  // Fall back to URL prefix when no contentId is provided.
-  const cacheKey = contentId
-    ? `ai:vision:${contentId}`
-    : `ai:vision:${imageUrls[0]?.slice(0, 60)}`;
-  const cached = await getCached(cacheKey);
-  if (cached) return res.json(cached);
-
-  try {
-    // Send up to 10 slides (Instagram carousel max, matches yt-dlp output).
-    const imageContent = imageUrls.slice(0, 10).map((url) => ({
-      type: 'image',
-      source: { type: 'url', url },
-    }));
-
-    const captionLine = caption ? `Caption: "${String(caption).slice(0, 600)}"` : 'Caption: (none)';
-    const hashtagLine = Array.isArray(hashtags) && hashtags.length
-      ? `Hashtags: ${hashtags.slice(0, 20).map((h) => '#' + h).join(' ')}`
-      : 'Hashtags: (none)';
-    const subtitleLine = subtitles
-      ? `Transcript: "${String(subtitles).slice(0, 1000)}"`
-      : 'Transcript: (none)';
-
-    const promptText = [
-      'These are slides from a social media carousel post. Text context from the post is below; use it together with the images.',
-      '',
-      captionLine,
-      hashtagLine,
-      subtitleLine,
-      '',
-      'Read any place names, restaurant names, bar names, cafe names, or specific venues that appear as text overlays on the images OR are clearly referenced by the caption / hashtags / transcript. Use the text context to disambiguate overlays (e.g. "JUNO" plus coffee cues = Juno Cafe).',
-      '',
-      'Do NOT return bare city, country, or region names ("Tokyo", "Italy", "NYC") — only specific venues.',
-      'Ignore navigational text ("SWIPE", arrows), user handles that are not clearly venue accounts, and generic hashtags.',
-      '',
-      'Return ONLY valid JSON: {"places": ["Place Name 1", "Place Name 2"]} or {"places": []} if none are visible.',
-    ].join('\n');
-
-    const message = await anthropic.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 400,
-      messages: [{
-        role: 'user',
-        content: [
-          ...imageContent,
-          { type: 'text', text: promptText },
-        ],
-      }],
-    });
-
-    let text = message.content[0]?.type === 'text' ? message.content[0].text.trim() : '';
-    text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
-
-    if (!text || text === 'null') {
-      const result = { places: [] };
-      await setCache(cacheKey, result);
-      return res.json(result);
-    }
-
-    const parsed = JSON.parse(text);
-    const result = { places: parsed?.places || [] };
-    await setCache(cacheKey, result);
-    res.json(result);
-  } catch (error) {
-    console.error('AI vision-extract failed:', error.message);
-    res.json({ places: [] });
-  }
+  const result = await extractPlacesFromSlides({ imageUrls, contentId, caption, hashtags, subtitles });
+  res.json(result);
 });
 
 // Verify a Firebase ID token on the Authorization header and attach the decoded

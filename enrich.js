@@ -1,5 +1,9 @@
 const { admin, firestore } = require('./lib/firestore');
 const { runYtDlp } = require('./lib/ytdlp');
+const { fetchTikTokPhotoPost, isTikTokPhotoUrl } = require('./lib/tiktokPhoto');
+const { extractPlacesFromSlides } = require('./lib/vision');
+const { normalizePlaceName, dedupe, parseMentionedAccounts } = require('./lib/placeNameNormalize');
+const { resolveOneRedirect, isShortSocialUrl } = require('./lib/urlResolve');
 const { decodeHtmlEntities, cleanSocialText } = require('./enrich/utils');
 const { extractDomain, determineSourceApp, extractContentId, normalizeUrl } = require('./enrich/urlUtils');
 const {
@@ -183,12 +187,25 @@ async function handleGoogleMapsUrl(url, userId) {
 async function runAIPipeline({ url, userId, captionText }) {
   const isSocial = url.includes('instagram.com') || url.includes('tiktok.com');
 
+  // Resolve social short URLs once so the TikTok-photo router below can see
+  // the canonical /photo/ path. Without this, /t/ short URLs slip past the
+  // isTikTokPhotoUrl() check and fall through to runYtDlp, which doesn't
+  // support TikTok photo posts.
+  let resolvedUrl = url;
+  if (isSocial && isShortSocialUrl(url)) {
+    try { resolvedUrl = await resolveOneRedirect(url); } catch {}
+  }
+
   let extracted = null;
   if (isSocial) {
     try {
-      extracted = await runYtDlp(url);
+      if (isTikTokPhotoUrl(resolvedUrl)) {
+        extracted = await fetchTikTokPhotoPost(resolvedUrl);
+      } else {
+        extracted = await runYtDlp(url);
+      }
     } catch (err) {
-      console.warn('yt-dlp failed, falling back to OG scraping:', err.message);
+      console.warn('social extraction failed, falling back to OG scraping:', err.message);
     }
   }
 
@@ -204,25 +221,66 @@ async function runAIPipeline({ url, userId, captionText }) {
   if (!extracted && captionText) ogData.description = `${ogData.description}\n${captionText}`.trim();
 
   // Content-ID dedup (after extract, when webpage_url is canonical)
-  const canonicalUrl = (extracted && extracted.webpage_url) || url;
+  const canonicalUrl = (extracted && extracted.webpage_url) || resolvedUrl;
   const contentId = extractContentId(canonicalUrl);
   if (contentId) {
     const dup = await findPinByContentId(userId, contentId);
     if (dup) return { duplicate: dup, candidates: [] };
   }
 
-  // AI extract places (multi)
+  // Parse @mentions from the caption and feed them into the AI prompt so
+  // thin-caption photo carousels have a chance of hitting a venue handle.
+  // The helper filters out obvious personal/creator handles upstream.
+  const mentionedAccounts = parseMentionedAccounts(ogData.description || '');
+
+  // AI extract places (multi) — text signals only
   const aiResult = await aiExtractPlaces({
     title: ogData.title,
     description: ogData.description,
     hashtags: extracted && extracted.hashtags,
     uploader: extracted && extracted.uploader,
     subtitles: extracted && extracted.subtitles,
+    mentionedAccounts,
+    collaborators: [], // yt-dlp doesn't currently surface IG Collab coauthors
   });
 
+  // Vision pass for photo carousels. Fires whenever we have 2+ slide
+  // images, not only when text AI returned empty — "10 best bars" listicle
+  // carousels name one venue in caption and more on later slides. Vision
+  // failure is swallowed so text-AI candidates still land as pins.
+  const textPlaces = (aiResult && Array.isArray(aiResult.places)) ? aiResult.places : [];
+  let visionPlaces = [];
+  if (extracted && extracted.is_carousel && Array.isArray(extracted.slide_thumbnails) && extracted.slide_thumbnails.length >= 2) {
+    try {
+      const vres = await extractPlacesFromSlides({
+        imageUrls: extracted.slide_thumbnails,
+        contentId,
+        caption: extracted.description || '',
+        hashtags: extracted.hashtags || [],
+        subtitles: extracted.subtitles || '',
+      });
+      visionPlaces = (vres.places || []).map((name) => ({
+        name,
+        city: '',
+        address: '',
+        source: 'vision',
+      }));
+    } catch (err) {
+      console.warn('vision extractPlacesFromSlides failed, continuing with text AI only:', err.message);
+      visionPlaces = [];
+    }
+  }
+
+  // Merge text + vision candidates, dedup by normalized name (so
+  // "Café Nowhere" and "cafe nowhere" don't double-pin).
+  const allCandidates = dedupe(
+    [...textPlaces, ...visionPlaces],
+    (p) => normalizePlaceName(p.name),
+  );
+
   const candidates = [];
-  if (aiResult && Array.isArray(aiResult.places) && aiResult.places.length > 0) {
-    for (const p of aiResult.places) {
+  if (allCandidates.length > 0) {
+    for (const p of allCandidates) {
       const query = [p.name, p.address, p.city].filter(Boolean).join(' ');
       if (!query || query.trim().length < 3) continue;
       const results = await searchGooglePlaces(query);

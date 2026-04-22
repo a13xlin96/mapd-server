@@ -119,19 +119,45 @@ async function aiVerifyPlace(ogData, placeName, placeAddress, placeTypes) {
   }
 }
 
-/** Extract ALL places from a social post; returns [{name, city, address}, ...]. */
-async function aiExtractPlaces({ title, description, hashtags, uploader, subtitles }) {
-  const cacheKey = `ai:places:${(title || '').slice(0, 50)}:${(description || '').slice(0, 50)}:${(subtitles || '').slice(0, 30)}`;
+/** Extract ALL places from a social post; returns [{name, city, address, source?}, ...].
+ *  Accepts optional mentionedAccounts (caption @handles already filtered by the caller)
+ *  and collaborators (IG Collab co-authors, when available) to give the model more
+ *  signal on thin captions. Cache key includes the mentions list because it influences
+ *  the answer — otherwise a stale cache hit returns mention-unaware results. */
+async function aiExtractPlaces({
+  title,
+  description,
+  hashtags,
+  uploader,
+  subtitles,
+  mentionedAccounts,
+  collaborators,
+}) {
+  const mentionsKey = Array.isArray(mentionedAccounts) ? mentionedAccounts.slice(0, 5).join(',') : '';
+  const cacheKey = `ai:places:${(title || '').slice(0, 50)}:${(description || '').slice(0, 50)}:${(subtitles || '').slice(0, 30)}:${mentionsKey.slice(0, 50)}`;
   const cached = await getCached(cacheKey);
   if (cached) return cached;
 
   try {
+    const mentionLines = [];
+    if (Array.isArray(mentionedAccounts) && mentionedAccounts.length) {
+      mentionLines.push(
+        `Mentioned accounts (may or may not be venues): ${mentionedAccounts.slice(0, 5).map((h) => '@' + h).join(' ')}`,
+      );
+    }
+    if (Array.isArray(collaborators) && collaborators.length) {
+      mentionLines.push(
+        `Collaborators / co-authors: ${collaborators.slice(0, 3).map((h) => '@' + h).join(' ')}`,
+      );
+    }
+
     const context = [
       title ? `Title: ${title}` : '',
       description ? `Caption: ${(description || '').slice(0, 1200)}` : '',
       uploader ? `Uploader: ${uploader}` : '',
       subtitles ? `Video transcript/subtitles: ${(subtitles || '').slice(0, 3000)}` : '',
       hashtags && hashtags.length ? `Hashtags: ${hashtags.join(', ')}` : '',
+      ...mentionLines,
     ].filter(Boolean).join('\n');
 
     const message = await anthropic.messages.create({
@@ -147,10 +173,11 @@ Rules:
 - If a full address is given, include it
 - If there are multiple places, return all of them
 - If NO specific named place is found, return an empty list
+- For each place, record which signal it came from: "caption", "hashtag", "transcript", or "handle" (a venue-looking @mention or collaborator). When uncertain about a handle being a venue, OMIT it — do not guess.
 
 ${context}
 
-Return ONLY valid JSON: {"places": [{"name": "Place Name", "city": "City", "address": "full address if given, otherwise empty string"}], "count": N}`,
+Return ONLY valid JSON: {"places": [{"name": "Place Name", "city": "City", "address": "full address if given, otherwise empty string", "source": "caption" | "hashtag" | "transcript" | "handle"}], "count": N}`,
       }],
     });
 
