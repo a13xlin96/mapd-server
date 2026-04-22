@@ -4,6 +4,7 @@ const { anthropic } = require('./lib/anthropic');
 const { firestore, admin } = require('./lib/firestore');
 const { getCached, setCache, normalizeUrlForCache } = require('./lib/cache');
 const { runYtDlp } = require('./lib/ytdlp');
+const { fetchTikTokPhotoPost, isTikTokPhotoUrl } = require('./lib/tiktokPhoto');
 const { runEnrichment } = require('./enrich');
 require('./lib/enrichmentSweeper'); // boots the orphan-job sweeper
 
@@ -201,36 +202,6 @@ app.get('/invite/:token', (req, res) => {
 </html>`);
 });
 
-// TEMPORARY — remove after Phase 2a verification in plan
-// okay-now-let-s-focus-jazzy-castle. Validates Render can fetch TikTok
-// photo pages anonymously (IP-block risk check).
-app.get('/debug/tiktok-probe', async (req, res) => {
-  const probeUrl = req.query.url;
-  if (!probeUrl || typeof probeUrl !== 'string') {
-    return res.status(400).json({ error: 'url query param required' });
-  }
-  try {
-    const response = await fetch(probeUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
-        'Accept': 'text/html,application/xhtml+xml',
-      },
-      redirect: 'follow',
-    });
-    const body = await response.text();
-    const hasRehydrationPayload = body.includes('__UNIVERSAL_DATA_FOR_REHYDRATION__');
-    res.json({
-      status: response.status,
-      finalUrl: response.url,
-      bodyLength: body.length,
-      hasRehydrationPayload,
-      bodyPrefix: body.slice(0, 500),
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message, code: err.code });
-  }
-});
-
 // Extract metadata from a social media link
 app.post('/extract', async (req, res) => {
   const { url } = req.body;
@@ -249,7 +220,10 @@ app.post('/extract', async (req, res) => {
     return res.json(cached);
   }
 
-  // For short URLs, try resolving to canonical and check cache again
+  // For short URLs, try resolving to canonical and check cache again.
+  // We also preserve the resolved URL so the extractor router below can
+  // decide between yt-dlp (videos) and the custom TikTok photo extractor.
+  let canonicalUrl = url;
   if (url.includes('/t/') || url.includes('vm.tiktok') || url.includes('instagr.am')) {
     try {
       const resolved = await new Promise((resolve) => {
@@ -267,6 +241,7 @@ app.post('/extract', async (req, res) => {
         req.end();
       });
       if (resolved !== url) {
+        canonicalUrl = resolved;
         const normalizedCanonical = normalizeUrlForCache(resolved);
         const cachedCanonical = await getCached(normalizedCanonical);
         if (cachedCanonical) {
@@ -282,7 +257,13 @@ app.post('/extract', async (req, res) => {
   console.log('Extracting:', url);
 
   try {
-    const data = await runYtDlp(url);
+    let data;
+    if (isTikTokPhotoUrl(canonicalUrl)) {
+      console.log('Using custom TikTok photo extractor for', canonicalUrl.slice(0, 80));
+      data = await fetchTikTokPhotoPost(canonicalUrl);
+    } else {
+      data = await runYtDlp(url);
+    }
     console.log('Extracted:', data.title?.slice(0, 60));
     // Cache by normalized URL and normalized canonical URL
     await setCache(normalizedUrl, data);
@@ -301,24 +282,46 @@ app.post('/extract', async (req, res) => {
 
 // AI: Extract ALL places from a social media post (single consolidated call)
 app.post('/ai/extract-places', async (req, res) => {
-  const { title, description, hashtags, uploader, subtitles } = req.body;
+  const {
+    title,
+    description,
+    hashtags,
+    uploader,
+    subtitles,
+    mentionedAccounts,
+    collaborators,
+  } = req.body;
 
   if (!title && !description && !subtitles) {
     return res.status(400).json({ error: 'title, description, or subtitles required' });
   }
 
-  // Cache by caption + subtitle content
-  const cacheKey = `ai:places:${(title || '').slice(0, 50)}:${(description || '').slice(0, 50)}:${(subtitles || '').slice(0, 30)}`;
+  // Cache by caption + subtitle + mentions content (mentions change the answer)
+  const mentionsKey = Array.isArray(mentionedAccounts) ? mentionedAccounts.slice(0, 5).join(',') : '';
+  const cacheKey = `ai:places:${(title || '').slice(0, 50)}:${(description || '').slice(0, 50)}:${(subtitles || '').slice(0, 30)}:${mentionsKey.slice(0, 50)}`;
   const cached = await getCached(cacheKey);
   if (cached) return res.json(cached);
 
   try {
+    const mentionLines = [];
+    if (Array.isArray(mentionedAccounts) && mentionedAccounts.length) {
+      mentionLines.push(
+        `Mentioned accounts (may or may not be venues): ${mentionedAccounts.slice(0, 5).map((h) => '@' + h).join(' ')}`,
+      );
+    }
+    if (Array.isArray(collaborators) && collaborators.length) {
+      mentionLines.push(
+        `Collaborators / co-authors: ${collaborators.slice(0, 3).map((h) => '@' + h).join(' ')}`,
+      );
+    }
+
     const context = [
       title ? `Title: ${title}` : '',
       description ? `Caption: ${(description || '').slice(0, 1200)}` : '',
       uploader ? `Uploader: ${uploader}` : '',
       subtitles ? `Video transcript/subtitles: ${(subtitles || '').slice(0, 3000)}` : '',
       hashtags?.length ? `Hashtags: ${hashtags.join(', ')}` : '',
+      ...mentionLines,
     ].filter(Boolean).join('\n');
 
     const message = await anthropic.messages.create({
@@ -334,10 +337,11 @@ Rules:
 - If a full address is given, include it
 - If there are multiple places, return all of them
 - If NO specific named place is found, return an empty list
+- For each place, record which signal it came from: "caption", "hashtag", "transcript", or "handle" (a venue-looking @mention or collaborator). When uncertain about a handle being a venue, OMIT it — do not guess.
 
 ${context}
 
-Return ONLY valid JSON: {"places": [{"name": "Place Name", "city": "City", "address": "full address if given, otherwise empty string"}], "count": N}`,
+Return ONLY valid JSON: {"places": [{"name": "Place Name", "city": "City", "address": "full address if given, otherwise empty string", "source": "caption" | "hashtag" | "transcript" | "handle"}], "count": N}`,
       }],
     });
 
@@ -547,35 +551,59 @@ Return ONLY valid JSON in this exact shape:
 
 // AI Vision: Extract place names from carousel slide images
 app.post('/ai/vision-extract', async (req, res) => {
-  const { imageUrls } = req.body;
+  const { imageUrls, contentId, caption, hashtags, subtitles } = req.body;
 
   if (!imageUrls || !Array.isArray(imageUrls) || imageUrls.length === 0) {
     return res.status(400).json({ error: 'imageUrls array required' });
   }
 
-  // Cache by first image URL
-  const cacheKey = `ai:vision:${imageUrls[0]?.slice(0, 60)}`;
+  // Prefer content-ID for cache key so shares of the same post dedupe across
+  // users (IG/TikTok CDN URLs carry rotating signed query params otherwise).
+  // Fall back to URL prefix when no contentId is provided.
+  const cacheKey = contentId
+    ? `ai:vision:${contentId}`
+    : `ai:vision:${imageUrls[0]?.slice(0, 60)}`;
   const cached = await getCached(cacheKey);
   if (cached) return res.json(cached);
 
   try {
-    // Send up to 5 slide images to Claude vision
-    const imageContent = imageUrls.slice(0, 5).map((url) => ({
+    // Send up to 10 slides (Instagram carousel max, matches yt-dlp output).
+    const imageContent = imageUrls.slice(0, 10).map((url) => ({
       type: 'image',
       source: { type: 'url', url },
     }));
 
+    const captionLine = caption ? `Caption: "${String(caption).slice(0, 600)}"` : 'Caption: (none)';
+    const hashtagLine = Array.isArray(hashtags) && hashtags.length
+      ? `Hashtags: ${hashtags.slice(0, 20).map((h) => '#' + h).join(' ')}`
+      : 'Hashtags: (none)';
+    const subtitleLine = subtitles
+      ? `Transcript: "${String(subtitles).slice(0, 1000)}"`
+      : 'Transcript: (none)';
+
+    const promptText = [
+      'These are slides from a social media carousel post. Text context from the post is below; use it together with the images.',
+      '',
+      captionLine,
+      hashtagLine,
+      subtitleLine,
+      '',
+      'Read any place names, restaurant names, bar names, cafe names, or specific venues that appear as text overlays on the images OR are clearly referenced by the caption / hashtags / transcript. Use the text context to disambiguate overlays (e.g. "JUNO" plus coffee cues = Juno Cafe).',
+      '',
+      'Do NOT return bare city, country, or region names ("Tokyo", "Italy", "NYC") — only specific venues.',
+      'Ignore navigational text ("SWIPE", arrows), user handles that are not clearly venue accounts, and generic hashtags.',
+      '',
+      'Return ONLY valid JSON: {"places": ["Place Name 1", "Place Name 2"]} or {"places": []} if none are visible.',
+    ].join('\n');
+
     const message = await anthropic.messages.create({
       model: 'claude-haiku-4-5-20251001',
-      max_tokens: 200,
+      max_tokens: 400,
       messages: [{
         role: 'user',
         content: [
           ...imageContent,
-          {
-            type: 'text',
-            text: 'These are slides from a social media carousel post about places to visit. Read any place names, restaurant names, bar names, cafe names, or location names that appear as text overlays in the images. Return ONLY valid JSON: {"places": ["Place Name 1", "Place Name 2"]} or {"places": []} if no place names are visible.',
-          },
+          { type: 'text', text: promptText },
         ],
       }],
     });
