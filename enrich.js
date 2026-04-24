@@ -131,26 +131,6 @@ function buildPinFromDetails({ url, userId, ogData, details, topResult, category
   };
 }
 
-async function writePin(pin, ogData) {
-  if (!firestore) return null;
-  const source = {
-    url: pin.url,
-    ogTitle: pin.ogTitle,
-    ogImage: pin.ogImage,
-    sourceApp: pin.sourceApp,
-    sourceDomain: pin.sourceDomain,
-    addedAt: new Date(),
-  };
-  const doc = {
-    ...pin,
-    sources: [source],
-    createdAt: ts(),
-    updatedAt: ts(),
-  };
-  const ref = await firestore.collection('pins').add(doc);
-  return ref.id;
-}
-
 // Transactional pin write — re-checks placeId, raw URL, and normalized URL
 // dedup INSIDE the txn so two concurrent jobs (different jobIds, same place)
 // can't both pass the pre-AI dedup check and write two pins. Mirrors the
