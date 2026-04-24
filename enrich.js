@@ -151,6 +151,61 @@ async function writePin(pin, ogData) {
   return ref.id;
 }
 
+// Transactional pin write — re-checks placeId, raw URL, and normalized URL
+// dedup INSIDE the txn so two concurrent jobs (different jobIds, same place)
+// can't both pass the pre-AI dedup check and write two pins. Mirrors the
+// fallback list of findPinByUrl (raw → normalized) for symmetry.
+// Returns { pinId, alreadyExists }. Caller must surface 'duplicate' status
+// when alreadyExists is true.
+async function writePinTransactional(pin, _ogData) {
+  if (!firestore) return null;
+  const source = {
+    url: pin.url,
+    ogTitle: pin.ogTitle,
+    ogImage: pin.ogImage,
+    sourceApp: pin.sourceApp,
+    sourceDomain: pin.sourceDomain,
+    addedAt: new Date(),
+  };
+  const normalizedUrl = normalizeUrl(pin.url);
+  return await firestore.runTransaction(async (txn) => {
+    if (pin.placeId) {
+      const placeSnap = await txn.get(
+        firestore.collection('pins')
+          .where('userId', '==', pin.userId)
+          .where('placeId', '==', pin.placeId)
+          .limit(1)
+      );
+      if (!placeSnap.empty) {
+        return { pinId: placeSnap.docs[0].id, alreadyExists: true };
+      }
+    }
+    const rawUrlSnap = await txn.get(
+      firestore.collection('pins')
+        .where('userId', '==', pin.userId)
+        .where('url', '==', pin.url)
+        .limit(1)
+    );
+    if (!rawUrlSnap.empty) {
+      return { pinId: rawUrlSnap.docs[0].id, alreadyExists: true };
+    }
+    if (normalizedUrl !== pin.url) {
+      const normSnap = await txn.get(
+        firestore.collection('pins')
+          .where('userId', '==', pin.userId)
+          .where('url', '==', normalizedUrl)
+          .limit(1)
+      );
+      if (!normSnap.empty) {
+        return { pinId: normSnap.docs[0].id, alreadyExists: true };
+      }
+    }
+    const ref = firestore.collection('pins').doc();
+    txn.set(ref, { ...pin, sources: [source], createdAt: ts(), updatedAt: ts() });
+    return { pinId: ref.id, alreadyExists: false };
+  });
+}
+
 /** Google Maps URL: parse → Places search → single pin. */
 async function handleGoogleMapsUrl(url, userId) {
   let resolved = url;
@@ -406,9 +461,14 @@ async function runEnrichment(jobId, url, userId, captionText) {
     if (isGoogleMapsUrl(url)) {
       const pin = await handleGoogleMapsUrl(url, userId);
       if (pin) {
-        const pinId = await writePin(pin, { title: pin.placeName });
-        await updateJob(jobId, { status: 'complete', pinId, completedAt: ts() });
-        await sendPushForJob(jobId, userId, 'complete', { placeName: pin.placeName, pinId });
+        const result = await writePinTransactional(pin, { title: pin.placeName });
+        if (result.alreadyExists) {
+          await updateJob(jobId, { status: 'duplicate', existingPinId: result.pinId, completedAt: ts() });
+          await sendPushForJob(jobId, userId, 'duplicate', { placeName: pin.placeName, pinId: result.pinId });
+        } else {
+          await updateJob(jobId, { status: 'complete', pinId: result.pinId, completedAt: ts() });
+          await sendPushForJob(jobId, userId, 'complete', { placeName: pin.placeName, pinId: result.pinId });
+        }
         return;
       }
     }
@@ -422,9 +482,14 @@ async function runEnrichment(jobId, url, userId, captionText) {
     }
 
     if (ai.candidates.length === 1) {
-      const pinId = await writePin(ai.candidates[0], ai.ogData);
-      await updateJob(jobId, { status: 'complete', pinId, completedAt: ts() });
-      await sendPushForJob(jobId, userId, 'complete', { placeName: ai.candidates[0].placeName, pinId });
+      const result = await writePinTransactional(ai.candidates[0], ai.ogData);
+      if (result.alreadyExists) {
+        await updateJob(jobId, { status: 'duplicate', existingPinId: result.pinId, completedAt: ts() });
+        await sendPushForJob(jobId, userId, 'duplicate', { placeName: ai.candidates[0].placeName, pinId: result.pinId });
+      } else {
+        await updateJob(jobId, { status: 'complete', pinId: result.pinId, completedAt: ts() });
+        await sendPushForJob(jobId, userId, 'complete', { placeName: ai.candidates[0].placeName, pinId: result.pinId });
+      }
       return;
     }
 
@@ -448,9 +513,14 @@ async function runEnrichment(jobId, url, userId, captionText) {
       return;
     }
     if (fallback && fallback.pin) {
-      const pinId = await writePin(fallback.pin, ai.ogData);
-      await updateJob(jobId, { status: 'complete', pinId, completedAt: ts() });
-      await sendPushForJob(jobId, userId, 'complete', { placeName: fallback.pin.placeName, pinId });
+      const result = await writePinTransactional(fallback.pin, ai.ogData);
+      if (result.alreadyExists) {
+        await updateJob(jobId, { status: 'duplicate', existingPinId: result.pinId, completedAt: ts() });
+        await sendPushForJob(jobId, userId, 'duplicate', { placeName: fallback.pin.placeName, pinId: result.pinId });
+      } else {
+        await updateJob(jobId, { status: 'complete', pinId: result.pinId, completedAt: ts() });
+        await sendPushForJob(jobId, userId, 'complete', { placeName: fallback.pin.placeName, pinId: result.pinId });
+      }
       return;
     }
 
