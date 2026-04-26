@@ -2,6 +2,7 @@ const { admin, firestore } = require('./lib/firestore');
 const { runYtDlp } = require('./lib/ytdlp');
 const { fetchTikTokPhotoPost, isTikTokPhotoUrl } = require('./lib/tiktokPhoto');
 const { fetchInstagramCarouselPost, isInstagramPostUrl } = require('./lib/instagramCarousel');
+const { fetchInstagramReelPost, isInstagramReelUrl } = require('./lib/instagramReel');
 const { extractPlacesFromSlides } = require('./lib/vision');
 const { normalizePlaceName, dedupe, parseMentionedAccounts } = require('./lib/placeNameNormalize');
 const { resolveOneRedirect, isShortSocialUrl } = require('./lib/urlResolve');
@@ -243,6 +244,17 @@ async function runAIPipeline({ url, userId, captionText }) {
           extracted = await fetchInstagramCarouselPost(resolvedUrl);
         } catch (igErr) {
           console.warn('IG embed extract failed, falling back to yt-dlp:', igErr.message);
+          extracted = await runYtDlp(url);
+        }
+      } else if (isInstagramReelUrl(resolvedUrl)) {
+        // Reels go through OG-scrape of the canonical page first — Instagram
+        // blocks yt-dlp on Render's IP for /reel/, but the canonical reel
+        // page itself returns og:description with the caption from any IP.
+        // Falls back to yt-dlp only if OG scrape fails (login wall, format drift).
+        try {
+          extracted = await fetchInstagramReelPost(resolvedUrl);
+        } catch (reelErr) {
+          console.warn('IG reel OG extract failed, falling back to yt-dlp:', reelErr.message);
           extracted = await runYtDlp(url);
         }
       } else {
