@@ -292,6 +292,29 @@ describe('runBackfill', () => {
     expect(writes).toHaveLength(1); // still just the one write from the first pass
   });
 
+  it('skips and reports malformed listId values without crashing the run (Codex round-3 fix)', async () => {
+    const seedPins = [
+      {
+        id: 'pinA',
+        userId: 'alice',
+        listIds: ['L1', '', 'has/slash', null, 42], // 4 of 5 are invalid
+        createdAt: { toMillis: () => 1700000000000 },
+      },
+    ];
+    const { firestoreMock, writes } = buildFirestoreMock(seedPins);
+    const { runBackfill } = loadAdminWith(firestoreMock);
+    const stats = await runBackfill();
+
+    expect(stats.membersWritten).toBe(1); // only L1 produced a write
+    expect(stats.invalidListRefs).toEqual([
+      { pinId: 'pinA', listId: '' },
+      { pinId: 'pinA', listId: 'has/slash' },
+      { pinId: 'pinA', listId: null },
+      { pinId: 'pinA', listId: 42 },
+    ]);
+    expect(writes).toHaveLength(1);
+  });
+
   it('skips writes for stale listId references and surfaces them in stats.staleListRefs (Codex round-2 fix)', async () => {
     const seedPins = [
       {
