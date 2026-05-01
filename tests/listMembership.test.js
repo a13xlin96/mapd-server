@@ -53,12 +53,24 @@ function buildFirestoreMock(seed = {}) {
           delete: (ref) => txnOps.push({ type: 'delete', path: ref._path }),
         };
         const result = await fn(txn);
-        // "Commit" by applying ops to the in-memory store.
+        // "Commit" — apply ops with Firestore-faithful semantics so tests
+        // catch races the lenient mock would have hidden:
+        //   - txn.update against a missing doc THROWS (matches prod, where
+        //     a doc deleted between read and commit fails the transaction)
+        //   - txn.set against a missing doc CREATES it (matches prod)
+        //   - txn.delete against a missing doc is a no-op (matches prod)
         for (const op of txnOps) {
           ops.push(op);
-          if (op.type === 'delete') store.delete(op.path);
-          else if (op.type === 'set') store.set(op.path, op.data);
-          else if (op.type === 'update') {
+          if (op.type === 'delete') {
+            store.delete(op.path);
+          } else if (op.type === 'set') {
+            store.set(op.path, op.data);
+          } else if (op.type === 'update') {
+            if (!store.has(op.path)) {
+              throw new Error(
+                `runTransaction: cannot update non-existent document ${op.path}`,
+              );
+            }
             store.set(op.path, { ...(store.get(op.path) || {}), ...op.data });
           }
         }
@@ -355,6 +367,126 @@ describe('POST /lists/:listId/members/:pinId/remove', () => {
       expect(res.status).toBe(404);
       expect(res.body.error).toMatch(/List not found/);
       expect(ops).toHaveLength(0);
+    });
+  });
+
+  describe('membership-integrity trust boundary (Codex round-1 fix)', () => {
+    // The endpoint authenticates the caller against the LIST, then trusts
+    // the URL's pinId + member-doc existence. If a stale member doc exists
+    // (e.g., backfill drift) referring to a pin whose listIds doesn't
+    // include this list, a legitimate editor must NOT be able to:
+    //   (a) write to the unrelated pin doc, or
+    //   (b) trigger an activity event to the pin's owner.
+    // Member-doc cleanup + list pinCount fixup are still correct.
+
+    it('drift: pin.listIds does not include listId — deletes member + decrements pinCount but skips pin write and activity event', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' }); // owner
+      const { app, ops } = buildApp({
+        verifyIdToken,
+        seed: {
+          'lists/L1': { ownerId: 'alice', collaboratorIds: [], viewerIds: [], name: 'My List' },
+          // Pin claims to be in a DIFFERENT list — the member doc here is stale.
+          'pins/P1': { userId: 'bob', placeName: 'Cafe', listIds: ['L_OTHER'] },
+          'lists/L1/members/P1': { pinId: 'P1' },
+        },
+      });
+      const res = await request(app)
+        .post('/lists/L1/members/P1/remove')
+        .set('Authorization', 'Bearer good');
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ ok: true, alreadyGone: false });
+
+      // Cleanup: member deleted + pinCount decremented (resolves list-side drift).
+      expect(ops.some((o) => o.type === 'delete' && o.path === 'lists/L1/members/P1')).toBe(true);
+      expect(ops.some((o) => o.type === 'update' && o.path === 'lists/L1')).toBe(true);
+      // Trust boundary: NO write to the unrelated pin doc.
+      expect(ops.some((o) => o.path === 'pins/P1')).toBe(false);
+      // Trust boundary: NO bogus activity notification to bob.
+      expect(
+        ops.some(
+          (o) => o.type === 'set' && o.data && o.data.type === 'list_member_removed_by_editor'
+        )
+      ).toBe(false);
+    });
+
+    it('drift: pin.listIds is missing — same drift behavior (no pin write, no event)', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const { app, ops } = buildApp({
+        verifyIdToken,
+        seed: {
+          'lists/L1': { ownerId: 'alice', collaboratorIds: [], viewerIds: [] },
+          'pins/P1': { userId: 'bob', placeName: 'Cafe' }, // listIds undefined
+          'lists/L1/members/P1': { pinId: 'P1' },
+        },
+      });
+      const res = await request(app)
+        .post('/lists/L1/members/P1/remove')
+        .set('Authorization', 'Bearer good');
+      expect(res.status).toBe(200);
+      expect(ops.some((o) => o.path === 'pins/P1')).toBe(false);
+      expect(
+        ops.some((o) => o.data && o.data.type === 'list_member_removed_by_editor')
+      ).toBe(false);
+    });
+
+    it('drift: pin.listIds is non-array (schema corruption) — treat as drift, do not crash', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const { app, ops } = buildApp({
+        verifyIdToken,
+        seed: {
+          'lists/L1': { ownerId: 'alice', collaboratorIds: [], viewerIds: [] },
+          'pins/P1': { userId: 'bob', placeName: 'Cafe', listIds: 'L1' }, // string, not array
+          'lists/L1/members/P1': { pinId: 'P1' },
+        },
+      });
+      const res = await request(app)
+        .post('/lists/L1/members/P1/remove')
+        .set('Authorization', 'Bearer good');
+      expect(res.status).toBe(200);
+      expect(ops.some((o) => o.path === 'pins/P1')).toBe(false);
+      expect(
+        ops.some((o) => o.data && o.data.type === 'list_member_removed_by_editor')
+      ).toBe(false);
+    });
+  });
+
+  describe('mid-transaction races (Codex round-1 fix)', () => {
+    // The mock now models real Firestore: txn.update against a doc that
+    // disappeared between the read phase and commit will throw. The
+    // endpoint must surface that as a 500 rather than swallowing it.
+
+    it('returns 500 when the list is deleted between read and commit', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const { app, store, firestoreMock, ops } = buildApp({
+        verifyIdToken,
+        seed: {
+          'lists/L1': { ownerId: 'alice', collaboratorIds: [], viewerIds: [] },
+          'pins/P1': { userId: 'bob', placeName: 'Cafe', listIds: ['L1'] },
+          'lists/L1/members/P1': { pinId: 'P1' },
+        },
+      });
+      // Simulate concurrent delete: list disappears AFTER reads but BEFORE
+      // ops apply. Real Firestore would fail the transaction's commit.
+      const originalRun = firestoreMock.runTransaction;
+      firestoreMock.runTransaction = async (fn) => {
+        const wrappedFn = async (txn) => {
+          const result = await fn(txn);
+          store.delete('lists/L1'); // race
+          return result;
+        };
+        return originalRun(wrappedFn);
+      };
+
+      const res = await request(app)
+        .post('/lists/L1/members/P1/remove')
+        .set('Authorization', 'Bearer good');
+      expect(res.status).toBe(500);
+      // Endpoint did not silently succeed; member doc was NOT deleted in
+      // the in-memory store because the apply loop threw before the delete
+      // op was processed (note: order of ops matters — delete might run
+      // before the failing update; the assertion below proves the txn
+      // surfaced as a failure to the caller, which is the contract).
+      expect(res.body.error).toBeDefined();
     });
   });
 });
