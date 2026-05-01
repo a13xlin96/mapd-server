@@ -9,11 +9,16 @@ const { fetchInstagramCarouselPost, isInstagramPostUrl } = require('./lib/instag
 const { extractPlacesFromSlides } = require('./lib/vision');
 const { resolveOneRedirect, isShortSocialUrl } = require('./lib/urlResolve');
 const { runEnrichment } = require('./enrich');
+const { router: adminRouter } = require('./lib/admin');
 require('./lib/enrichmentSweeper'); // boots the orphan-job sweeper
 
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+// Admin endpoints (collaborative-lists migration). Gated by ADMIN_TOKEN env
+// var — not a Firebase Auth ID token. See lib/admin.js for the workflow.
+app.use(adminRouter);
 
 // Health check
 app.get('/', (req, res) => {
