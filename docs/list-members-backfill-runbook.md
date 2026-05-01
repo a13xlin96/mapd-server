@@ -215,10 +215,25 @@ Client mutations resume. Phase 2's dual-write keeps `pin.listIds` and
 - Phase 4 will flip `useNewListMembership: true` to switch reads from
   `pin.listIds` to the new subcollection. That's a separate runbook.
 
+## Migration lock
+
+Backfill, scrub, and reconcile each acquire a transactional lock on
+`configs/featureFlags.migrationInProgress` for the duration of their run.
+This means:
+
+- Calling backfill / scrub / reconcile **concurrently** (e.g. firing a
+  second curl while the first is still running) returns HTTP 500 with
+  "Another migration job is already in progress (jobId=...)".
+- Calling **unfreeze** while a job is running returns HTTP 409. Wait
+  for the in-flight job to finish before unfreezing.
+- If a job appears stalled (e.g. the curl was killed), open Firebase
+  Console → Firestore → `configs/featureFlags` and delete the
+  `migrationInProgress` field manually. Then retry.
+
 ## If something goes wrong
 
 - **The freeze toast fires for users for too long:** unfreeze immediately
-  (step 8). The new subcollection will be partially populated — re-running
+  (step 9). The new subcollection will be partially populated — re-running
   backfill from the top is safe (idempotent).
 - **A backfill batch fails:** check the `errors` array. Usually it's a
   Firestore quota or transient network issue — wait a minute and re-run.

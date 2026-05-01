@@ -7,7 +7,7 @@ const request = require('supertest');
 // Mock firestore lib so the admin router doesn't try to initialize firebase-admin.
 jest.mock('../lib/firestore', () => ({
   firestore: { /* methods populated by individual tests if needed */ },
-  admin: { firestore: { FieldValue: { serverTimestamp: () => ({ _ts: true }) } } },
+  admin: { firestore: { FieldValue: { serverTimestamp: () => ({ _ts: true }), delete: () => ({ _delete: true }) } } },
 }));
 
 describe('admin auth middleware', () => {
@@ -73,7 +73,7 @@ describe('admin auth middleware', () => {
     // Override the firestore mock to simulate an unconfigured server.
     jest.doMock('../lib/firestore', () => ({
       firestore: null,
-      admin: { firestore: { FieldValue: { serverTimestamp: () => ({}) } } },
+      admin: { firestore: { FieldValue: { serverTimestamp: () => ({}), delete: () => ({}) } } },
     }));
     jest.isolateModules(() => {
       const { router } = require('../lib/admin');
@@ -109,25 +109,39 @@ describe('requireFrozen middleware', () => {
       exists: flagValue !== undefined,
       data: () => ({ freezeListMembershipWrites: flagValue }),
     };
+    const fakeTxn = {
+      get: async () => fakeFlagSnap, // for the migration-lock acquire path
+      set: () => {},
+    };
     const firestoreMock = {
       collection: (name) => {
         if (name === 'configs') {
-          return { doc: () => ({ get: async () => fakeFlagSnap }) };
+          return {
+            doc: () => ({
+              get: async () => fakeFlagSnap,
+              set: async () => {}, // for the lock release path
+            }),
+          };
         }
         if (name === 'pins') {
           // Only invoked if requireFrozen passes — return empty.
           return { get: async () => ({ size: 0, forEach: () => {}, docs: [] }) };
         }
+        if (name === 'lists') {
+          // For scrub/reconcile post-acquire — return empty.
+          return { get: async () => ({ docs: [] }) };
+        }
         throw new Error(`Unsupported collection: ${name}`);
       },
       getAll: async () => [],
       batch: () => ({ set: () => {}, delete: () => {}, commit: async () => {} }),
+      runTransaction: async (fn) => fn(fakeTxn),
     };
     let app;
     jest.isolateModules(() => {
       jest.doMock('../lib/firestore', () => ({
         firestore: firestoreMock,
-        admin: { firestore: { FieldValue: { serverTimestamp: () => ({ _ts: true }) } } },
+        admin: { firestore: { FieldValue: { serverTimestamp: () => ({ _ts: true }), delete: () => ({ _delete: true }) } } },
       }));
       const { router } = require('../lib/admin');
       app = express();
