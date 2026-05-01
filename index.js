@@ -10,6 +10,7 @@ const { extractPlacesFromSlides } = require('./lib/vision');
 const { resolveOneRedirect, isShortSocialUrl } = require('./lib/urlResolve');
 const { runEnrichment } = require('./enrich');
 const { router: adminRouter } = require('./lib/admin');
+const { router: listMembershipRouter } = require('./lib/listMembership');
 require('./lib/enrichmentSweeper'); // boots the orphan-job sweeper
 
 const app = express();
@@ -19,6 +20,9 @@ app.use(express.json());
 // Admin endpoints (collaborative-lists migration). Gated by ADMIN_TOKEN env
 // var — not a Firebase Auth ID token. See lib/admin.js for the workflow.
 app.use(adminRouter);
+
+// User-auth list-membership endpoints (Phase 4 foreign-pin removal).
+app.use(listMembershipRouter);
 
 // Health check
 app.get('/', (req, res) => {
