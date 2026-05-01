@@ -16,7 +16,10 @@ function buildFirestoreMock(seedPins, seedMembers = {}, seedListExists = null) {
 
   if (seedListExists === null) {
     for (const p of seedPins) {
-      for (const lid of p.listIds || []) listStore.set(`lists/${lid}`, { id: lid });
+      // Guard against malformed test fixtures (non-array listIds).
+      if (Array.isArray(p.listIds)) {
+        for (const lid of p.listIds) listStore.set(`lists/${lid}`, { id: lid });
+      }
     }
   } else {
     for (const lid of seedListExists) listStore.set(`lists/${lid}`, { id: lid });
@@ -368,6 +371,39 @@ describe('runBackfill', () => {
     ]);
     expect(writes).toHaveLength(1);
     expect(writes[0].ref._listId).toBe('L1');
+  });
+
+  it('flags pins whose listIds is present but not an array (Codex round-8 fix)', async () => {
+    const seedPins = [
+      {
+        id: 'pinA',
+        userId: 'alice',
+        listIds: ['L1'], // valid
+        createdAt: { toMillis: () => 1700000000000 },
+      },
+      {
+        id: 'pinB',
+        userId: 'bob',
+        listIds: 'L1', // STRING not array — schema drift
+        createdAt: { toMillis: () => 1700000001000 },
+      },
+      {
+        id: 'pinC',
+        userId: 'carol',
+        listIds: { L1: true }, // OBJECT not array — schema drift
+        createdAt: { toMillis: () => 1700000002000 },
+      },
+    ];
+    const { firestoreMock, writes } = buildFirestoreMock(seedPins);
+    const { runBackfill } = loadAdminWith(firestoreMock);
+    const stats = await runBackfill();
+
+    expect(stats.membersWritten).toBe(1); // only pinA wrote
+    expect(stats.invalidPinListIds).toEqual([
+      { pinId: 'pinB' },
+      { pinId: 'pinC' },
+    ]);
+    expect(writes).toHaveLength(1);
   });
 
   it('skips and reports pins with missing/malformed userId (Codex round-4 fix)', async () => {
