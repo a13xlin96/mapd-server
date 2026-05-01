@@ -13,14 +13,18 @@ jest.mock('../lib/firestore', () => ({
 describe('admin auth middleware', () => {
   let app;
   let originalEnv;
+  let originalSettle;
 
   beforeEach(() => {
     originalEnv = process.env.ADMIN_TOKEN;
+    originalSettle = process.env.FREEZE_SETTLE_MS;
+    process.env.FREEZE_SETTLE_MS = '0'; // skip settle delay in tests
     jest.resetModules();
   });
 
   afterEach(() => {
     process.env.ADMIN_TOKEN = originalEnv;
+    process.env.FREEZE_SETTLE_MS = originalSettle;
   });
 
   it('rejects with 503 when ADMIN_TOKEN env var is unset', async () => {

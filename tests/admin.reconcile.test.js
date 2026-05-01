@@ -46,13 +46,17 @@ function buildFirestoreMock(seedLists, memberCountsByListId) {
 
 describe('runReconcilePinCounts', () => {
   let originalEnv;
+  let originalSettle;
   beforeEach(() => {
     originalEnv = process.env.ADMIN_TOKEN;
+    originalSettle = process.env.FREEZE_SETTLE_MS;
     process.env.ADMIN_TOKEN = 'secret';
+    process.env.FREEZE_SETTLE_MS = '0';
     jest.resetModules();
   });
   afterEach(() => {
     process.env.ADMIN_TOKEN = originalEnv;
+    process.env.FREEZE_SETTLE_MS = originalSettle;
   });
 
   function loadAdminWith(firestoreMock) {

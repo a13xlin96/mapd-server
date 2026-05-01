@@ -68,13 +68,17 @@ function buildFirestoreMock(seedPins, seedMembers = {}) {
 
 describe('runBackfill', () => {
   let originalEnv;
+  let originalSettle;
   beforeEach(() => {
     originalEnv = process.env.ADMIN_TOKEN;
+    originalSettle = process.env.FREEZE_SETTLE_MS;
     process.env.ADMIN_TOKEN = 'secret';
+    process.env.FREEZE_SETTLE_MS = '0'; // skip settle delay in tests
     jest.resetModules();
   });
   afterEach(() => {
     process.env.ADMIN_TOKEN = originalEnv;
+    process.env.FREEZE_SETTLE_MS = originalSettle;
   });
 
   function loadAdminWith(firestoreMock) {
@@ -156,7 +160,7 @@ describe('runBackfill', () => {
     expect(writes).toHaveLength(1); // only the first run's write committed
   });
 
-  it('skips writes when an existing member doc has matching pinId + pinOwnerId', async () => {
+  it('skips writes when ALL deterministic member fields match (pinId, pinOwnerId, addedBy, order, addedAt present)', async () => {
     const seedPins = [
       {
         id: 'pinA',
@@ -166,7 +170,14 @@ describe('runBackfill', () => {
       },
     ];
     const { firestoreMock, writes } = buildFirestoreMock(seedPins, {
-      'lists/L1/members/pinA': { pinId: 'pinA', pinOwnerId: 'alice', addedBy: 'alice', order: 0 },
+      // All fields match the canonical shape — backfill should skip.
+      'lists/L1/members/pinA': {
+        pinId: 'pinA',
+        pinOwnerId: 'alice',
+        addedBy: 'alice',
+        order: 1700000000000,
+        addedAt: { _ts: true },
+      },
     });
     const { runBackfill } = loadAdminWith(firestoreMock);
     const stats = await runBackfill();
@@ -174,6 +185,36 @@ describe('runBackfill', () => {
     expect(stats.membersWritten).toBe(0);
     expect(stats.membersUnchanged).toBe(1);
     expect(writes).toHaveLength(0);
+  });
+
+  it('REWRITES when only pinOwnerId matches but order/addedBy are stale (Codex round-1 fix)', async () => {
+    // A previous partial run / corrupted member doc has the right ownership
+    // but missing or stale ordering/provenance. Backfill must repair it.
+    const seedPins = [
+      {
+        id: 'pinA',
+        userId: 'alice',
+        listIds: ['L1'],
+        createdAt: { toMillis: () => 1700000000000 },
+      },
+    ];
+    const { firestoreMock, writes } = buildFirestoreMock(seedPins, {
+      'lists/L1/members/pinA': {
+        pinId: 'pinA',
+        pinOwnerId: 'alice',
+        // missing addedBy / order / addedAt — must trigger a rewrite
+      },
+    });
+    const { runBackfill } = loadAdminWith(firestoreMock);
+    const stats = await runBackfill();
+
+    expect(stats.membersWritten).toBe(1);
+    expect(stats.membersUnchanged).toBe(0);
+    expect(writes).toHaveLength(1);
+    expect(writes[0].data).toMatchObject({
+      addedBy: 'alice',
+      order: 1700000000000,
+    });
   });
 
   it('rewrites a member doc when its pinOwnerId mismatches the pin (corruption recovery)', async () => {
@@ -212,5 +253,36 @@ describe('runBackfill', () => {
     expect(stats.membersWritten).toBe(1);
     expect(typeof writes[0].data.order).toBe('number');
     expect(writes[0].data.order).toBeGreaterThan(0);
+  });
+
+  it('does NOT increment membersWritten when batch.commit() throws (Codex round-1 fix)', async () => {
+    // Simulate a Firestore error on commit: stats.errors gets the entry,
+    // but stats.membersWritten stays 0 — operators must see "failed run"
+    // not "partial success" in the response.
+    const seedPins = [
+      {
+        id: 'pinA',
+        userId: 'alice',
+        listIds: ['L1'],
+        createdAt: { toMillis: () => 1700000000000 },
+      },
+    ];
+    const { firestoreMock } = buildFirestoreMock(seedPins);
+    // Override batch().commit to fail once.
+    firestoreMock.batch = () => {
+      const ops = [];
+      return {
+        set: (ref, data) => ops.push({ ref, data }),
+        commit: async () => {
+          throw new Error('simulated network error');
+        },
+      };
+    };
+    const { runBackfill } = loadAdminWith(firestoreMock);
+    const stats = await runBackfill();
+
+    expect(stats.membersWritten).toBe(0);
+    expect(stats.errors).toHaveLength(1);
+    expect(stats.errors[0].error).toMatch(/simulated network error/);
   });
 });
