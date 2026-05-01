@@ -29,6 +29,22 @@ function buildFirestoreMock(seedPins, seedMembers = {}, seedListExists = null) {
     return { _path: `lists/${listId}`, _listId: listId };
   }
 
+  // Transaction mock that mirrors batch semantics for writes and looks up
+  // the right store on reads. Test override-able via mockTxnGet.
+  const txnImpl = {
+    get: async (ref) => {
+      if (memberStore.has(ref._path)) {
+        return { exists: true, data: () => memberStore.get(ref._path) };
+      }
+      if (listStore.has(ref._path)) {
+        return { exists: true, data: () => listStore.get(ref._path) };
+      }
+      return { exists: false, data: () => undefined };
+    },
+    set: () => {}, // populated below per-call
+  };
+  let mockTxnFailureMode = null; // null | 'commit'
+
   return {
     firestoreMock: {
       collection: (name) => ({
@@ -51,11 +67,9 @@ function buildFirestoreMock(seedPins, seedMembers = {}, seedListExists = null) {
         },
       }),
       getAll: async (...refs) => refs.map((ref) => {
-        // member-doc lookup (idempotency check)
         if (memberStore.has(ref._path)) {
           return { exists: true, data: () => memberStore.get(ref._path) };
         }
-        // list-doc lookup (stale-ref validation)
         if (listStore.has(ref._path)) {
           return { exists: true, data: () => listStore.get(ref._path) };
         }
@@ -74,11 +88,30 @@ function buildFirestoreMock(seedPins, seedMembers = {}, seedListExists = null) {
           },
         };
       },
+      runTransaction: async (fn) => {
+        const txnOps = [];
+        const txn = {
+          get: txnImpl.get,
+          set: (ref, data, _opts) => txnOps.push({ type: 'set', ref, data }),
+        };
+        const result = await fn(txn);
+        // "Commit" (apply ops to the in-memory stores). Test failure mode
+        // can simulate a commit error here.
+        if (mockTxnFailureMode === 'commit') {
+          throw new Error('simulated transaction commit failure');
+        }
+        for (const op of txnOps) {
+          memberStore.set(op.ref._path, op.data);
+          writes.push(op);
+        }
+        return result;
+      },
     },
     writes,
     batches,
     memberStore,
     listStore,
+    setMockTxnFailureMode: (mode) => { mockTxnFailureMode = mode; },
   };
 }
 
@@ -370,10 +403,10 @@ describe('runBackfill', () => {
     expect(writes).toHaveLength(1);
   });
 
-  it('does NOT increment membersWritten when batch.commit() throws (Codex round-1 fix)', async () => {
-    // Simulate a Firestore error on commit: stats.errors gets the entry,
-    // but stats.membersWritten stays 0 — operators must see "failed run"
-    // not "partial success" in the response.
+  it('does NOT increment membersWritten when transaction commit throws (Codex round-1 + round-7)', async () => {
+    // Simulate a Firestore error on transaction commit: stats.errors gets
+    // the entry, stats.membersWritten stays 0 — operators must see
+    // "failed run" not "partial success" in the response.
     const seedPins = [
       {
         id: 'pinA',
@@ -382,22 +415,44 @@ describe('runBackfill', () => {
         createdAt: { toMillis: () => 1700000000000 },
       },
     ];
-    const { firestoreMock } = buildFirestoreMock(seedPins);
-    // Override batch().commit to fail once.
-    firestoreMock.batch = () => {
-      const ops = [];
-      return {
-        set: (ref, data) => ops.push({ ref, data }),
-        commit: async () => {
-          throw new Error('simulated network error');
-        },
-      };
+    const helpers = buildFirestoreMock(seedPins);
+    helpers.setMockTxnFailureMode('commit');
+    const { runBackfill } = loadAdminWith(helpers.firestoreMock);
+    const stats = await runBackfill();
+
+    expect(stats.membersWritten).toBe(0);
+    expect(stats.errors).toHaveLength(1);
+    expect(stats.errors[0].error).toMatch(/simulated transaction commit failure/);
+  });
+
+  it('aborts the chunk when a parent list is deleted between pre-validation and transaction (Codex round-7 fix)', async () => {
+    // Pre-pass sees L1 exists. After validation, L1 is deleted out-of-band.
+    // Transactional re-read inside the chunk catches the missing parent and
+    // surfaces the entry in staleListRefs without writing the orphan member.
+    const seedPins = [
+      {
+        id: 'pinA',
+        userId: 'alice',
+        listIds: ['L1'],
+        createdAt: { toMillis: () => 1700000000000 },
+      },
+    ];
+    const helpers = buildFirestoreMock(seedPins);
+    // Pre-validation pass uses getAll (which reads from listStore — populated).
+    // We simulate a mid-run deletion by removing the list from listStore
+    // before the transaction's txn.get fires. Override runTransaction to
+    // delete the list entry just before invoking the user fn.
+    const { firestoreMock, listStore, writes } = helpers;
+    const originalRun = firestoreMock.runTransaction;
+    firestoreMock.runTransaction = async (fn) => {
+      listStore.delete('lists/L1'); // simulate concurrent delete
+      return originalRun(fn);
     };
     const { runBackfill } = loadAdminWith(firestoreMock);
     const stats = await runBackfill();
 
     expect(stats.membersWritten).toBe(0);
-    expect(stats.errors).toHaveLength(1);
-    expect(stats.errors[0].error).toMatch(/simulated network error/);
+    expect(stats.staleListRefs).toEqual([{ pinId: 'pinA', listId: 'L1' }]);
+    expect(writes).toHaveLength(0);
   });
 });
