@@ -3,18 +3,30 @@
 // property — running twice produces zero new writes on the second pass.
 
 // Mock firebase-admin's firestore object with a controllable in-memory store.
-function buildFirestoreMock(seedPins, seedMembers = {}) {
+// Supports both list-doc lookups (validation pre-pass) and member-doc lookups
+// (idempotency check) via getAll.
+//
+// seedListExists: optional Set<listId>. Defaults to "all listIds referenced
+// by seedPins exist" — pass an explicit Set to test stale-listId behavior.
+function buildFirestoreMock(seedPins, seedMembers = {}, seedListExists = null) {
   const memberStore = new Map(Object.entries(seedMembers));
+  const listStore = new Map();
   const writes = [];
   const batches = [];
 
+  if (seedListExists === null) {
+    for (const p of seedPins) {
+      for (const lid of p.listIds || []) listStore.set(`lists/${lid}`, { id: lid });
+    }
+  } else {
+    for (const lid of seedListExists) listStore.set(`lists/${lid}`, { id: lid });
+  }
+
   function memberRef(listId, pinId) {
-    const path = `lists/${listId}/members/${pinId}`;
-    return {
-      _path: path,
-      _listId: listId,
-      _pinId: pinId,
-    };
+    return { _path: `lists/${listId}/members/${pinId}`, _listId: listId, _pinId: pinId };
+  }
+  function listRef(listId) {
+    return { _path: `lists/${listId}`, _listId: listId };
   }
 
   return {
@@ -22,33 +34,37 @@ function buildFirestoreMock(seedPins, seedMembers = {}) {
       collection: (name) => ({
         get: async () => {
           if (name === 'pins') {
-            const docs = seedPins.map((p) => ({
-              id: p.id,
-              data: () => p,
-            }));
+            const docs = seedPins.map((p) => ({ id: p.id, data: () => p }));
             return { size: docs.length, forEach: (cb) => docs.forEach(cb), docs };
           }
           throw new Error(`Unsupported collection: ${name}`);
         },
-        doc: (id) => ({
-          collection: (sub) => ({
-            doc: (subId) => memberRef(id, subId),
-          }),
-        }),
+        doc: (id) => {
+          if (name === 'lists') {
+            return Object.assign(listRef(id), {
+              collection: (sub) => ({
+                doc: (subId) => memberRef(id, subId),
+              }),
+            });
+          }
+          throw new Error(`Unsupported doc on collection: ${name}`);
+        },
       }),
       getAll: async (...refs) => refs.map((ref) => {
-        const data = memberStore.get(ref._path);
-        return {
-          exists: data != null,
-          data: () => data,
-        };
+        // member-doc lookup (idempotency check)
+        if (memberStore.has(ref._path)) {
+          return { exists: true, data: () => memberStore.get(ref._path) };
+        }
+        // list-doc lookup (stale-ref validation)
+        if (listStore.has(ref._path)) {
+          return { exists: true, data: () => listStore.get(ref._path) };
+        }
+        return { exists: false, data: () => undefined };
       }),
       batch: () => {
         const ops = [];
-        const b = {
-          set: (ref, data, _opts) => {
-            ops.push({ type: 'set', ref, data });
-          },
+        return {
+          set: (ref, data, _opts) => ops.push({ type: 'set', ref, data }),
           commit: async () => {
             for (const op of ops) {
               memberStore.set(op.ref._path, op.data);
@@ -57,12 +73,12 @@ function buildFirestoreMock(seedPins, seedMembers = {}) {
             batches.push(ops.length);
           },
         };
-        return b;
       },
     },
     writes,
     batches,
     memberStore,
+    listStore,
   };
 }
 
@@ -237,7 +253,7 @@ describe('runBackfill', () => {
     expect(writes[0].data.pinOwnerId).toBe('alice');
   });
 
-  it('handles a pin with no createdAt by falling back to Date.now() for order', async () => {
+  it('falls back to deterministic order=0 when pin has no createdAt', async () => {
     const seedPins = [
       {
         id: 'pinA',
@@ -251,8 +267,51 @@ describe('runBackfill', () => {
     const stats = await runBackfill();
 
     expect(stats.membersWritten).toBe(1);
-    expect(typeof writes[0].data.order).toBe('number');
-    expect(writes[0].data.order).toBeGreaterThan(0);
+    expect(writes[0].data.order).toBe(0);
+  });
+
+  it('order fallback for pins without createdAt is DETERMINISTIC (zero-diff on second pass — Codex round-2 fix)', async () => {
+    const seedPins = [
+      {
+        id: 'pinA',
+        userId: 'alice',
+        listIds: ['L1'],
+        // no createdAt — falls back to deterministic order (0)
+      },
+    ];
+    const { firestoreMock, writes } = buildFirestoreMock(seedPins);
+    const { runBackfill } = loadAdminWith(firestoreMock);
+
+    const first = await runBackfill();
+    expect(first.membersWritten).toBe(1);
+    expect(writes[0].data.order).toBe(0); // not Date.now()
+
+    const second = await runBackfill();
+    expect(second.membersWritten).toBe(0);
+    expect(second.membersUnchanged).toBe(1);
+    expect(writes).toHaveLength(1); // still just the one write from the first pass
+  });
+
+  it('skips writes for stale listId references and surfaces them in stats.staleListRefs (Codex round-2 fix)', async () => {
+    const seedPins = [
+      {
+        id: 'pinA',
+        userId: 'alice',
+        listIds: ['L1', 'L_GHOST'], // L_GHOST does not exist
+        createdAt: { toMillis: () => 1700000000000 },
+      },
+    ];
+    // Only L1 exists — L_GHOST is intentionally missing.
+    const { firestoreMock, writes } = buildFirestoreMock(seedPins, {}, new Set(['L1']));
+    const { runBackfill } = loadAdminWith(firestoreMock);
+    const stats = await runBackfill();
+
+    expect(stats.membersWritten).toBe(1); // only L1 got a member doc
+    expect(stats.staleListRefs).toEqual([
+      { pinId: 'pinA', listId: 'L_GHOST' },
+    ]);
+    expect(writes).toHaveLength(1);
+    expect(writes[0].ref._listId).toBe('L1');
   });
 
   it('does NOT increment membersWritten when batch.commit() throws (Codex round-1 fix)', async () => {
