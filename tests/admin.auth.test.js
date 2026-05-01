@@ -88,3 +88,95 @@ describe('admin auth middleware', () => {
     expect(res.body.error).toMatch(/Firestore admin not configured/);
   });
 });
+
+describe('requireFrozen middleware', () => {
+  let originalEnv;
+  let originalSettle;
+  beforeEach(() => {
+    originalEnv = process.env.ADMIN_TOKEN;
+    originalSettle = process.env.FREEZE_SETTLE_MS;
+    process.env.ADMIN_TOKEN = 'secret';
+    process.env.FREEZE_SETTLE_MS = '0';
+    jest.resetModules();
+  });
+  afterEach(() => {
+    process.env.ADMIN_TOKEN = originalEnv;
+    process.env.FREEZE_SETTLE_MS = originalSettle;
+  });
+
+  function buildAppWithFreezeFlag(flagValue) {
+    const fakeFlagSnap = {
+      exists: flagValue !== undefined,
+      data: () => ({ freezeListMembershipWrites: flagValue }),
+    };
+    const firestoreMock = {
+      collection: (name) => {
+        if (name === 'configs') {
+          return { doc: () => ({ get: async () => fakeFlagSnap }) };
+        }
+        if (name === 'pins') {
+          // Only invoked if requireFrozen passes — return empty.
+          return { get: async () => ({ size: 0, forEach: () => {}, docs: [] }) };
+        }
+        throw new Error(`Unsupported collection: ${name}`);
+      },
+      getAll: async () => [],
+      batch: () => ({ set: () => {}, delete: () => {}, commit: async () => {} }),
+    };
+    let app;
+    jest.isolateModules(() => {
+      jest.doMock('../lib/firestore', () => ({
+        firestore: firestoreMock,
+        admin: { firestore: { FieldValue: { serverTimestamp: () => ({ _ts: true }) } } },
+      }));
+      const { router } = require('../lib/admin');
+      app = express();
+      app.use(express.json());
+      app.use(router);
+    });
+    return app;
+  }
+
+  it('rejects backfill with 409 when flag is unset', async () => {
+    const app = buildAppWithFreezeFlag(undefined);
+    const res = await request(app)
+      .post('/admin/backfill-list-members')
+      .set('X-Admin-Token', 'secret');
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/freezeListMembershipWrites=true/);
+  });
+
+  it('rejects backfill with 409 when flag is false', async () => {
+    const app = buildAppWithFreezeFlag(false);
+    const res = await request(app)
+      .post('/admin/backfill-list-members')
+      .set('X-Admin-Token', 'secret');
+    expect(res.status).toBe(409);
+  });
+
+  it('proceeds when flag is true', async () => {
+    const app = buildAppWithFreezeFlag(true);
+    const res = await request(app)
+      .post('/admin/backfill-list-members')
+      .set('X-Admin-Token', 'secret');
+    // Pins collection returns empty, so backfill is a no-op success.
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+  });
+
+  it('rejects reconcile with 409 when flag is false', async () => {
+    const app = buildAppWithFreezeFlag(false);
+    const res = await request(app)
+      .post('/admin/reconcile-pin-counts')
+      .set('X-Admin-Token', 'secret');
+    expect(res.status).toBe(409);
+  });
+
+  it('rejects scrub with 409 when flag is false', async () => {
+    const app = buildAppWithFreezeFlag(false);
+    const res = await request(app)
+      .post('/admin/scrub-orphan-members')
+      .set('X-Admin-Token', 'secret');
+    expect(res.status).toBe(409);
+  });
+});

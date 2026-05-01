@@ -337,6 +337,39 @@ describe('runBackfill', () => {
     expect(writes[0].ref._listId).toBe('L1');
   });
 
+  it('skips and reports pins with missing/malformed userId (Codex round-4 fix)', async () => {
+    const seedPins = [
+      {
+        id: 'pinA',
+        userId: 'alice',
+        listIds: ['L1'],
+        createdAt: { toMillis: () => 1700000000000 },
+      },
+      {
+        id: 'pinB',
+        // userId missing
+        listIds: ['L1'],
+        createdAt: { toMillis: () => 1700000001000 },
+      },
+      {
+        id: 'pinC',
+        userId: 42, // wrong type
+        listIds: ['L1'],
+        createdAt: { toMillis: () => 1700000002000 },
+      },
+    ];
+    const { firestoreMock, writes } = buildFirestoreMock(seedPins);
+    const { runBackfill } = loadAdminWith(firestoreMock);
+    const stats = await runBackfill();
+
+    expect(stats.membersWritten).toBe(1); // only pinA wrote
+    expect(stats.invalidPinOwners).toEqual([
+      { pinId: 'pinB' },
+      { pinId: 'pinC' },
+    ]);
+    expect(writes).toHaveLength(1);
+  });
+
   it('does NOT increment membersWritten when batch.commit() throws (Codex round-1 fix)', async () => {
     // Simulate a Firestore error on commit: stats.errors gets the entry,
     // but stats.membersWritten stays 0 — operators must see "failed run"

@@ -132,7 +132,35 @@ Expected response:
 The critical line: `membersWritten: 0`. If the second pass writes anything,
 something is non-deterministic and you need to investigate before proceeding.
 
-### 6. Reconcile pinCount
+### 6. Scrub orphan member docs
+
+Catches stale member docs left behind by partial earlier runs, manual
+testing, or earlier dual-write bugs. Reverse-direction: walks every
+existing /lists/{listId}/members/{pinId} and verifies the corresponding
+pin's listIds still references this list. Anything that doesn't gets
+deleted.
+
+```
+curl -s -X POST -H "X-Admin-Token: $ADMIN_TOKEN" $SERVER/admin/scrub-orphan-members
+```
+
+Expected response:
+
+```json
+{
+  "ok": true,
+  "stats": {
+    "membersScanned": 587,
+    "orphansDeleted": 0,
+    "errors": []
+  }
+}
+```
+
+On a clean migration, `orphansDeleted` is 0. If non-zero, those member
+docs were stale and have been removed. Re-running is safe.
+
+### 7. Reconcile pinCount
 
 ```
 curl -s -X POST -H "X-Admin-Token: $ADMIN_TOKEN" $SERVER/admin/reconcile-pin-counts
@@ -155,7 +183,7 @@ Expected response:
 `listsUpdated` reflects lists where `pinCount` was wrong before this run; they're
 now corrected. `listsAlreadyCorrect` is the rest.
 
-### 7. Spot-check in Firebase Console
+### 8. Spot-check in Firebase Console
 
 Pick 2-3 random lists. For each:
 
@@ -169,7 +197,7 @@ Pick 2-3 random lists. For each:
 If anything looks off, **don't unfreeze yet.** The state is recoverable — re-run
 backfill / reconcile until counts match.
 
-### 8. Unfreeze client membership writes
+### 9. Unfreeze client membership writes
 
 ```
 curl -s -X POST -H "X-Admin-Token: $ADMIN_TOKEN" $SERVER/admin/unfreeze-list-membership
