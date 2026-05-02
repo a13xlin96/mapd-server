@@ -320,7 +320,12 @@ describe('POST /lists/:listId/members/:pinId/remove', () => {
   });
 
   describe('pin-gone case', () => {
-    it('still removes the member doc and decrements pinCount, but skips pin.listIds update and activity event', async () => {
+    // Codex round-2 fix: pin-gone is a drift-cleanup case (we can't prove
+    // pinCount was ever bumped for this stale member). We delete the
+    // member doc only; pinCount stays as-is and admin reconcile repairs
+    // any resulting drift-high count authoritatively. No pin write or
+    // activity event is possible since the pin is gone.
+    it('removes the member doc only; does NOT decrement pinCount, write to pin, or emit event (reconcile-safe)', async () => {
       const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
       const { app, ops } = buildApp({
         verifyIdToken,
@@ -336,12 +341,10 @@ describe('POST /lists/:listId/members/:pinId/remove', () => {
       expect(res.status).toBe(200);
       expect(res.body).toEqual({ ok: true, alreadyGone: false });
 
-      // Member deleted + list pinCount decremented.
+      // Member deleted; nothing else touched.
       expect(ops.some((o) => o.type === 'delete' && o.path === 'lists/L1/members/P1')).toBe(true);
-      expect(ops.some((o) => o.type === 'update' && o.path === 'lists/L1')).toBe(true);
-      // No write touches the pin doc.
+      expect(ops.some((o) => o.type === 'update' && o.path === 'lists/L1')).toBe(false);
       expect(ops.some((o) => o.path === 'pins/P1')).toBe(false);
-      // No activity event (no recipient since the pin is gone).
       expect(
         ops.some(
           (o) => o.type === 'set' && o.data && o.data.type === 'list_member_removed_by_editor'
@@ -379,7 +382,7 @@ describe('POST /lists/:listId/members/:pinId/remove', () => {
     //   (b) trigger an activity event to the pin's owner.
     // Member-doc cleanup + list pinCount fixup are still correct.
 
-    it('drift: pin.listIds does not include listId — deletes member + decrements pinCount but skips pin write and activity event', async () => {
+    it('drift: pin.listIds does not include listId — deletes member doc only; does NOT decrement pinCount, write to pin, or emit event', async () => {
       const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' }); // owner
       const { app, ops } = buildApp({
         verifyIdToken,
@@ -396,9 +399,12 @@ describe('POST /lists/:listId/members/:pinId/remove', () => {
       expect(res.status).toBe(200);
       expect(res.body).toEqual({ ok: true, alreadyGone: false });
 
-      // Cleanup: member deleted + pinCount decremented (resolves list-side drift).
+      // Member-doc cleanup is correct (the doc was stale).
       expect(ops.some((o) => o.type === 'delete' && o.path === 'lists/L1/members/P1')).toBe(true);
-      expect(ops.some((o) => o.type === 'update' && o.path === 'lists/L1')).toBe(true);
+      // Codex round-2: do NOT decrement pinCount in drift mode — we can't
+      // prove the list ever counted this member, and a double-decrement
+      // would corrupt below the true count with no idempotent recovery.
+      expect(ops.some((o) => o.type === 'update' && o.path === 'lists/L1')).toBe(false);
       // Trust boundary: NO write to the unrelated pin doc.
       expect(ops.some((o) => o.path === 'pins/P1')).toBe(false);
       // Trust boundary: NO bogus activity notification to bob.
@@ -409,7 +415,7 @@ describe('POST /lists/:listId/members/:pinId/remove', () => {
       ).toBe(false);
     });
 
-    it('drift: pin.listIds is missing — same drift behavior (no pin write, no event)', async () => {
+    it('drift: pin.listIds is missing — same drift behavior (no list/pin write, no event)', async () => {
       const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
       const { app, ops } = buildApp({
         verifyIdToken,
@@ -423,6 +429,7 @@ describe('POST /lists/:listId/members/:pinId/remove', () => {
         .post('/lists/L1/members/P1/remove')
         .set('Authorization', 'Bearer good');
       expect(res.status).toBe(200);
+      expect(ops.some((o) => o.type === 'update' && o.path === 'lists/L1')).toBe(false);
       expect(ops.some((o) => o.path === 'pins/P1')).toBe(false);
       expect(
         ops.some((o) => o.data && o.data.type === 'list_member_removed_by_editor')
@@ -443,10 +450,77 @@ describe('POST /lists/:listId/members/:pinId/remove', () => {
         .post('/lists/L1/members/P1/remove')
         .set('Authorization', 'Bearer good');
       expect(res.status).toBe(200);
+      expect(ops.some((o) => o.type === 'update' && o.path === 'lists/L1')).toBe(false);
       expect(ops.some((o) => o.path === 'pins/P1')).toBe(false);
       expect(
         ops.some((o) => o.data && o.data.type === 'list_member_removed_by_editor')
       ).toBe(false);
+    });
+  });
+
+  describe('input validation (Codex round-2 fix)', () => {
+    // Without strict listId/pinId validation, percent-encoded slashes in
+    // the URL decode into the doc-id parameter and crash the Firestore
+    // SDK with a 500. Same gap covers control chars and reserved
+    // `__...__` document IDs. These should all return clean 400s.
+
+    function setupValidApp() {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      return buildApp({
+        verifyIdToken,
+        // Seed something so any accidental fall-through wouldn't 404.
+        seed: {
+          'lists/L1': { ownerId: 'alice', collaboratorIds: [], viewerIds: [] },
+          'pins/P1': { userId: 'alice', placeName: 'Cafe', listIds: ['L1'] },
+          'lists/L1/members/P1': { pinId: 'P1' },
+        },
+      });
+    }
+
+    it('returns 400 when listId contains a percent-encoded slash', async () => {
+      const { app, ops } = setupValidApp();
+      const res = await request(app)
+        .post('/lists/L%2F1/members/P1/remove')
+        .set('Authorization', 'Bearer good');
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/Invalid/);
+      expect(ops).toHaveLength(0);
+    });
+
+    it('returns 400 when pinId contains a percent-encoded slash', async () => {
+      const { app, ops } = setupValidApp();
+      const res = await request(app)
+        .post('/lists/L1/members/P%2F1/remove')
+        .set('Authorization', 'Bearer good');
+      expect(res.status).toBe(400);
+      expect(ops).toHaveLength(0);
+    });
+
+    it('returns 400 when listId contains an encoded control character', async () => {
+      const { app, ops } = setupValidApp();
+      const res = await request(app)
+        .post('/lists/L%00x/members/P1/remove')
+        .set('Authorization', 'Bearer good');
+      expect(res.status).toBe(400);
+      expect(ops).toHaveLength(0);
+    });
+
+    it('returns 400 when listId matches the reserved __pattern__ form', async () => {
+      const { app, ops } = setupValidApp();
+      const res = await request(app)
+        .post('/lists/__internal__/members/P1/remove')
+        .set('Authorization', 'Bearer good');
+      expect(res.status).toBe(400);
+      expect(ops).toHaveLength(0);
+    });
+
+    it('returns 400 when pinId matches the reserved __pattern__ form', async () => {
+      const { app, ops } = setupValidApp();
+      const res = await request(app)
+        .post('/lists/L1/members/__reserved__/remove')
+        .set('Authorization', 'Bearer good');
+      expect(res.status).toBe(400);
+      expect(ops).toHaveLength(0);
     });
   });
 
