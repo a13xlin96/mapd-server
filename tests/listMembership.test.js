@@ -427,6 +427,58 @@ describe('POST /lists/:listId/members/:pinId/overrides (Phase 4 P4-7)', () => {
       expect(ops.find((o) => o.type === 'update' && o.path === 'lists/L1/members/P1')).toBeDefined();
     });
 
+    it('round-5 F36: returns 409 when member.overrides has a non-Object prototype (e.g. Date-like)', async () => {
+      // Round-4 used `typeof === "object" && !Array.isArray`, which lets
+      // Date / Timestamp / GeoPoint pass through. They don't support
+      // dotted-field updates and the commit fails with a 500 instead of
+      // the controlled 409 reconcile signal.
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const seed = defaultSeed();
+      // A Date instance is an object but its prototype is Date.prototype,
+      // not Object.prototype — round-5 isPlainObject() rejects it.
+      seed['lists/L1/members/P1'] = {
+        pinId: 'P1', pinOwnerId: 'bob', addedBy: 'alice',
+        overrides: new Date(),
+      };
+      const { app, ops } = buildApp({ verifyIdToken, seed });
+      const res = await postOverrides(app, { overrides: { category: 'food' } });
+      expect(res.status).toBe(409);
+      expect(res.body.error).toMatch(/overrides field is malformed/);
+      expect(ops).toHaveLength(0);
+    });
+
+    it('round-5 F36: returns 409 when member.overrides is a class instance', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const seed = defaultSeed();
+      class FakeTimestamp {
+        constructor() { this.seconds = 1700000000; }
+      }
+      seed['lists/L1/members/P1'] = {
+        pinId: 'P1', pinOwnerId: 'bob', addedBy: 'alice',
+        overrides: new FakeTimestamp(),
+      };
+      const { app, ops } = buildApp({ verifyIdToken, seed });
+      const res = await postOverrides(app, { overrides: { category: 'food' } });
+      expect(res.status).toBe(409);
+      expect(ops).toHaveLength(0);
+    });
+
+    it('round-5 F36: succeeds when member.overrides has a null prototype (Object.create(null))', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const seed = defaultSeed();
+      const dictOverrides = Object.create(null);
+      dictOverrides.placeName = 'Old Name';
+      seed['lists/L1/members/P1'] = {
+        pinId: 'P1', pinOwnerId: 'bob', addedBy: 'alice',
+        overrides: dictOverrides,
+      };
+      const { app, ops } = buildApp({ verifyIdToken, seed });
+      const res = await postOverrides(app, { overrides: { category: 'food' } });
+      expect(res.status).toBe(200);
+      const update = ops.find((o) => o.type === 'update' && o.path === 'lists/L1/members/P1');
+      expect(update.data['overrides.category']).toBe('food');
+    });
+
     it('round-4 F34: succeeds when member.overrides is a plain object (round-trip update path)', async () => {
       const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
       const seed = defaultSeed();
