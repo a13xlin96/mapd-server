@@ -89,11 +89,20 @@ function buildFirestoreMock(seed = {}) {
   };
 }
 
-function buildApp({ seed = {}, verifyIdToken, firestoreOverride } = {}) {
+function buildApp({ seed = {}, verifyIdToken, firestoreOverride, defaultFlags = true } = {}) {
   let app;
   let helpers;
   jest.isolateModules(() => {
-    helpers = buildFirestoreMock(seed);
+    // Round-6 F19: the endpoint now fails closed when /configs/featureFlags
+    // is missing or doesn't have a boolean freezeListMembershipWrites.
+    // Default-seed it to `false` (the steady-state operational value) so
+    // existing tests don't all need to spell out the flag. Tests that
+    // exercise the missing-doc / missing-field cases pass `defaultFlags:
+    // false` to opt out, then either omit the doc or seed it explicitly.
+    const baseSeed = defaultFlags
+      ? { 'configs/featureFlags': { freezeListMembershipWrites: false } }
+      : {};
+    helpers = buildFirestoreMock({ ...baseSeed, ...seed });
     const firestore = firestoreOverride === undefined
       ? helpers.firestoreMock
       : firestoreOverride;
@@ -293,6 +302,55 @@ describe('POST /lists/:listId/members/:pinId/remove', () => {
       expect(ops).toHaveLength(0);
     });
 
+    it('round-6 F18: fails closed with 409 when viewerIds is undefined and caller is in collaboratorIds (auth-bypass closed)', async () => {
+      // Without this fix, a viewer in collaboratorIds with viewerIds
+      // simply deleted from the list doc would be silently classified as
+      // editor (`!isViewer` becomes vacuously true). Now: missing role
+      // arrays for non-owners → 409.
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'carol' });
+      const { app, ops } = buildApp({
+        verifyIdToken,
+        seed: {
+          'lists/L1': {
+            ownerId: 'alice',
+            collaboratorIds: ['bob', 'carol'],
+            // viewerIds intentionally absent
+            name: 'My List',
+          },
+          'pins/P1': { userId: 'alice', placeName: 'Cafe', listIds: ['L1'] },
+          'lists/L1/members/P1': { pinId: 'P1' },
+        },
+      });
+      const res = await request(app)
+        .post('/lists/L1/members/P1/remove')
+        .set('Authorization', 'Bearer good');
+      expect(res.status).toBe(409);
+      expect(res.body.error).toMatch(/missing or malformed/);
+      expect(ops).toHaveLength(0);
+    });
+
+    it('round-6 F18: fails closed with 409 when collaboratorIds is undefined and caller is non-owner', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'carol' });
+      const { app, ops } = buildApp({
+        verifyIdToken,
+        seed: {
+          'lists/L1': {
+            ownerId: 'alice',
+            // collaboratorIds intentionally absent
+            viewerIds: [],
+            name: 'My List',
+          },
+          'pins/P1': { userId: 'alice', placeName: 'Cafe', listIds: ['L1'] },
+          'lists/L1/members/P1': { pinId: 'P1' },
+        },
+      });
+      const res = await request(app)
+        .post('/lists/L1/members/P1/remove')
+        .set('Authorization', 'Bearer good');
+      expect(res.status).toBe(409);
+      expect(ops).toHaveLength(0);
+    });
+
     it('round-5: owner is unaffected by malformed role arrays — still succeeds', async () => {
       // Owner authority does not depend on role arrays, so corrupted
       // collaboratorIds/viewerIds must not lock the owner out of removing
@@ -388,10 +446,15 @@ describe('POST /lists/:listId/members/:pinId/remove', () => {
       expect(ops.some((o) => o.type === 'delete' && o.path === 'lists/L1/members/P1')).toBe(true);
     });
 
-    it('proceeds when configs/featureFlags doc does not exist (default-to-not-frozen)', async () => {
+    it('round-6 F19: fails closed with 409 when /configs/featureFlags doc does not exist', async () => {
+      // Round-5 treated missing doc as "not frozen" (fail-open). Round-6
+      // tightens this — if an admin accidentally deletes the config doc
+      // or a fresh environment hasn't initialized it, the endpoint must
+      // refuse to mutate. Operators see a 409 and know to initialize.
       const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
       const { app, ops } = buildApp({
         verifyIdToken,
+        defaultFlags: false,
         seed: {
           // configs/featureFlags intentionally absent.
           'lists/L1': { ownerId: 'alice', collaboratorIds: [], viewerIds: [], name: 'My List' },
@@ -402,7 +465,48 @@ describe('POST /lists/:listId/members/:pinId/remove', () => {
       const res = await request(app)
         .post('/lists/L1/members/P1/remove')
         .set('Authorization', 'Bearer good');
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(409);
+      expect(res.body.error).toMatch(/missing/);
+      expect(ops).toHaveLength(0);
+    });
+
+    it('round-6 F19: fails closed with 409 when freezeListMembershipWrites field is missing', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const { app, ops } = buildApp({
+        verifyIdToken,
+        defaultFlags: false,
+        seed: {
+          'configs/featureFlags': { somethingElse: true }, // doc exists but field missing
+          'lists/L1': { ownerId: 'alice', collaboratorIds: [], viewerIds: [], name: 'My List' },
+          'pins/P1': { userId: 'bob', placeName: 'Cafe', listIds: ['L1'] },
+          'lists/L1/members/P1': { pinId: 'P1' },
+        },
+      });
+      const res = await request(app)
+        .post('/lists/L1/members/P1/remove')
+        .set('Authorization', 'Bearer good');
+      expect(res.status).toBe(409);
+      expect(res.body.error).toMatch(/freezeListMembershipWrites/);
+      expect(ops).toHaveLength(0);
+    });
+
+    it('round-6 F19: fails closed with 409 when freezeListMembershipWrites is non-boolean', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const { app, ops } = buildApp({
+        verifyIdToken,
+        defaultFlags: false,
+        seed: {
+          'configs/featureFlags': { freezeListMembershipWrites: 'true' }, // STRING, not bool
+          'lists/L1': { ownerId: 'alice', collaboratorIds: [], viewerIds: [], name: 'My List' },
+          'pins/P1': { userId: 'bob', placeName: 'Cafe', listIds: ['L1'] },
+          'lists/L1/members/P1': { pinId: 'P1' },
+        },
+      });
+      const res = await request(app)
+        .post('/lists/L1/members/P1/remove')
+        .set('Authorization', 'Bearer good');
+      expect(res.status).toBe(409);
+      expect(ops).toHaveLength(0);
     });
   });
 
