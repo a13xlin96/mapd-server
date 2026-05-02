@@ -107,14 +107,37 @@ function buildApp({ seed = {}, verifyIdToken, firestoreOverride, defaultFlags = 
     // Round-7 F20: the endpoint requires lists.pinCount to be a positive
     // integer before decrementing. Inject a default of 1 into any seeded
     // list doc (path matching exactly `lists/{id}`, not subcollections)
-    // that doesn't already specify pinCount. Tests exercising the F20
-    // validation explicitly set pinCount to whatever they want.
+    // that doesn't already specify pinCount.
+    //
+    // P4-8 F53: the remove endpoint now also checks member.pinId and
+    // member.pinOwnerId match the pin doc's userId. Old tests seeded
+    // `members/P1: { pinId: 'P1' }` without pinOwnerId — auto-fill it
+    // from the corresponding pin's userId. Tests exercising the F53
+    // validators explicitly set whatever invalid values they want.
     for (const path of Object.keys(merged)) {
       const segments = path.split('/');
       if (segments.length === 2 && segments[0] === 'lists') {
         const data = merged[path];
         if (data && typeof data === 'object' && !Object.prototype.hasOwnProperty.call(data, 'pinCount')) {
           merged[path] = { pinCount: 1, ...data };
+        }
+      } else if (segments.length === 4 && segments[0] === 'lists' && segments[2] === 'members') {
+        const data = merged[path];
+        if (data && typeof data === 'object') {
+          const pinId = segments[3];
+          const pinPath = `pins/${pinId}`;
+          const pinData = merged[pinPath];
+          const pinOwnerId = (pinData && typeof pinData === 'object' && typeof pinData.userId === 'string')
+            ? pinData.userId
+            : undefined;
+          const filled = { ...data };
+          if (!Object.prototype.hasOwnProperty.call(filled, 'pinId')) {
+            filled.pinId = pinId;
+          }
+          if (!Object.prototype.hasOwnProperty.call(filled, 'pinOwnerId') && pinOwnerId !== undefined) {
+            filled.pinOwnerId = pinOwnerId;
+          }
+          merged[path] = filled;
         }
       }
     }
@@ -1371,10 +1394,12 @@ describe('POST /lists/:listId/members/:pinId/remove', () => {
       expect(ops).toHaveLength(0);
     });
 
-    it('round-7 F20: drift case (pin does not claim membership) bypasses pinCount check entirely', async () => {
-      // When pinClaimsMembership is false, no decrement happens; the
-      // pinCount validator must NOT fire. Otherwise legitimate drift
-      // cleanup of a stale member doc would also fail closed.
+    it('round-12 F52 supersedes round-7 F20 drift bypass: drift cases now 409 BEFORE pinCount check', async () => {
+      // Round-7 F20 had a drift bypass for pinCount validation since
+      // drift-cleanup didn't decrement. Round-12 F52 eliminated drift
+      // cleanup entirely — drift cases 409 first, before pinCount even
+      // gets considered. The bypass test is now obsolete; the new
+      // behavior is "drift = 409 regardless of pinCount state".
       const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
       const { app, ops } = buildApp({
         verifyIdToken,
@@ -1384,7 +1409,7 @@ describe('POST /lists/:listId/members/:pinId/remove', () => {
             collaboratorIds: [],
             viewerIds: [],
             name: 'My List',
-            pinCount: undefined, // would normally fail F20
+            pinCount: undefined,
           },
           'pins/P1': { userId: 'bob', placeName: 'Cafe', listIds: ['L_OTHER'] }, // drift
           'lists/L1/members/P1': { pinId: 'P1' },
@@ -1393,9 +1418,9 @@ describe('POST /lists/:listId/members/:pinId/remove', () => {
       const res = await request(app)
         .post('/lists/L1/members/P1/remove')
         .set('Authorization', 'Bearer good');
-      expect(res.status).toBe(200);
-      expect(ops.some((o) => o.type === 'delete' && o.path === 'lists/L1/members/P1')).toBe(true);
-      expect(ops.some((o) => o.type === 'update' && o.path === 'lists/L1')).toBe(false);
+      expect(res.status).toBe(409);
+      expect(res.body.error).toMatch(/does not claim membership/);
+      expect(ops).toHaveLength(0);
     });
   });
 
@@ -1613,36 +1638,28 @@ describe('POST /lists/:listId/members/:pinId/remove', () => {
   });
 
   describe('pin-gone case', () => {
-    // Codex round-2 fix: pin-gone is a drift-cleanup case (we can't prove
-    // pinCount was ever bumped for this stale member). We delete the
-    // member doc only; pinCount stays as-is and admin reconcile repairs
-    // any resulting drift-high count authoritatively. No pin write or
-    // activity event is possible since the pin is gone.
-    it('removes the member doc only; does NOT decrement pinCount, write to pin, or emit event (reconcile-safe)', async () => {
+    // Codex P4-8 F52: previously a drift-cleanup case (delete member
+    // doc, skip decrement). Round-12 tightened the remove route to
+    // align with the override route's fail-closed corruption policy:
+    // missing pin doc → 409 reconcile, NOT destructive delete. Stale-
+    // member cleanup belongs in /admin/scrub-orphan-members, not in
+    // this user-facing remove flow.
+    it('returns 409 when pin no longer exists (was drift cleanup pre-P4-8 F52); admin scrub handles stale members', async () => {
       const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
       const { app, ops } = buildApp({
         verifyIdToken,
         seed: {
           'lists/L1': { ownerId: 'alice', collaboratorIds: [], viewerIds: [] },
           // /pins/P1 intentionally absent
-          'lists/L1/members/P1': { pinId: 'P1' },
+          'lists/L1/members/P1': { pinId: 'P1', pinOwnerId: 'bob' },
         },
       });
       const res = await request(app)
         .post('/lists/L1/members/P1/remove')
         .set('Authorization', 'Bearer good');
-      expect(res.status).toBe(200);
-      expect(res.body).toEqual({ ok: true, alreadyGone: false });
-
-      // Member deleted; nothing else touched.
-      expect(ops.some((o) => o.type === 'delete' && o.path === 'lists/L1/members/P1')).toBe(true);
-      expect(ops.some((o) => o.type === 'update' && o.path === 'lists/L1')).toBe(false);
-      expect(ops.some((o) => o.path === 'pins/P1')).toBe(false);
-      expect(
-        ops.some(
-          (o) => o.type === 'set' && o.data && o.data.type === 'list_member_removed_by_editor'
-        )
-      ).toBe(false);
+      expect(res.status).toBe(409);
+      expect(res.body.error).toMatch(/Pin no longer exists/);
+      expect(ops).toHaveLength(0);
     });
   });
 
@@ -1675,13 +1692,17 @@ describe('POST /lists/:listId/members/:pinId/remove', () => {
     //   (b) trigger an activity event to the pin's owner.
     // Member-doc cleanup + list pinCount fixup are still correct.
 
-    it('drift: pin.listIds does not include listId — deletes member doc only; does NOT decrement pinCount, write to pin, or emit event', async () => {
-      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' }); // owner
+    // Codex P4-8 F52: drift cases (pin authoritatively says NOT in list,
+    // or pin.listIds missing) now 409 instead of doing destructive
+    // cleanup. Symmetry with the override endpoint's fail-closed
+    // corruption policy. Stale members are scrub's job, not this route.
+
+    it('round-12 F52: pin.listIds does not include listId → 409 (was drift-cleanup pre-fix)', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
       const { app, ops } = buildApp({
         verifyIdToken,
         seed: {
           'lists/L1': { ownerId: 'alice', collaboratorIds: [], viewerIds: [], name: 'My List' },
-          // Pin claims to be in a DIFFERENT list — the member doc here is stale.
           'pins/P1': { userId: 'bob', placeName: 'Cafe', listIds: ['L_OTHER'] },
           'lists/L1/members/P1': { pinId: 'P1' },
         },
@@ -1689,26 +1710,12 @@ describe('POST /lists/:listId/members/:pinId/remove', () => {
       const res = await request(app)
         .post('/lists/L1/members/P1/remove')
         .set('Authorization', 'Bearer good');
-      expect(res.status).toBe(200);
-      expect(res.body).toEqual({ ok: true, alreadyGone: false });
-
-      // Member-doc cleanup is correct (the doc was stale).
-      expect(ops.some((o) => o.type === 'delete' && o.path === 'lists/L1/members/P1')).toBe(true);
-      // Codex round-2: do NOT decrement pinCount in drift mode — we can't
-      // prove the list ever counted this member, and a double-decrement
-      // would corrupt below the true count with no idempotent recovery.
-      expect(ops.some((o) => o.type === 'update' && o.path === 'lists/L1')).toBe(false);
-      // Trust boundary: NO write to the unrelated pin doc.
-      expect(ops.some((o) => o.path === 'pins/P1')).toBe(false);
-      // Trust boundary: NO bogus activity notification to bob.
-      expect(
-        ops.some(
-          (o) => o.type === 'set' && o.data && o.data.type === 'list_member_removed_by_editor'
-        )
-      ).toBe(false);
+      expect(res.status).toBe(409);
+      expect(res.body.error).toMatch(/does not claim membership/);
+      expect(ops).toHaveLength(0);
     });
 
-    it('drift: pin.listIds is missing — same drift behavior (no list/pin write, no event)', async () => {
+    it('round-12 F52: pin.listIds is missing → 409 (was drift-cleanup pre-fix)', async () => {
       const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
       const { app, ops } = buildApp({
         verifyIdToken,
@@ -1721,12 +1728,9 @@ describe('POST /lists/:listId/members/:pinId/remove', () => {
       const res = await request(app)
         .post('/lists/L1/members/P1/remove')
         .set('Authorization', 'Bearer good');
-      expect(res.status).toBe(200);
-      expect(ops.some((o) => o.type === 'update' && o.path === 'lists/L1')).toBe(false);
-      expect(ops.some((o) => o.path === 'pins/P1')).toBe(false);
-      expect(
-        ops.some((o) => o.data && o.data.type === 'list_member_removed_by_editor')
-      ).toBe(false);
+      expect(res.status).toBe(409);
+      expect(res.body.error).toMatch(/missing or malformed/);
+      expect(ops).toHaveLength(0);
     });
 
     it('malformed: pin.listIds is non-array (schema corruption) — fail closed with 409, do NOT delete the member doc (Codex round-3)', async () => {
@@ -1934,6 +1938,61 @@ describe('POST /lists/:listId/members/:pinId/remove', () => {
       expect(Array.from(event.data.listName).length).toBe(256);
       // No lone surrogates anywhere in the truncated string.
       expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(event.data.listName)).toBe(false);
+    });
+
+    it('round-12 F54: sanitizes hostile listName before writing to event (HTML/control chars filtered)', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const { app, ops } = buildApp({
+        verifyIdToken,
+        seed: {
+          'lists/L1': {
+            ownerId: 'alice',
+            collaboratorIds: [],
+            viewerIds: [],
+            // Hostile owner-controlled name with angle brackets — would
+            // leak into cross-user events without sanitization.
+            name: '<script>steal()</script>',
+          },
+          'pins/P1': { userId: 'bob', placeName: 'Cafe', listIds: ['L1'] },
+          'lists/L1/members/P1': { pinId: 'P1' },
+        },
+      });
+      const res = await request(app)
+        .post('/lists/L1/members/P1/remove')
+        .set('Authorization', 'Bearer good');
+      expect(res.status).toBe(200);
+      const event = ops.find(
+        (o) => o.type === 'set' && o.data && o.data.type === 'list_member_removed_by_editor'
+      );
+      expect(event).toBeDefined();
+      // Sanitizer rejects → falls back to empty string. The unsafe text
+      // never persists in the event doc.
+      expect(event.data.listName).toBe('');
+    });
+
+    it('round-12 F54: sanitizes hostile pinPlaceName before writing to event (zero-width spoofing filtered)', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const { app, ops } = buildApp({
+        verifyIdToken,
+        seed: {
+          'lists/L1': { ownerId: 'alice', collaboratorIds: [], viewerIds: [], name: 'My List' },
+          'pins/P1': {
+            userId: 'bob',
+            // Pin owner inserted a zero-width char to spoof rendering
+            placeName: 'Trusted​Spot',
+            listIds: ['L1'],
+          },
+          'lists/L1/members/P1': { pinId: 'P1' },
+        },
+      });
+      const res = await request(app)
+        .post('/lists/L1/members/P1/remove')
+        .set('Authorization', 'Bearer good');
+      expect(res.status).toBe(200);
+      const event = ops.find(
+        (o) => o.type === 'set' && o.data && o.data.type === 'list_member_removed_by_editor'
+      );
+      expect(event.data.pinPlaceName).toBe(''); // sanitizer rejects, falls back
     });
 
     it('coerces a non-string listName to empty string (defensive)', async () => {
