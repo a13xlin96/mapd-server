@@ -392,6 +392,55 @@ describe('POST /lists/:listId/members/:pinId/overrides (Phase 4 P4-7)', () => {
       expect(ops).toHaveLength(0);
     });
 
+    it('round-4 F34: returns 409 when member.overrides is a scalar (would crash Firestore nested update)', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const seed = defaultSeed();
+      seed['lists/L1/members/P1'] = {
+        pinId: 'P1', pinOwnerId: 'bob', addedBy: 'alice',
+        overrides: 'corrupted-string',
+      };
+      const { app, ops } = buildApp({ verifyIdToken, seed });
+      const res = await postOverrides(app, { overrides: { category: 'food' } });
+      expect(res.status).toBe(409);
+      expect(res.body.error).toMatch(/overrides field is malformed/);
+      expect(ops).toHaveLength(0);
+    });
+
+    it('round-4 F34: returns 409 when member.overrides is an array', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const seed = defaultSeed();
+      seed['lists/L1/members/P1'] = {
+        pinId: 'P1', pinOwnerId: 'bob', addedBy: 'alice',
+        overrides: ['food'],
+      };
+      const { app, ops } = buildApp({ verifyIdToken, seed });
+      const res = await postOverrides(app, { overrides: { category: 'food' } });
+      expect(res.status).toBe(409);
+      expect(ops).toHaveLength(0);
+    });
+
+    it('round-4 F34: succeeds when member.overrides is absent (initial-write path)', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const { app, ops } = buildApp({ verifyIdToken, seed: defaultSeed() });
+      const res = await postOverrides(app, { overrides: { category: 'food' } });
+      expect(res.status).toBe(200);
+      expect(ops.find((o) => o.type === 'update' && o.path === 'lists/L1/members/P1')).toBeDefined();
+    });
+
+    it('round-4 F34: succeeds when member.overrides is a plain object (round-trip update path)', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const seed = defaultSeed();
+      seed['lists/L1/members/P1'] = {
+        pinId: 'P1', pinOwnerId: 'bob', addedBy: 'alice',
+        overrides: { placeName: 'Old Name' },
+      };
+      const { app, ops } = buildApp({ verifyIdToken, seed });
+      const res = await postOverrides(app, { overrides: { category: 'food' } });
+      expect(res.status).toBe(200);
+      const update = ops.find((o) => o.type === 'update' && o.path === 'lists/L1/members/P1');
+      expect(update.data['overrides.category']).toBe('food');
+    });
+
     it('round-2 F31: returns 409 when member doc pinId does not match URL pinId', async () => {
       const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
       const seed = defaultSeed();
