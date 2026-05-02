@@ -484,6 +484,78 @@ describe('POST /lists/:listId/members/:pinId/remove', () => {
       expect(res.status).toBe(409);
       expect(ops).toHaveLength(0);
     });
+
+    it('malformed: pin.listIds is null (Codex round-4) — fails closed with 409', async () => {
+      // Round-3 treated null as "absent" (drift cleanup OK). Round-4
+      // tightens this — null is a corruption signal indistinguishable
+      // from "we never wrote listIds correctly", so we must fail closed.
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const { app, ops, store } = buildApp({
+        verifyIdToken,
+        seed: {
+          'lists/L1': { ownerId: 'alice', collaboratorIds: [], viewerIds: [] },
+          'pins/P1': { userId: 'bob', placeName: 'Cafe', listIds: null },
+          'lists/L1/members/P1': { pinId: 'P1' },
+        },
+      });
+      const res = await request(app)
+        .post('/lists/L1/members/P1/remove')
+        .set('Authorization', 'Bearer good');
+      expect(res.status).toBe(409);
+      expect(ops).toHaveLength(0);
+      expect(store.has('lists/L1/members/P1')).toBe(true);
+    });
+
+    it('malformed: pin.listIds is an array with non-string entries (Codex round-4) — fails closed with 409', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const { app, ops } = buildApp({
+        verifyIdToken,
+        seed: {
+          'lists/L1': { ownerId: 'alice', collaboratorIds: [], viewerIds: [] },
+          'pins/P1': { userId: 'bob', placeName: 'Cafe', listIds: ['L1', 42] },
+          'lists/L1/members/P1': { pinId: 'P1' },
+        },
+      });
+      const res = await request(app)
+        .post('/lists/L1/members/P1/remove')
+        .set('Authorization', 'Bearer good');
+      expect(res.status).toBe(409);
+      expect(ops).toHaveLength(0);
+    });
+
+    it('malformed: pin.listIds is an array with null entries (Codex round-4) — fails closed with 409', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const { app, ops } = buildApp({
+        verifyIdToken,
+        seed: {
+          'lists/L1': { ownerId: 'alice', collaboratorIds: [], viewerIds: [] },
+          'pins/P1': { userId: 'bob', placeName: 'Cafe', listIds: [null, 'L1'] },
+          'lists/L1/members/P1': { pinId: 'P1' },
+        },
+      });
+      const res = await request(app)
+        .post('/lists/L1/members/P1/remove')
+        .set('Authorization', 'Bearer good');
+      expect(res.status).toBe(409);
+      expect(ops).toHaveLength(0);
+    });
+
+    it('malformed: pin.listIds contains an empty string (Codex round-4) — fails closed with 409', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const { app, ops } = buildApp({
+        verifyIdToken,
+        seed: {
+          'lists/L1': { ownerId: 'alice', collaboratorIds: [], viewerIds: [] },
+          'pins/P1': { userId: 'bob', placeName: 'Cafe', listIds: ['L1', ''] },
+          'lists/L1/members/P1': { pinId: 'P1' },
+        },
+      });
+      const res = await request(app)
+        .post('/lists/L1/members/P1/remove')
+        .set('Authorization', 'Bearer good');
+      expect(res.status).toBe(409);
+      expect(ops).toHaveLength(0);
+    });
   });
 
   describe('event payload bounds (Codex round-3 fix)', () => {
@@ -541,6 +613,41 @@ describe('POST /lists/:listId/members/:pinId/remove', () => {
       expect(event).toBeDefined();
       expect(event.data.pinPlaceName.length).toBeLessThanOrEqual(256);
       expect(event.data.pinPlaceName).toBe('B'.repeat(256));
+    });
+
+    it('truncates by code points, not UTF-16 code units — astral chars at the boundary are not split into lone surrogates (Codex round-4)', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      // 255 emoji + suffix → if naive .slice(0, 256) on UTF-16 units,
+      // the 256th unit cuts a surrogate pair in half. Code-point-based
+      // truncation keeps every grapheme intact.
+      const emoji = '\u{1F600}'; // 😀 — 2 UTF-16 code units, 1 code point
+      const longName = emoji.repeat(300);
+      const { app, ops } = buildApp({
+        verifyIdToken,
+        seed: {
+          'lists/L1': {
+            ownerId: 'alice',
+            collaboratorIds: [],
+            viewerIds: [],
+            name: longName,
+          },
+          'pins/P1': { userId: 'bob', placeName: 'Cafe', listIds: ['L1'] },
+          'lists/L1/members/P1': { pinId: 'P1' },
+        },
+      });
+      const res = await request(app)
+        .post('/lists/L1/members/P1/remove')
+        .set('Authorization', 'Bearer good');
+      expect(res.status).toBe(200);
+      const event = ops.find(
+        (o) => o.type === 'set' && o.data && o.data.type === 'list_member_removed_by_editor'
+      );
+      expect(event).toBeDefined();
+      // Code-point truncation: 256 code points = 256 emoji. Code-unit
+      // truncation would have cut to 256 UTF-16 units = 128 emoji.
+      expect(Array.from(event.data.listName).length).toBe(256);
+      // No lone surrogates anywhere in the truncated string.
+      expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(event.data.listName)).toBe(false);
     });
 
     it('coerces a non-string listName to empty string (defensive)', async () => {
@@ -635,12 +742,15 @@ describe('POST /lists/:listId/members/:pinId/remove', () => {
     });
   });
 
-  describe('mid-transaction races (Codex round-1 fix)', () => {
-    // The mock now models real Firestore: txn.update against a doc that
-    // disappeared between the read phase and commit will throw. The
-    // endpoint must surface that as a 500 rather than swallowing it.
-
-    it('returns 500 and atomically aborts (no partial mutation) when the list is deleted between read and commit', async () => {
+  describe('transaction commit failure surfacing (mock-bounded)', () => {
+    // SCOPE NOTE (Codex round-4 F12): this mock executes the transaction
+    // callback exactly once and treats commit failure as fatal. Real
+    // Firestore retries the callback on conflicts and only surfaces a
+    // failure after exhausting retries. So this test does NOT prove
+    // race-correctness under retry semantics — only that an unrecoverable
+    // commit failure surfaces as a 500 with no partial mutation. True
+    // race coverage belongs in an emulator-driven integration test.
+    it('surfaces an unrecoverable commit failure as 500 with no partial mutation', async () => {
       const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
       const { app, store, firestoreMock, ops } = buildApp({
         verifyIdToken,
@@ -650,15 +760,14 @@ describe('POST /lists/:listId/members/:pinId/remove', () => {
           'lists/L1/members/P1': { pinId: 'P1' },
         },
       });
-      // Simulate concurrent delete: list disappears AFTER reads but BEFORE
-      // commit. Real Firestore aborts the whole transaction atomically;
-      // the round-3 mock validates ALL update preconditions before any
-      // mutation, so we now actually prove no partial state is observable.
+      // Inject an unrecoverable commit failure by removing the list doc
+      // between callback completion and commit. The atomic-validation
+      // pass throws before any op is applied.
       const originalRun = firestoreMock.runTransaction;
       firestoreMock.runTransaction = async (fn) => {
         const wrappedFn = async (txn) => {
           const result = await fn(txn);
-          store.delete('lists/L1'); // race
+          store.delete('lists/L1');
           return result;
         };
         return originalRun(wrappedFn);
@@ -669,11 +778,9 @@ describe('POST /lists/:listId/members/:pinId/remove', () => {
         .set('Authorization', 'Bearer good');
       expect(res.status).toBe(500);
       expect(res.body.error).toBeDefined();
-      // Atomicity check: the ops array is populated only after a successful
-      // apply phase, so a thrown commit leaves it empty.
+      // Atomicity: ops list is populated only after a successful apply
+      // pass, so a thrown commit must leave it empty.
       expect(ops).toHaveLength(0);
-      // Member doc remains intact because no partial mutation reached the
-      // store — exactly what real Firestore would guarantee.
       expect(store.has('lists/L1/members/P1')).toBe(true);
     });
   });
