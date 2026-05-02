@@ -527,6 +527,54 @@ describe('POST /lists/:listId/members/:pinId/overrides (Phase 4 P4-7)', () => {
       expect(ops).toHaveLength(0);
     });
 
+    it('round-7 F40: caller CAN clear a corrupted existing placeName via null (skip-validation for overwritten keys)', async () => {
+      // Round-6 would have rejected this because validateStoredOverrides
+      // ran on pre-patch state. Round-7 skips validation for the keys
+      // the request is overwriting or deleting, so recovery works.
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const seed = defaultSeed();
+      seed['lists/L1/members/P1'] = {
+        pinId: 'P1', pinOwnerId: 'bob', addedBy: 'alice',
+        overrides: { placeName: '<script>poisoned</script>' },
+      };
+      const { app, ops } = buildApp({ verifyIdToken, seed });
+      const res = await postOverrides(app, { overrides: { placeName: null } });
+      expect(res.status).toBe(200);
+      const update = ops.find((o) => o.type === 'update' && o.path === 'lists/L1/members/P1');
+      expect(update.data['overrides.placeName']).toEqual({ _delete: true });
+    });
+
+    it('round-7 F40: caller CAN replace a corrupted existing placeName with a clean value', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const seed = defaultSeed();
+      seed['lists/L1/members/P1'] = {
+        pinId: 'P1', pinOwnerId: 'bob', addedBy: 'alice',
+        overrides: { placeName: '<script>poisoned</script>' },
+      };
+      const { app, ops } = buildApp({ verifyIdToken, seed });
+      const res = await postOverrides(app, { overrides: { placeName: 'Cleaned Name' } });
+      expect(res.status).toBe(200);
+      const update = ops.find((o) => o.type === 'update' && o.path === 'lists/L1/members/P1');
+      expect(update.data['overrides.placeName']).toBe('Cleaned Name');
+    });
+
+    it('round-7 F40: untouched corrupted fields still 409 (only OVERWRITTEN keys skip validation)', async () => {
+      // Existing overrides has TWO bad fields: placeName (HTML) and
+      // category (invalid enum). Request only patches placeName.
+      // category is still validated → 409.
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const seed = defaultSeed();
+      seed['lists/L1/members/P1'] = {
+        pinId: 'P1', pinOwnerId: 'bob', addedBy: 'alice',
+        overrides: { placeName: '<bad>', category: 'pizza' },
+      };
+      const { app, ops } = buildApp({ verifyIdToken, seed });
+      const res = await postOverrides(app, { overrides: { placeName: 'Cleaned' } });
+      expect(res.status).toBe(409);
+      expect(res.body.error).toMatch(/existing overrides\.category/);
+      expect(ops).toHaveLength(0);
+    });
+
     it('round-6 F38: returns 409 when existing overrides.placeName is null (should have been cleared via FieldValue.delete)', async () => {
       const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
       const seed = defaultSeed();
