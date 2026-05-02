@@ -276,7 +276,7 @@ describe('POST /lists/:listId/members/:pinId/overrides (Phase 4 P4-7)', () => {
       const { app, ops } = buildApp({ verifyIdToken, seed: defaultSeed() });
       const res = await postOverrides(app, { overrides: { category: 'food' } });
       expect(res.status).toBe(200);
-      expect(res.body).toEqual({ ok: true });
+      expect(res.body).toEqual({ ok: true, changed: true });
       const update = ops.find((o) => o.type === 'update' && o.path === 'lists/L1/members/P1');
       expect(update).toBeDefined();
       expect(update.data['overrides.category']).toBe('food');
@@ -887,6 +887,58 @@ describe('POST /lists/:listId/members/:pinId/overrides (Phase 4 P4-7)', () => {
         (o) => o.type === 'set' && o.data && o.data.type === 'list_member_overridden_by_editor'
       );
       expect(event).toBeUndefined();
+    });
+
+    it('round-10 F46: re-sending the same value is a semantic no-op — no write, no event', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const seed = defaultSeed();
+      seed['lists/L1/members/P1'] = {
+        pinId: 'P1', pinOwnerId: 'bob', addedBy: 'alice',
+        overrides: { category: 'food' },
+      };
+      const { app, ops } = buildApp({ verifyIdToken, seed });
+      const res = await postOverrides(app, { overrides: { category: 'food' } });
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ ok: true, changed: false });
+      // No member-doc write, no event.
+      expect(ops.find((o) => o.type === 'update' && o.path === 'lists/L1/members/P1')).toBeUndefined();
+      expect(ops.find((o) => o.data && o.data.type === 'list_member_overridden_by_editor')).toBeUndefined();
+    });
+
+    it('round-10 F46: clearing an already-absent field is a no-op', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const seed = defaultSeed();
+      // No existing overrides at all.
+      const { app, ops } = buildApp({ verifyIdToken, seed });
+      const res = await postOverrides(app, { overrides: { placeName: null } });
+      expect(res.status).toBe(200);
+      expect(res.body.changed).toBe(false);
+      expect(ops.find((o) => o.type === 'update')).toBeUndefined();
+    });
+
+    it('round-10 F46: partial change writes only the actually-changed field; event reflects only that field', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const seed = defaultSeed();
+      seed['lists/L1/members/P1'] = {
+        pinId: 'P1', pinOwnerId: 'bob', addedBy: 'alice',
+        overrides: { category: 'food', placeName: 'Existing' },
+      };
+      const { app, ops } = buildApp({ verifyIdToken, seed });
+      // Re-send same category + change placeName.
+      const res = await postOverrides(app, {
+        overrides: { category: 'food', placeName: 'New Name' },
+      });
+      expect(res.status).toBe(200);
+      expect(res.body.changed).toBe(true);
+
+      const update = ops.find((o) => o.type === 'update' && o.path === 'lists/L1/members/P1');
+      expect(update).toBeDefined();
+      // Only the placeName key in the patch — category was unchanged.
+      expect(Object.keys(update.data)).toEqual(['overrides.placeName']);
+      expect(update.data['overrides.placeName']).toBe('New Name');
+
+      const event = ops.find((o) => o.data && o.data.type === 'list_member_overridden_by_editor');
+      expect(event.data.changedFields).toEqual(['placeName']);
     });
 
     it('round-9 F44: changedFields list reflects exactly the keys touched (set + delete)', async () => {
