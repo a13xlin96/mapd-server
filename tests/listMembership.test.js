@@ -53,12 +53,24 @@ function buildFirestoreMock(seed = {}) {
           delete: (ref) => txnOps.push({ type: 'delete', path: ref._path }),
         };
         const result = await fn(txn);
-        // "Commit" — apply ops with Firestore-faithful semantics so tests
-        // catch races the lenient mock would have hidden:
-        //   - txn.update against a missing doc THROWS (matches prod, where
-        //     a doc deleted between read and commit fails the transaction)
-        //   - txn.set against a missing doc CREATES it (matches prod)
-        //   - txn.delete against a missing doc is a no-op (matches prod)
+        // "Commit" — model Firestore atomically: validate every op's
+        // precondition BEFORE mutating the store. If any update targets a
+        // missing doc, throw with no partial mutation. This matches real
+        // Firestore commit semantics (the previous sequential apply could
+        // partially mutate before a later op threw, giving false confidence
+        // on race tests). Codex round-3 F6 fix.
+        //
+        // Per-op semantics:
+        //   - txn.update against a missing doc: precondition fails → abort
+        //   - txn.set against a missing doc: creates it (matches prod)
+        //   - txn.delete against a missing doc: no-op (matches prod)
+        for (const op of txnOps) {
+          if (op.type === 'update' && !store.has(op.path)) {
+            throw new Error(
+              `runTransaction: cannot update non-existent document ${op.path} (atomic abort)`,
+            );
+          }
+        }
         for (const op of txnOps) {
           ops.push(op);
           if (op.type === 'delete') {
@@ -66,11 +78,6 @@ function buildFirestoreMock(seed = {}) {
           } else if (op.type === 'set') {
             store.set(op.path, op.data);
           } else if (op.type === 'update') {
-            if (!store.has(op.path)) {
-              throw new Error(
-                `runTransaction: cannot update non-existent document ${op.path}`,
-              );
-            }
             store.set(op.path, { ...(store.get(op.path) || {}), ...op.data });
           }
         }
@@ -436,9 +443,14 @@ describe('POST /lists/:listId/members/:pinId/remove', () => {
       ).toBe(false);
     });
 
-    it('drift: pin.listIds is non-array (schema corruption) — treat as drift, do not crash', async () => {
+    it('malformed: pin.listIds is non-array (schema corruption) — fail closed with 409, do NOT delete the member doc (Codex round-3)', async () => {
+      // Round-1 treated this as drift and quietly removed the member doc.
+      // Round-3 reverses that policy: with a corrupted source-of-truth we
+      // cannot prove the membership is stale, so deleting it could erase
+      // a real membership without notifying the pin owner. Fail closed
+      // and leave reconcile to repair.
       const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
-      const { app, ops } = buildApp({
+      const { app, ops, store } = buildApp({
         verifyIdToken,
         seed: {
           'lists/L1': { ownerId: 'alice', collaboratorIds: [], viewerIds: [] },
@@ -449,12 +461,111 @@ describe('POST /lists/:listId/members/:pinId/remove', () => {
       const res = await request(app)
         .post('/lists/L1/members/P1/remove')
         .set('Authorization', 'Bearer good');
+      expect(res.status).toBe(409);
+      expect(res.body.error).toMatch(/malformed|non-array/);
+      // Critical: nothing mutated.
+      expect(ops).toHaveLength(0);
+      expect(store.has('lists/L1/members/P1')).toBe(true);
+    });
+
+    it('malformed: pin.listIds is an object (schema corruption) — also fails closed with 409', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const { app, ops } = buildApp({
+        verifyIdToken,
+        seed: {
+          'lists/L1': { ownerId: 'alice', collaboratorIds: [], viewerIds: [] },
+          'pins/P1': { userId: 'bob', placeName: 'Cafe', listIds: { L1: true } },
+          'lists/L1/members/P1': { pinId: 'P1' },
+        },
+      });
+      const res = await request(app)
+        .post('/lists/L1/members/P1/remove')
+        .set('Authorization', 'Bearer good');
+      expect(res.status).toBe(409);
+      expect(ops).toHaveLength(0);
+    });
+  });
+
+  describe('event payload bounds (Codex round-3 fix)', () => {
+    // listName / pinPlaceName must be bounded before going into the event
+    // doc — otherwise an oversized field can blow past Firestore's 1MB
+    // doc limit and abort the entire member-removal transaction. The
+    // truncation cap is 256 chars (typical place/list names are <80).
+
+    it('truncates a long listName in the activity event payload', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const longName = 'A'.repeat(600);
+      const { app, ops } = buildApp({
+        verifyIdToken,
+        seed: {
+          'lists/L1': {
+            ownerId: 'alice',
+            collaboratorIds: [],
+            viewerIds: [],
+            name: longName,
+          },
+          'pins/P1': { userId: 'bob', placeName: 'Cafe', listIds: ['L1'] },
+          'lists/L1/members/P1': { pinId: 'P1' },
+        },
+      });
+      const res = await request(app)
+        .post('/lists/L1/members/P1/remove')
+        .set('Authorization', 'Bearer good');
       expect(res.status).toBe(200);
-      expect(ops.some((o) => o.type === 'update' && o.path === 'lists/L1')).toBe(false);
-      expect(ops.some((o) => o.path === 'pins/P1')).toBe(false);
-      expect(
-        ops.some((o) => o.data && o.data.type === 'list_member_removed_by_editor')
-      ).toBe(false);
+      const event = ops.find(
+        (o) => o.type === 'set' && o.data && o.data.type === 'list_member_removed_by_editor'
+      );
+      expect(event).toBeDefined();
+      expect(event.data.listName.length).toBeLessThanOrEqual(256);
+      expect(event.data.listName).toBe('A'.repeat(256));
+    });
+
+    it('truncates a long pinPlaceName in the activity event payload', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const longPlace = 'B'.repeat(900);
+      const { app, ops } = buildApp({
+        verifyIdToken,
+        seed: {
+          'lists/L1': { ownerId: 'alice', collaboratorIds: [], viewerIds: [], name: 'My List' },
+          'pins/P1': { userId: 'bob', placeName: longPlace, listIds: ['L1'] },
+          'lists/L1/members/P1': { pinId: 'P1' },
+        },
+      });
+      const res = await request(app)
+        .post('/lists/L1/members/P1/remove')
+        .set('Authorization', 'Bearer good');
+      expect(res.status).toBe(200);
+      const event = ops.find(
+        (o) => o.type === 'set' && o.data && o.data.type === 'list_member_removed_by_editor'
+      );
+      expect(event).toBeDefined();
+      expect(event.data.pinPlaceName.length).toBeLessThanOrEqual(256);
+      expect(event.data.pinPlaceName).toBe('B'.repeat(256));
+    });
+
+    it('coerces a non-string listName to empty string (defensive)', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const { app, ops } = buildApp({
+        verifyIdToken,
+        seed: {
+          'lists/L1': {
+            ownerId: 'alice',
+            collaboratorIds: [],
+            viewerIds: [],
+            name: { unexpected: 'shape' }, // upstream corruption
+          },
+          'pins/P1': { userId: 'bob', placeName: 'Cafe', listIds: ['L1'] },
+          'lists/L1/members/P1': { pinId: 'P1' },
+        },
+      });
+      const res = await request(app)
+        .post('/lists/L1/members/P1/remove')
+        .set('Authorization', 'Bearer good');
+      expect(res.status).toBe(200);
+      const event = ops.find(
+        (o) => o.type === 'set' && o.data && o.data.type === 'list_member_removed_by_editor'
+      );
+      expect(event.data.listName).toBe('');
     });
   });
 
@@ -529,7 +640,7 @@ describe('POST /lists/:listId/members/:pinId/remove', () => {
     // disappeared between the read phase and commit will throw. The
     // endpoint must surface that as a 500 rather than swallowing it.
 
-    it('returns 500 when the list is deleted between read and commit', async () => {
+    it('returns 500 and atomically aborts (no partial mutation) when the list is deleted between read and commit', async () => {
       const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
       const { app, store, firestoreMock, ops } = buildApp({
         verifyIdToken,
@@ -540,7 +651,9 @@ describe('POST /lists/:listId/members/:pinId/remove', () => {
         },
       });
       // Simulate concurrent delete: list disappears AFTER reads but BEFORE
-      // ops apply. Real Firestore would fail the transaction's commit.
+      // commit. Real Firestore aborts the whole transaction atomically;
+      // the round-3 mock validates ALL update preconditions before any
+      // mutation, so we now actually prove no partial state is observable.
       const originalRun = firestoreMock.runTransaction;
       firestoreMock.runTransaction = async (fn) => {
         const wrappedFn = async (txn) => {
@@ -555,12 +668,13 @@ describe('POST /lists/:listId/members/:pinId/remove', () => {
         .post('/lists/L1/members/P1/remove')
         .set('Authorization', 'Bearer good');
       expect(res.status).toBe(500);
-      // Endpoint did not silently succeed; member doc was NOT deleted in
-      // the in-memory store because the apply loop threw before the delete
-      // op was processed (note: order of ops matters — delete might run
-      // before the failing update; the assertion below proves the txn
-      // surfaced as a failure to the caller, which is the contract).
       expect(res.body.error).toBeDefined();
+      // Atomicity check: the ops array is populated only after a successful
+      // apply phase, so a thrown commit leaves it empty.
+      expect(ops).toHaveLength(0);
+      // Member doc remains intact because no partial mutation reached the
+      // store — exactly what real Firestore would guarantee.
+      expect(store.has('lists/L1/members/P1')).toBe(true);
     });
   });
 });
