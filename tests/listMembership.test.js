@@ -357,6 +357,52 @@ describe('POST /lists/:listId/members/:pinId/overrides (Phase 4 P4-7)', () => {
       expect(ops).toHaveLength(0);
     });
 
+    // Codex P4-7 round-1 F24: pin-doc consistency. Mirrors the remove
+    // endpoint's drift-cleanup policy — without these checks an editor
+    // can persist phantom overrides on stale member docs.
+    it('round-1 F24: returns 409 when pin doc no longer exists', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const seed = defaultSeed();
+      delete seed['pins/P1'];
+      const { app, ops } = buildApp({ verifyIdToken, seed });
+      const res = await postOverrides(app, { overrides: { category: 'food' } });
+      expect(res.status).toBe(409);
+      expect(res.body.error).toMatch(/Pin no longer exists/);
+      expect(ops).toHaveLength(0);
+    });
+
+    it('round-1 F24: returns 409 when pin.listIds is malformed (non-array)', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const seed = defaultSeed();
+      seed['pins/P1'] = { userId: 'bob', placeName: 'Cafe', listIds: 'L1' };
+      const { app, ops } = buildApp({ verifyIdToken, seed });
+      const res = await postOverrides(app, { overrides: { category: 'food' } });
+      expect(res.status).toBe(409);
+      expect(res.body.error).toMatch(/listIds is missing or malformed/);
+      expect(ops).toHaveLength(0);
+    });
+
+    it('round-1 F24: returns 409 when pin.listIds is missing', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const seed = defaultSeed();
+      seed['pins/P1'] = { userId: 'bob', placeName: 'Cafe' };
+      const { app, ops } = buildApp({ verifyIdToken, seed });
+      const res = await postOverrides(app, { overrides: { category: 'food' } });
+      expect(res.status).toBe(409);
+      expect(ops).toHaveLength(0);
+    });
+
+    it('round-1 F24: returns 409 when pin.listIds does not include this list (drift)', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const seed = defaultSeed();
+      seed['pins/P1'] = { userId: 'bob', placeName: 'Cafe', listIds: ['L_OTHER'] };
+      const { app, ops } = buildApp({ verifyIdToken, seed });
+      const res = await postOverrides(app, { overrides: { category: 'food' } });
+      expect(res.status).toBe(409);
+      expect(res.body.error).toMatch(/does not claim membership in this list/);
+      expect(ops).toHaveLength(0);
+    });
+
     it('returns 404 when member doc does not exist (cannot override non-membership)', async () => {
       const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
       const seed = defaultSeed();
@@ -419,6 +465,70 @@ describe('POST /lists/:listId/members/:pinId/overrides (Phase 4 P4-7)', () => {
       const update = ops.find((o) => o.type === 'update' && o.path === 'lists/L1/members/P1');
       expect(Array.from(update.data['overrides.placeName']).length).toBe(256);
       expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(update.data['overrides.placeName'])).toBe(false);
+    });
+
+    // Codex P4-7 round-1 F23: sanitize attacker-controlled display strings.
+    it('round-1 F23: rejects placeName that is whitespace-only', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const { app, ops } = buildApp({ verifyIdToken, seed: defaultSeed() });
+      const res = await postOverrides(app, { overrides: { placeName: '   \t  ' } });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/whitespace-only/);
+      expect(ops).toHaveLength(0);
+    });
+
+    it('round-1 F23: rejects placeName containing newline (control char)', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const { app, ops } = buildApp({ verifyIdToken, seed: defaultSeed() });
+      const res = await postOverrides(app, { overrides: { placeName: 'Cafe\nName' } });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/control or bidi/);
+      expect(ops).toHaveLength(0);
+    });
+
+    it('round-1 F23: rejects formattedAddress containing NUL byte', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const { app, ops } = buildApp({ verifyIdToken, seed: defaultSeed() });
+      const res = await postOverrides(app, { overrides: { formattedAddress: '123 Main St' } });
+      expect(res.status).toBe(400);
+      expect(ops).toHaveLength(0);
+    });
+
+    it('round-1 F23: rejects placeName with HTML angle brackets', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const { app, ops } = buildApp({ verifyIdToken, seed: defaultSeed() });
+      const res = await postOverrides(app, { overrides: { placeName: '<script>alert(1)</script>' } });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/angle brackets/);
+      expect(ops).toHaveLength(0);
+    });
+
+    it('round-1 F23: rejects placeName containing a Unicode bidi override char', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const { app, ops } = buildApp({ verifyIdToken, seed: defaultSeed() });
+      // U+202E RIGHT-TO-LEFT OVERRIDE — Trojan-Source-style spoofing.
+      const res = await postOverrides(app, { overrides: { placeName: 'Cafe‮Name' } });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/control or bidi/);
+      expect(ops).toHaveLength(0);
+    });
+
+    it('round-1 F23: trims leading/trailing whitespace before persisting', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const { app, ops } = buildApp({ verifyIdToken, seed: defaultSeed() });
+      const res = await postOverrides(app, { overrides: { placeName: '   Cafe Name   ' } });
+      expect(res.status).toBe(200);
+      const update = ops.find((o) => o.type === 'update' && o.path === 'lists/L1/members/P1');
+      expect(update.data['overrides.placeName']).toBe('Cafe Name');
+    });
+
+    it('round-1 F23: accepts ampersand and other safe punctuation (e.g., "Bed & Breakfast")', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const { app, ops } = buildApp({ verifyIdToken, seed: defaultSeed() });
+      const res = await postOverrides(app, { overrides: { placeName: "Bed & Breakfast — O'Reilly's" } });
+      expect(res.status).toBe(200);
+      const update = ops.find((o) => o.type === 'update' && o.path === 'lists/L1/members/P1');
+      expect(update.data['overrides.placeName']).toBe("Bed & Breakfast — O'Reilly's");
     });
 
     it('accepts all 8 valid Category enum values', async () => {
