@@ -850,6 +850,60 @@ describe('POST /lists/:listId/members/:pinId/overrides (Phase 4 P4-7)', () => {
       expect(update.data['overrides.placeName']).toBe("Bed & Breakfast — O'Reilly's");
     });
 
+    // Codex P4-7 round-9 F44: cross-user overrides need an audit trail
+    // mirroring the remove endpoint's list_member_removed_by_editor.
+
+    it('round-9 F44: writes a list_member_overridden_by_editor event for foreign-pin overrides', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' }); // owner; pin owner is bob
+      const { app, ops } = buildApp({ verifyIdToken, seed: defaultSeed() });
+      const res = await postOverrides(app, { overrides: { category: 'food', placeName: 'Custom' } });
+      expect(res.status).toBe(200);
+
+      const event = ops.find(
+        (o) => o.type === 'set' && o.data && o.data.type === 'list_member_overridden_by_editor'
+      );
+      expect(event).toBeDefined();
+      expect(event.data.userId).toBe('bob');           // recipient = pin owner
+      expect(event.data.overriddenBy).toBe('alice');   // actor
+      expect(event.data.listId).toBe('L1');
+      expect(event.data.pinId).toBe('P1');
+      expect(event.data.changedFields).toEqual(expect.arrayContaining(['category', 'placeName']));
+      expect(event.data.changedFields.length).toBe(2);
+      expect(event.data.listName).toBe('My List');
+      expect(event.data.pinPlaceName).toBe('Cafe');
+    });
+
+    it('round-9 F44: does NOT write an event for self-action (caller IS the pin owner)', async () => {
+      // Alice owns the list AND the pin in this seed.
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const seed = defaultSeed();
+      seed['pins/P1'] = { userId: 'alice', placeName: 'Cafe', listIds: ['L1'] };
+      seed['lists/L1/members/P1'] = { pinId: 'P1', pinOwnerId: 'alice', addedBy: 'alice' };
+      const { app, ops } = buildApp({ verifyIdToken, seed });
+      const res = await postOverrides(app, { overrides: { category: 'food' } });
+      expect(res.status).toBe(200);
+
+      const event = ops.find(
+        (o) => o.type === 'set' && o.data && o.data.type === 'list_member_overridden_by_editor'
+      );
+      expect(event).toBeUndefined();
+    });
+
+    it('round-9 F44: changedFields list reflects exactly the keys touched (set + delete)', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const seed = defaultSeed();
+      seed['lists/L1/members/P1'] = {
+        pinId: 'P1', pinOwnerId: 'bob', addedBy: 'alice',
+        overrides: { placeName: 'Existing' },
+      };
+      const { app, ops } = buildApp({ verifyIdToken, seed });
+      // Set category + clear placeName.
+      const res = await postOverrides(app, { overrides: { category: 'food', placeName: null } });
+      expect(res.status).toBe(200);
+      const event = ops.find((o) => o.data && o.data.type === 'list_member_overridden_by_editor');
+      expect(event.data.changedFields.sort()).toEqual(['category', 'placeName']);
+    });
+
     it('accepts all 8 valid Category enum values', async () => {
       const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
       const cats = ['food', 'accommodation', 'attraction', 'nature', 'shopping', 'wellness', 'entertainment', 'other'];
