@@ -132,6 +132,7 @@ function buildApp({ seed = {}, verifyIdToken, firestoreOverride, defaultFlags = 
             serverTimestamp: () => ({ _ts: true }),
             increment: (n) => ({ _increment: n }),
             arrayRemove: (...args) => ({ _arrayRemove: args }),
+            delete: () => ({ _delete: true }),
           },
         },
       },
@@ -143,6 +144,296 @@ function buildApp({ seed = {}, verifyIdToken, firestoreOverride, defaultFlags = 
   });
   return { app, ...helpers };
 }
+
+describe('POST /lists/:listId/members/:pinId/overrides (Phase 4 P4-7)', () => {
+  beforeEach(() => {
+    jest.resetModules();
+  });
+
+  // Default healthy seed: list with alice as owner, bob as foreign-pin
+  // owner, member doc present.
+  function defaultSeed() {
+    return {
+      'lists/L1': {
+        ownerId: 'alice',
+        collaboratorIds: ['carol'],
+        viewerIds: [],
+        name: 'My List',
+      },
+      'pins/P1': { userId: 'bob', placeName: 'Cafe', listIds: ['L1'] },
+      'lists/L1/members/P1': { pinId: 'P1', pinOwnerId: 'bob', addedBy: 'alice' },
+    };
+  }
+
+  function postOverrides(app, body, token = 'good') {
+    return request(app)
+      .post('/lists/L1/members/P1/overrides')
+      .set('Authorization', `Bearer ${token}`)
+      .set('Content-Type', 'application/json')
+      .send(body);
+  }
+
+  describe('auth', () => {
+    it('returns 401 when Authorization header is missing', async () => {
+      const { app } = buildApp({ verifyIdToken: jest.fn(), seed: defaultSeed() });
+      const res = await request(app)
+        .post('/lists/L1/members/P1/overrides')
+        .send({ overrides: { category: 'food' } });
+      expect(res.status).toBe(401);
+    });
+
+    it('returns 401 when verifyIdToken rejects', async () => {
+      const verifyIdToken = jest.fn().mockRejectedValue(new Error('expired'));
+      const { app } = buildApp({ verifyIdToken, seed: defaultSeed() });
+      const res = await postOverrides(app, { overrides: { category: 'food' } }, 'bad');
+      expect(res.status).toBe(401);
+    });
+  });
+
+  describe('input validation', () => {
+    it('returns 400 when listId contains a percent-encoded slash', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const { app } = buildApp({ verifyIdToken, seed: defaultSeed() });
+      const res = await request(app)
+        .post('/lists/L%2F1/members/P1/overrides')
+        .set('Authorization', 'Bearer good')
+        .send({ overrides: { category: 'food' } });
+      expect(res.status).toBe(400);
+    });
+
+    it('returns 400 when body is missing the overrides key', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const { app } = buildApp({ verifyIdToken, seed: defaultSeed() });
+      const res = await postOverrides(app, {});
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/overrides/);
+    });
+
+    it('returns 400 when overrides is not an object', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const { app } = buildApp({ verifyIdToken, seed: defaultSeed() });
+      const res = await postOverrides(app, { overrides: 'food' });
+      expect(res.status).toBe(400);
+    });
+
+    it('returns 400 when overrides is an array', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const { app } = buildApp({ verifyIdToken, seed: defaultSeed() });
+      const res = await postOverrides(app, { overrides: ['food'] });
+      expect(res.status).toBe(400);
+    });
+
+    it('returns 400 when overrides has an unsupported key', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const { app } = buildApp({ verifyIdToken, seed: defaultSeed() });
+      const res = await postOverrides(app, { overrides: { rating: 5 } });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/Unsupported override field/);
+    });
+
+    it('returns 400 when category is not in the valid set', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const { app } = buildApp({ verifyIdToken, seed: defaultSeed() });
+      const res = await postOverrides(app, { overrides: { category: 'pizza' } });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/Invalid category/);
+    });
+
+    it('returns 400 when category is a non-string', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const { app } = buildApp({ verifyIdToken, seed: defaultSeed() });
+      const res = await postOverrides(app, { overrides: { category: 42 } });
+      expect(res.status).toBe(400);
+    });
+
+    it('returns 400 when placeName is non-string non-null', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const { app } = buildApp({ verifyIdToken, seed: defaultSeed() });
+      const res = await postOverrides(app, { overrides: { placeName: 99 } });
+      expect(res.status).toBe(400);
+    });
+
+    it('returns 400 when placeName is empty string', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const { app } = buildApp({ verifyIdToken, seed: defaultSeed() });
+      const res = await postOverrides(app, { overrides: { placeName: '' } });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/cannot be empty/);
+    });
+
+    it('returns 400 when overrides object is empty (no fields supplied)', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const { app } = buildApp({ verifyIdToken, seed: defaultSeed() });
+      const res = await postOverrides(app, { overrides: {} });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/No override fields supplied/);
+    });
+  });
+
+  describe('authorization', () => {
+    it('succeeds when caller is the list owner setting category', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const { app, ops } = buildApp({ verifyIdToken, seed: defaultSeed() });
+      const res = await postOverrides(app, { overrides: { category: 'food' } });
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ ok: true });
+      const update = ops.find((o) => o.type === 'update' && o.path === 'lists/L1/members/P1');
+      expect(update).toBeDefined();
+      expect(update.data['overrides.category']).toBe('food');
+    });
+
+    it('succeeds when caller is an editor (collaborator, not viewer)', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'carol' });
+      const { app, ops } = buildApp({ verifyIdToken, seed: defaultSeed() });
+      const res = await postOverrides(app, { overrides: { category: 'attraction' } });
+      expect(res.status).toBe(200);
+      const update = ops.find((o) => o.type === 'update' && o.path === 'lists/L1/members/P1');
+      expect(update.data['overrides.category']).toBe('attraction');
+    });
+
+    it('returns 403 when caller is a viewer', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'carol' });
+      const seed = defaultSeed();
+      seed['lists/L1'].viewerIds = ['carol'];
+      const { app, ops } = buildApp({ verifyIdToken, seed });
+      const res = await postOverrides(app, { overrides: { category: 'food' } });
+      expect(res.status).toBe(403);
+      expect(ops).toHaveLength(0);
+    });
+
+    it('returns 403 when caller is not in collaboratorIds', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'mallory' });
+      const { app, ops } = buildApp({ verifyIdToken, seed: defaultSeed() });
+      const res = await postOverrides(app, { overrides: { category: 'food' } });
+      expect(res.status).toBe(403);
+      expect(ops).toHaveLength(0);
+    });
+
+    it('returns 409 when role arrays are missing for non-owner (F18 carry-forward)', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'carol' });
+      const seed = defaultSeed();
+      delete seed['lists/L1'].viewerIds;
+      const { app, ops } = buildApp({ verifyIdToken, seed });
+      const res = await postOverrides(app, { overrides: { category: 'food' } });
+      expect(res.status).toBe(409);
+      expect(ops).toHaveLength(0);
+    });
+  });
+
+  describe('freeze gate (F19 carry-forward)', () => {
+    it('returns 409 when freezeListMembershipWrites=true', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const seed = defaultSeed();
+      seed['configs/featureFlags'] = { freezeListMembershipWrites: true };
+      const { app, ops } = buildApp({ verifyIdToken, seed });
+      const res = await postOverrides(app, { overrides: { category: 'food' } });
+      expect(res.status).toBe(409);
+      expect(res.body.error).toMatch(/frozen during migration/);
+      expect(ops).toHaveLength(0);
+    });
+
+    it('returns 409 when configs/featureFlags doc is missing', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const { app, ops } = buildApp({
+        verifyIdToken,
+        defaultFlags: false,
+        seed: defaultSeed(),
+      });
+      const res = await postOverrides(app, { overrides: { category: 'food' } });
+      expect(res.status).toBe(409);
+      expect(ops).toHaveLength(0);
+    });
+  });
+
+  describe('member doc requirements', () => {
+    it('returns 404 when list does not exist', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const seed = defaultSeed();
+      delete seed['lists/L1'];
+      const { app, ops } = buildApp({ verifyIdToken, seed });
+      const res = await postOverrides(app, { overrides: { category: 'food' } });
+      expect(res.status).toBe(404);
+      expect(res.body.error).toMatch(/List not found/);
+      expect(ops).toHaveLength(0);
+    });
+
+    it('returns 404 when member doc does not exist (cannot override non-membership)', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const seed = defaultSeed();
+      delete seed['lists/L1/members/P1'];
+      const { app, ops } = buildApp({ verifyIdToken, seed });
+      const res = await postOverrides(app, { overrides: { category: 'food' } });
+      expect(res.status).toBe(404);
+      expect(res.body.error).toMatch(/Member doc not found/);
+      expect(ops).toHaveLength(0);
+    });
+  });
+
+  describe('field merge semantics', () => {
+    it('sets multiple override fields in a single request', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const { app, ops } = buildApp({ verifyIdToken, seed: defaultSeed() });
+      const res = await postOverrides(app, {
+        overrides: {
+          category: 'food',
+          placeName: 'Custom Place',
+          formattedAddress: '123 Main St',
+        },
+      });
+      expect(res.status).toBe(200);
+      const update = ops.find((o) => o.type === 'update' && o.path === 'lists/L1/members/P1');
+      expect(update.data['overrides.category']).toBe('food');
+      expect(update.data['overrides.placeName']).toBe('Custom Place');
+      expect(update.data['overrides.formattedAddress']).toBe('123 Main St');
+    });
+
+    it('null clears a specific override field via FieldValue.delete', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const seed = defaultSeed();
+      seed['lists/L1/members/P1'].overrides = { category: 'food', placeName: 'Old' };
+      const { app, ops } = buildApp({ verifyIdToken, seed });
+      const res = await postOverrides(app, { overrides: { category: null } });
+      expect(res.status).toBe(200);
+      const update = ops.find((o) => o.type === 'update' && o.path === 'lists/L1/members/P1');
+      expect(update.data['overrides.category']).toEqual({ _delete: true });
+      // placeName field NOT included → unchanged.
+      expect(update.data['overrides.placeName']).toBeUndefined();
+    });
+
+    it('truncates long placeName to 256 code points', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const { app, ops } = buildApp({ verifyIdToken, seed: defaultSeed() });
+      const long = 'A'.repeat(500);
+      const res = await postOverrides(app, { overrides: { placeName: long } });
+      expect(res.status).toBe(200);
+      const update = ops.find((o) => o.type === 'update' && o.path === 'lists/L1/members/P1');
+      expect(Array.from(update.data['overrides.placeName']).length).toBeLessThanOrEqual(256);
+    });
+
+    it('truncates astral chars by code points (no lone surrogates)', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const { app, ops } = buildApp({ verifyIdToken, seed: defaultSeed() });
+      const emoji = '\u{1F600}'.repeat(300);
+      const res = await postOverrides(app, { overrides: { placeName: emoji } });
+      expect(res.status).toBe(200);
+      const update = ops.find((o) => o.type === 'update' && o.path === 'lists/L1/members/P1');
+      expect(Array.from(update.data['overrides.placeName']).length).toBe(256);
+      expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(update.data['overrides.placeName'])).toBe(false);
+    });
+
+    it('accepts all 8 valid Category enum values', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const cats = ['food', 'accommodation', 'attraction', 'nature', 'shopping', 'wellness', 'entertainment', 'other'];
+      for (const cat of cats) {
+        const { app, ops } = buildApp({ verifyIdToken, seed: defaultSeed() });
+        const res = await postOverrides(app, { overrides: { category: cat } });
+        expect(res.status).toBe(200);
+        const update = ops.find((o) => o.type === 'update' && o.path === 'lists/L1/members/P1');
+        expect(update.data['overrides.category']).toBe(cat);
+      }
+    });
+  });
+});
 
 describe('POST /lists/:listId/members/:pinId/remove', () => {
   beforeEach(() => {
