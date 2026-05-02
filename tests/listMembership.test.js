@@ -479,6 +479,67 @@ describe('POST /lists/:listId/members/:pinId/overrides (Phase 4 P4-7)', () => {
       expect(update.data['overrides.category']).toBe('food');
     });
 
+    // Codex P4-7 round-6 F38: existing override children must also be
+    // validated, otherwise a prior bad write can poison a field and have
+    // it survive an unrelated patch.
+
+    it('round-6 F38: returns 409 when existing overrides.placeName contains HTML', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const seed = defaultSeed();
+      seed['lists/L1/members/P1'] = {
+        pinId: 'P1', pinOwnerId: 'bob', addedBy: 'alice',
+        overrides: { placeName: '<script>alert(1)</script>' },
+      };
+      const { app, ops } = buildApp({ verifyIdToken, seed });
+      // Patching an UNRELATED field — round-5 would have left the bad
+      // placeName in place and returned 200.
+      const res = await postOverrides(app, { overrides: { category: 'food' } });
+      expect(res.status).toBe(409);
+      expect(res.body.error).toMatch(/existing overrides\.placeName/);
+      expect(ops).toHaveLength(0);
+    });
+
+    it('round-6 F38: returns 409 when existing overrides.category is not a valid enum value', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const seed = defaultSeed();
+      seed['lists/L1/members/P1'] = {
+        pinId: 'P1', pinOwnerId: 'bob', addedBy: 'alice',
+        overrides: { category: 'pizza' }, // not in VALID_CATEGORIES
+      };
+      const { app, ops } = buildApp({ verifyIdToken, seed });
+      const res = await postOverrides(app, { overrides: { placeName: 'Cafe' } });
+      expect(res.status).toBe(409);
+      expect(res.body.error).toMatch(/existing overrides\.category/);
+      expect(ops).toHaveLength(0);
+    });
+
+    it('round-6 F38: returns 409 when existing overrides has an unsupported key', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const seed = defaultSeed();
+      seed['lists/L1/members/P1'] = {
+        pinId: 'P1', pinOwnerId: 'bob', addedBy: 'alice',
+        overrides: { rating: 5 }, // not in ALLOWED_OVERRIDE_KEYS
+      };
+      const { app, ops } = buildApp({ verifyIdToken, seed });
+      const res = await postOverrides(app, { overrides: { category: 'food' } });
+      expect(res.status).toBe(409);
+      expect(res.body.error).toMatch(/unsupported key/);
+      expect(ops).toHaveLength(0);
+    });
+
+    it('round-6 F38: returns 409 when existing overrides.placeName is null (should have been cleared via FieldValue.delete)', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const seed = defaultSeed();
+      seed['lists/L1/members/P1'] = {
+        pinId: 'P1', pinOwnerId: 'bob', addedBy: 'alice',
+        overrides: { placeName: null },
+      };
+      const { app, ops } = buildApp({ verifyIdToken, seed });
+      const res = await postOverrides(app, { overrides: { category: 'food' } });
+      expect(res.status).toBe(409);
+      expect(ops).toHaveLength(0);
+    });
+
     it('round-4 F34: succeeds when member.overrides is a plain object (round-trip update path)', async () => {
       const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
       const seed = defaultSeed();
