@@ -392,6 +392,28 @@ describe('POST /lists/:listId/members/:pinId/overrides (Phase 4 P4-7)', () => {
       expect(ops).toHaveLength(0);
     });
 
+    it('round-2 F31: returns 409 when member doc pinId does not match URL pinId', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const seed = defaultSeed();
+      seed['lists/L1/members/P1'] = { pinId: 'P_DIFFERENT', pinOwnerId: 'bob', addedBy: 'alice' };
+      const { app, ops } = buildApp({ verifyIdToken, seed });
+      const res = await postOverrides(app, { overrides: { category: 'food' } });
+      expect(res.status).toBe(409);
+      expect(res.body.error).toMatch(/pinId does not match/);
+      expect(ops).toHaveLength(0);
+    });
+
+    it('round-2 F31: returns 409 when member doc pinOwnerId does not match pin.userId', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const seed = defaultSeed();
+      seed['lists/L1/members/P1'] = { pinId: 'P1', pinOwnerId: 'WRONG_OWNER', addedBy: 'alice' };
+      const { app, ops } = buildApp({ verifyIdToken, seed });
+      const res = await postOverrides(app, { overrides: { category: 'food' } });
+      expect(res.status).toBe(409);
+      expect(res.body.error).toMatch(/pinOwnerId does not match/);
+      expect(ops).toHaveLength(0);
+    });
+
     it('round-1 F24: returns 409 when pin.listIds does not include this list (drift)', async () => {
       const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
       const seed = defaultSeed();
@@ -482,7 +504,7 @@ describe('POST /lists/:listId/members/:pinId/overrides (Phase 4 P4-7)', () => {
       const { app, ops } = buildApp({ verifyIdToken, seed: defaultSeed() });
       const res = await postOverrides(app, { overrides: { placeName: 'Cafe\nName' } });
       expect(res.status).toBe(400);
-      expect(res.body.error).toMatch(/control or bidi/);
+      expect(res.body.error).toMatch(/control characters/);
       expect(ops).toHaveLength(0);
     });
 
@@ -509,7 +531,7 @@ describe('POST /lists/:listId/members/:pinId/overrides (Phase 4 P4-7)', () => {
       // U+202E RIGHT-TO-LEFT OVERRIDE — Trojan-Source-style spoofing.
       const res = await postOverrides(app, { overrides: { placeName: 'Cafe‮Name' } });
       expect(res.status).toBe(400);
-      expect(res.body.error).toMatch(/control or bidi/);
+      expect(res.body.error).toMatch(/invisible|bidi/);
       expect(ops).toHaveLength(0);
     });
 
@@ -520,6 +542,42 @@ describe('POST /lists/:listId/members/:pinId/overrides (Phase 4 P4-7)', () => {
       expect(res.status).toBe(200);
       const update = ops.find((o) => o.type === 'update' && o.path === 'lists/L1/members/P1');
       expect(update.data['overrides.placeName']).toBe('Cafe Name');
+    });
+
+    it('round-2 F30: rejects placeName containing zero-width space (U+200B) — survives trim but invisible', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const { app, ops } = buildApp({ verifyIdToken, seed: defaultSeed() });
+      const res = await postOverrides(app, { overrides: { placeName: 'Cafe​Name' } });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/invisible|format/);
+      expect(ops).toHaveLength(0);
+    });
+
+    it('round-2 F30: rejects placeName containing WORD JOINER (U+2060)', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const { app, ops } = buildApp({ verifyIdToken, seed: defaultSeed() });
+      const res = await postOverrides(app, { overrides: { placeName: 'Cafe⁠Name' } });
+      expect(res.status).toBe(400);
+      expect(ops).toHaveLength(0);
+    });
+
+    it('round-2 F30: rejects placeName containing Byte Order Mark (U+FEFF) embedded in the string', async () => {
+      // .trim() strips a leading/trailing U+FEFF (it's part of the ES whitespace
+      // set), but an embedded BOM survives — the regex catches it.
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const { app, ops } = buildApp({ verifyIdToken, seed: defaultSeed() });
+      const res = await postOverrides(app, { overrides: { placeName: 'Cafe﻿Name' } });
+      expect(res.status).toBe(400);
+      expect(ops).toHaveLength(0);
+    });
+
+    it('round-2 F30: rejects a visually blank placeName composed entirely of zero-width chars', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const { app, ops } = buildApp({ verifyIdToken, seed: defaultSeed() });
+      // Visually invisible — survives .trim() because it isn't whitespace.
+      const res = await postOverrides(app, { overrides: { placeName: '​‌‍⁠' } });
+      expect(res.status).toBe(400);
+      expect(ops).toHaveLength(0);
     });
 
     it('round-1 F23: accepts ampersand and other safe punctuation (e.g., "Bed & Breakfast")', async () => {
