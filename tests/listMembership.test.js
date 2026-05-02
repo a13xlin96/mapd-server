@@ -419,6 +419,24 @@ describe('POST /lists/:listId/members/:pinId/overrides (Phase 4 P4-7)', () => {
       expect(ops).toHaveLength(0);
     });
 
+    it('round-8 F42: returns 409 when member.overrides is explicit null (corruption, not absent)', async () => {
+      // Round-7 short-circuited on `overrides === null` and treated it
+      // like the safe absent case. Round-8 catches this — null is
+      // stored corruption (not unset), and a dotted update against it
+      // would fail at commit with a 500.
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const seed = defaultSeed();
+      seed['lists/L1/members/P1'] = {
+        pinId: 'P1', pinOwnerId: 'bob', addedBy: 'alice',
+        overrides: null,
+      };
+      const { app, ops } = buildApp({ verifyIdToken, seed });
+      const res = await postOverrides(app, { overrides: { category: 'food' } });
+      expect(res.status).toBe(409);
+      expect(res.body.error).toMatch(/overrides field is malformed/);
+      expect(ops).toHaveLength(0);
+    });
+
     it('round-4 F34: succeeds when member.overrides is absent (initial-write path)', async () => {
       const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
       const { app, ops } = buildApp({ verifyIdToken, seed: defaultSeed() });
