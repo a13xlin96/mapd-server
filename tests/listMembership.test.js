@@ -102,7 +102,24 @@ function buildApp({ seed = {}, verifyIdToken, firestoreOverride, defaultFlags = 
     const baseSeed = defaultFlags
       ? { 'configs/featureFlags': { freezeListMembershipWrites: false } }
       : {};
-    helpers = buildFirestoreMock({ ...baseSeed, ...seed });
+    const merged = { ...baseSeed, ...seed };
+
+    // Round-7 F20: the endpoint requires lists.pinCount to be a positive
+    // integer before decrementing. Inject a default of 1 into any seeded
+    // list doc (path matching exactly `lists/{id}`, not subcollections)
+    // that doesn't already specify pinCount. Tests exercising the F20
+    // validation explicitly set pinCount to whatever they want.
+    for (const path of Object.keys(merged)) {
+      const segments = path.split('/');
+      if (segments.length === 2 && segments[0] === 'lists') {
+        const data = merged[path];
+        if (data && typeof data === 'object' && !Object.prototype.hasOwnProperty.call(data, 'pinCount')) {
+          merged[path] = { pinCount: 1, ...data };
+        }
+      }
+    }
+
+    helpers = buildFirestoreMock(merged);
     const firestore = firestoreOverride === undefined
       ? helpers.firestoreMock
       : firestoreOverride;
@@ -398,6 +415,161 @@ describe('POST /lists/:listId/members/:pinId/remove', () => {
         .set('Authorization', 'Bearer good');
       expect(res.status).toBe(409);
       expect(ops).toHaveLength(0);
+    });
+  });
+
+  describe('pinCount validation (Codex round-7 F20)', () => {
+    // FieldValue.increment(-1) silently creates the pinCount field at -1
+    // when missing, and produces undocumented behavior on non-numeric.
+    // The endpoint must validate pinCount is a positive integer before
+    // decrementing — otherwise a recoverable drift state (which admin
+    // reconcile-pin-counts can repair) becomes a worse, less-detectable
+    // corruption.
+
+    it('round-7 F20: fails closed with 409 when pinCount is missing', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const { app, ops } = buildApp({
+        verifyIdToken,
+        seed: {
+          // Override the auto-injected default by setting pinCount to undefined.
+          // (The helper checks hasOwnProperty, so explicitly assigning null
+          // bypasses the default while still matching the missing-field semantic.)
+          'lists/L1': {
+            ownerId: 'alice',
+            collaboratorIds: [],
+            viewerIds: [],
+            name: 'My List',
+            pinCount: undefined,
+          },
+          'pins/P1': { userId: 'bob', placeName: 'Cafe', listIds: ['L1'] },
+          'lists/L1/members/P1': { pinId: 'P1' },
+        },
+      });
+      const res = await request(app)
+        .post('/lists/L1/members/P1/remove')
+        .set('Authorization', 'Bearer good');
+      expect(res.status).toBe(409);
+      expect(res.body.error).toMatch(/pinCount/);
+      expect(ops).toHaveLength(0);
+    });
+
+    it('round-7 F20: fails closed with 409 when pinCount is non-numeric (string)', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const { app, ops } = buildApp({
+        verifyIdToken,
+        seed: {
+          'lists/L1': {
+            ownerId: 'alice',
+            collaboratorIds: [],
+            viewerIds: [],
+            name: 'My List',
+            pinCount: '5',
+          },
+          'pins/P1': { userId: 'bob', placeName: 'Cafe', listIds: ['L1'] },
+          'lists/L1/members/P1': { pinId: 'P1' },
+        },
+      });
+      const res = await request(app)
+        .post('/lists/L1/members/P1/remove')
+        .set('Authorization', 'Bearer good');
+      expect(res.status).toBe(409);
+      expect(ops).toHaveLength(0);
+    });
+
+    it('round-7 F20: fails closed with 409 when pinCount is a non-integer number (decimal)', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const { app, ops } = buildApp({
+        verifyIdToken,
+        seed: {
+          'lists/L1': {
+            ownerId: 'alice',
+            collaboratorIds: [],
+            viewerIds: [],
+            name: 'My List',
+            pinCount: 1.5,
+          },
+          'pins/P1': { userId: 'bob', placeName: 'Cafe', listIds: ['L1'] },
+          'lists/L1/members/P1': { pinId: 'P1' },
+        },
+      });
+      const res = await request(app)
+        .post('/lists/L1/members/P1/remove')
+        .set('Authorization', 'Bearer good');
+      expect(res.status).toBe(409);
+      expect(ops).toHaveLength(0);
+    });
+
+    it('round-7 F20: fails closed with 409 when pinCount is 0 (decrement would go negative)', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const { app, ops } = buildApp({
+        verifyIdToken,
+        seed: {
+          'lists/L1': {
+            ownerId: 'alice',
+            collaboratorIds: [],
+            viewerIds: [],
+            name: 'My List',
+            pinCount: 0,
+          },
+          'pins/P1': { userId: 'bob', placeName: 'Cafe', listIds: ['L1'] },
+          'lists/L1/members/P1': { pinId: 'P1' },
+        },
+      });
+      const res = await request(app)
+        .post('/lists/L1/members/P1/remove')
+        .set('Authorization', 'Bearer good');
+      expect(res.status).toBe(409);
+      expect(ops).toHaveLength(0);
+    });
+
+    it('round-7 F20: fails closed with 409 when pinCount is already negative', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const { app, ops } = buildApp({
+        verifyIdToken,
+        seed: {
+          'lists/L1': {
+            ownerId: 'alice',
+            collaboratorIds: [],
+            viewerIds: [],
+            name: 'My List',
+            pinCount: -1,
+          },
+          'pins/P1': { userId: 'bob', placeName: 'Cafe', listIds: ['L1'] },
+          'lists/L1/members/P1': { pinId: 'P1' },
+        },
+      });
+      const res = await request(app)
+        .post('/lists/L1/members/P1/remove')
+        .set('Authorization', 'Bearer good');
+      expect(res.status).toBe(409);
+      expect(ops).toHaveLength(0);
+    });
+
+    it('round-7 F20: drift case (pin does not claim membership) bypasses pinCount check entirely', async () => {
+      // When pinClaimsMembership is false, no decrement happens; the
+      // pinCount validator must NOT fire. Otherwise legitimate drift
+      // cleanup of a stale member doc would also fail closed.
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const { app, ops } = buildApp({
+        verifyIdToken,
+        seed: {
+          'lists/L1': {
+            ownerId: 'alice',
+            collaboratorIds: [],
+            viewerIds: [],
+            name: 'My List',
+            pinCount: undefined, // would normally fail F20
+          },
+          'pins/P1': { userId: 'bob', placeName: 'Cafe', listIds: ['L_OTHER'] }, // drift
+          'lists/L1/members/P1': { pinId: 'P1' },
+        },
+      });
+      const res = await request(app)
+        .post('/lists/L1/members/P1/remove')
+        .set('Authorization', 'Bearer good');
+      expect(res.status).toBe(200);
+      expect(ops.some((o) => o.type === 'delete' && o.path === 'lists/L1/members/P1')).toBe(true);
+      expect(ops.some((o) => o.type === 'update' && o.path === 'lists/L1')).toBe(false);
     });
   });
 
