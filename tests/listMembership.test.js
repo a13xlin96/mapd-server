@@ -403,6 +403,39 @@ describe('POST /lists/:listId/members/:pinId/overrides (Phase 4 P4-7)', () => {
       expect(ops).toHaveLength(0);
     });
 
+    it('round-3 F33: returns 409 when both pin.userId and member.pinOwnerId are missing (undefined === undefined would pass)', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const seed = defaultSeed();
+      seed['pins/P1'] = { placeName: 'Cafe', listIds: ['L1'] }; // no userId
+      seed['lists/L1/members/P1'] = { pinId: 'P1', addedBy: 'alice' }; // no pinOwnerId
+      const { app, ops } = buildApp({ verifyIdToken, seed });
+      const res = await postOverrides(app, { overrides: { category: 'food' } });
+      expect(res.status).toBe(409);
+      expect(res.body.error).toMatch(/missing\/malformed owner id/);
+      expect(ops).toHaveLength(0);
+    });
+
+    it('round-3 F33: returns 409 when both pin.userId and member.pinOwnerId are null', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const seed = defaultSeed();
+      seed['pins/P1'] = { userId: null, placeName: 'Cafe', listIds: ['L1'] };
+      seed['lists/L1/members/P1'] = { pinId: 'P1', pinOwnerId: null, addedBy: 'alice' };
+      const { app, ops } = buildApp({ verifyIdToken, seed });
+      const res = await postOverrides(app, { overrides: { category: 'food' } });
+      expect(res.status).toBe(409);
+      expect(ops).toHaveLength(0);
+    });
+
+    it('round-3 F33: returns 409 when pin.userId is non-string', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const seed = defaultSeed();
+      seed['pins/P1'] = { userId: 42, placeName: 'Cafe', listIds: ['L1'] };
+      const { app, ops } = buildApp({ verifyIdToken, seed });
+      const res = await postOverrides(app, { overrides: { category: 'food' } });
+      expect(res.status).toBe(409);
+      expect(ops).toHaveLength(0);
+    });
+
     it('round-2 F31: returns 409 when member doc pinOwnerId does not match pin.userId', async () => {
       const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
       const seed = defaultSeed();
