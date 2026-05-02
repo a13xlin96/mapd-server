@@ -220,6 +220,190 @@ describe('POST /lists/:listId/members/:pinId/remove', () => {
       expect(res.status).toBe(403);
       expect(ops).toHaveLength(0);
     });
+
+    // Codex round-5 F14 — fail-closed on malformed role arrays. The prior
+    // bug: a viewer in collaboratorIds, with viewerIds corrupted to a
+    // non-array, would have isCollab=true and isViewer=false → silently
+    // escalated to editor and granted write authority.
+
+    it('round-5: fails closed with 409 when viewerIds is non-array (auth-bypass closed)', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'carol' });
+      const { app, ops } = buildApp({
+        verifyIdToken,
+        seed: {
+          'lists/L1': {
+            ownerId: 'alice',
+            collaboratorIds: ['bob', 'carol'],
+            viewerIds: 'carol', // CORRUPTED — should be array
+            name: 'My List',
+          },
+          'pins/P1': { userId: 'alice', placeName: 'Cafe', listIds: ['L1'] },
+          'lists/L1/members/P1': { pinId: 'P1' },
+        },
+      });
+      const res = await request(app)
+        .post('/lists/L1/members/P1/remove')
+        .set('Authorization', 'Bearer good');
+      expect(res.status).toBe(409);
+      expect(res.body.error).toMatch(/role arrays/);
+      expect(ops).toHaveLength(0);
+    });
+
+    it('round-5: fails closed with 409 when viewerIds is null', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'carol' });
+      const { app, ops } = buildApp({
+        verifyIdToken,
+        seed: {
+          'lists/L1': {
+            ownerId: 'alice',
+            collaboratorIds: ['bob', 'carol'],
+            viewerIds: null,
+            name: 'My List',
+          },
+          'pins/P1': { userId: 'alice', placeName: 'Cafe', listIds: ['L1'] },
+          'lists/L1/members/P1': { pinId: 'P1' },
+        },
+      });
+      const res = await request(app)
+        .post('/lists/L1/members/P1/remove')
+        .set('Authorization', 'Bearer good');
+      expect(res.status).toBe(409);
+      expect(ops).toHaveLength(0);
+    });
+
+    it('round-5: fails closed with 409 when collaboratorIds has non-string entries', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'carol' });
+      const { app, ops } = buildApp({
+        verifyIdToken,
+        seed: {
+          'lists/L1': {
+            ownerId: 'alice',
+            collaboratorIds: ['carol', 42, null], // mixed-type corruption
+            viewerIds: [],
+            name: 'My List',
+          },
+          'pins/P1': { userId: 'alice', placeName: 'Cafe', listIds: ['L1'] },
+          'lists/L1/members/P1': { pinId: 'P1' },
+        },
+      });
+      const res = await request(app)
+        .post('/lists/L1/members/P1/remove')
+        .set('Authorization', 'Bearer good');
+      expect(res.status).toBe(409);
+      expect(ops).toHaveLength(0);
+    });
+
+    it('round-5: owner is unaffected by malformed role arrays — still succeeds', async () => {
+      // Owner authority does not depend on role arrays, so corrupted
+      // collaboratorIds/viewerIds must not lock the owner out of removing
+      // pins from their own list.
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const { app, ops } = buildApp({
+        verifyIdToken,
+        seed: {
+          'lists/L1': {
+            ownerId: 'alice',
+            collaboratorIds: 'CORRUPTED',
+            viewerIds: { also: 'corrupted' },
+            name: 'My List',
+          },
+          'pins/P1': { userId: 'bob', placeName: 'Cafe', listIds: ['L1'] },
+          'lists/L1/members/P1': { pinId: 'P1' },
+        },
+      });
+      const res = await request(app)
+        .post('/lists/L1/members/P1/remove')
+        .set('Authorization', 'Bearer good');
+      expect(res.status).toBe(200);
+      expect(ops.some((o) => o.type === 'delete' && o.path === 'lists/L1/members/P1')).toBe(true);
+    });
+
+    it('round-5 F15: rejects oversized arrays (>5000 entries) with 409', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'carol' });
+      const huge = Array.from({ length: 5001 }, (_, i) => `u${i}`);
+      huge[0] = 'carol'; // place caller in the array so includes() would otherwise pass
+      const { app, ops } = buildApp({
+        verifyIdToken,
+        seed: {
+          'lists/L1': {
+            ownerId: 'alice',
+            collaboratorIds: huge,
+            viewerIds: [],
+            name: 'My List',
+          },
+          'pins/P1': { userId: 'alice', placeName: 'Cafe', listIds: ['L1'] },
+          'lists/L1/members/P1': { pinId: 'P1' },
+        },
+      });
+      const res = await request(app)
+        .post('/lists/L1/members/P1/remove')
+        .set('Authorization', 'Bearer good');
+      expect(res.status).toBe(409);
+      expect(ops).toHaveLength(0);
+    });
+  });
+
+  describe('migration freeze (Codex round-5 F17)', () => {
+    // The endpoint must refuse during the migration-freeze window so a
+    // foreign-pin removal can't race past the kill-switch and corrupt
+    // the backfill's atomicity. The flag lives at /configs/featureFlags
+    // and the read happens inside the same transaction as the writes,
+    // so a flag flip during a Firestore retry is visible to the next
+    // iteration.
+
+    it('returns 409 when freezeListMembershipWrites=true', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const { app, ops } = buildApp({
+        verifyIdToken,
+        seed: {
+          'configs/featureFlags': { freezeListMembershipWrites: true },
+          'lists/L1': { ownerId: 'alice', collaboratorIds: [], viewerIds: [], name: 'My List' },
+          'pins/P1': { userId: 'bob', placeName: 'Cafe', listIds: ['L1'] },
+          'lists/L1/members/P1': { pinId: 'P1' },
+        },
+      });
+      const res = await request(app)
+        .post('/lists/L1/members/P1/remove')
+        .set('Authorization', 'Bearer good');
+      expect(res.status).toBe(409);
+      expect(res.body.error).toMatch(/frozen during migration/);
+      expect(ops).toHaveLength(0);
+    });
+
+    it('proceeds when freezeListMembershipWrites=false', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const { app, ops } = buildApp({
+        verifyIdToken,
+        seed: {
+          'configs/featureFlags': { freezeListMembershipWrites: false },
+          'lists/L1': { ownerId: 'alice', collaboratorIds: [], viewerIds: [], name: 'My List' },
+          'pins/P1': { userId: 'bob', placeName: 'Cafe', listIds: ['L1'] },
+          'lists/L1/members/P1': { pinId: 'P1' },
+        },
+      });
+      const res = await request(app)
+        .post('/lists/L1/members/P1/remove')
+        .set('Authorization', 'Bearer good');
+      expect(res.status).toBe(200);
+      expect(ops.some((o) => o.type === 'delete' && o.path === 'lists/L1/members/P1')).toBe(true);
+    });
+
+    it('proceeds when configs/featureFlags doc does not exist (default-to-not-frozen)', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const { app, ops } = buildApp({
+        verifyIdToken,
+        seed: {
+          // configs/featureFlags intentionally absent.
+          'lists/L1': { ownerId: 'alice', collaboratorIds: [], viewerIds: [], name: 'My List' },
+          'pins/P1': { userId: 'bob', placeName: 'Cafe', listIds: ['L1'] },
+          'lists/L1/members/P1': { pinId: 'P1' },
+        },
+      });
+      const res = await request(app)
+        .post('/lists/L1/members/P1/remove')
+        .set('Authorization', 'Bearer good');
+      expect(res.status).toBe(200);
+    });
   });
 
   describe('idempotency', () => {
