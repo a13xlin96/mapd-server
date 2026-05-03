@@ -698,6 +698,29 @@ describe('POST /lists/:listId/members/:pinId/overrides (Phase 4 P4-7)', () => {
       expect(ops).toHaveLength(0);
     });
 
+    it('round-13 F57: override 409 for malformed listIds points at manual repair (matches remove route F55)', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const seed = defaultSeed();
+      seed['pins/P1'] = { userId: 'bob', placeName: 'Cafe', listIds: 'corrupt' };
+      const { app, ops } = buildApp({ verifyIdToken, seed });
+      const res = await postOverrides(app, { overrides: { category: 'food' } });
+      expect(res.status).toBe(409);
+      expect(res.body.error).toMatch(/manual repair required/);
+      expect(res.body.error).not.toMatch(/run admin reconcile/);
+      expect(ops).toHaveLength(0);
+    });
+
+    it('round-13 F57: override 409 for non-membership drift recommends scrub (recoverable; matches remove route)', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const seed = defaultSeed();
+      seed['pins/P1'] = { userId: 'bob', placeName: 'Cafe', listIds: ['L_OTHER'] };
+      const { app, ops } = buildApp({ verifyIdToken, seed });
+      const res = await postOverrides(app, { overrides: { category: 'food' } });
+      expect(res.status).toBe(409);
+      expect(res.body.error).toMatch(/scrub-orphan-members/);
+      expect(ops).toHaveLength(0);
+    });
+
     it('round-1 F24: returns 409 when pin.listIds does not include this list (drift)', async () => {
       const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
       const seed = defaultSeed();
