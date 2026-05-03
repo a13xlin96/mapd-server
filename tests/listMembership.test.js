@@ -1715,6 +1715,26 @@ describe('POST /lists/:listId/members/:pinId/remove', () => {
       expect(ops).toHaveLength(0);
     });
 
+    it('round-13 F55: pin.listIds malformed error points at manual repair (scrub cannot clear this state)', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
+      const { app, ops } = buildApp({
+        verifyIdToken,
+        seed: {
+          'lists/L1': { ownerId: 'alice', collaboratorIds: [], viewerIds: [] },
+          'pins/P1': { userId: 'bob', placeName: 'Cafe', listIds: 'corrupted-string' },
+          'lists/L1/members/P1': { pinId: 'P1' },
+        },
+      });
+      const res = await request(app)
+        .post('/lists/L1/members/P1/remove')
+        .set('Authorization', 'Bearer good');
+      expect(res.status).toBe(409);
+      expect(res.body.error).toMatch(/manual repair required/);
+      // Specifically must NOT recommend scrub — scrub aborts on malformed
+      // pin.listIds and would leave the operator stuck.
+      expect(res.body.error).not.toMatch(/scrub/);
+    });
+
     it('round-12 F52: pin.listIds is missing → 409 (was drift-cleanup pre-fix)', async () => {
       const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'alice' });
       const { app, ops } = buildApp({
