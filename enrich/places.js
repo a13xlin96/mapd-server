@@ -139,6 +139,7 @@ async function getPlaceDetails(placeId) {
       'rating',
       'userRatingCount',
       'priceLevel',
+      'priceRange',
       'websiteUri',
       'nationalPhoneNumber',
       'dineIn',
@@ -191,6 +192,22 @@ async function getPlaceDetails(placeId) {
       rating: r.rating || null,
       user_ratings_total: r.userRatingCount || null,
       price_level: r.priceLevel || null,
+      price_range: r.priceRange
+        ? {
+            start_price: r.priceRange.startPrice
+              ? {
+                  units: r.priceRange.startPrice.units,
+                  currency_code: r.priceRange.startPrice.currencyCode,
+                }
+              : null,
+            end_price: r.priceRange.endPrice
+              ? {
+                  units: r.priceRange.endPrice.units,
+                  currency_code: r.priceRange.endPrice.currencyCode,
+                }
+              : null,
+          }
+        : null,
       website: r.websiteUri || null,
       formatted_phone_number: r.nationalPhoneNumber || null,
       dine_in: r.dineIn == null ? null : r.dineIn,
