@@ -122,7 +122,13 @@ async function getPlaceDetails(placeId) {
     return null;
   }
 
-  const cacheKey = `places:details:${placeId}`;
+  // Schema-versioned cache key. Bump the `v<N>` segment whenever the
+  // mapped payload shape changes (new fields, changed nesting). Old
+  // entries orphan in Redis and expire via TTL — readers never see them.
+  // Avoids brittle per-field presence checks that have to be updated for
+  // every future schema bump.
+  //   v2: added priceRange.start_price.nanos / end_price.nanos
+  const cacheKey = `places:details:v2:${placeId}`;
   const cached = await getCached(cacheKey);
   if (cached) return cached;
 
@@ -192,17 +198,22 @@ async function getPlaceDetails(placeId) {
       rating: r.rating || null,
       user_ratings_total: r.userRatingCount || null,
       price_level: r.priceLevel || null,
+      // Google's PriceRange uses the Money proto: { units: int64, nanos: int32, currencyCode }.
+      // `units` is the integer part; `nanos` is 10^-9 of a unit (so 0.50 → nanos = 500000000).
+      // Dropping nanos would truncate any fractional amount and corrupt the cached payload.
       price_range: r.priceRange
         ? {
             start_price: r.priceRange.startPrice
               ? {
                   units: r.priceRange.startPrice.units,
+                  nanos: r.priceRange.startPrice.nanos,
                   currency_code: r.priceRange.startPrice.currencyCode,
                 }
               : null,
             end_price: r.priceRange.endPrice
               ? {
                   units: r.priceRange.endPrice.units,
+                  nanos: r.priceRange.endPrice.nanos,
                   currency_code: r.priceRange.endPrice.currencyCode,
                 }
               : null,

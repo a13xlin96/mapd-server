@@ -1,29 +1,57 @@
 // One-time backfill that re-enriches existing pins from Google Places to
-// capture meal-type booleans (servesBreakfast/Lunch/Dinner/Brunch) and
-// priceRange — fields that were not persisted in the original pin pipeline.
+// capture meal-type booleans (servesBreakfast/Lunch/Dinner/Brunch) and the
+// full priceRange Money shape — fields that were not persisted in the
+// original pin pipeline.
 //
 // Paginated, idempotent, safe to re-run:
-//   - skips pins that already have all four meal-type fields defined
+//   - skips pins already stamped with PLACE_ENRICHMENT_VERSION
 //   - uses startAfterDocId to resume after a previous run
 //   - dryRun=true returns the scan plan without writing anything
-//   - reuses the existing place-details cache where possible
+//   - reuses the schema-versioned place-details cache where possible
 //
-// Cost: ~$5 per 1k Place Details (Basic SKU). Cached pins (enriched within
-// the last 30 days) are free — but cache entries written before the
-// `priceRange` field-mask update will not contain the new field, so those
-// pins will incur a cache miss on first run.
+// The backfill scope is fixed — there is no per-field opt-out. Splitting
+// the version across partial-field runs creates a footgun where a pin can
+// be stamped "complete" without ever receiving one of the scoped fields,
+// permanently locking it out of future passes. If the scope changes, bump
+// PLACE_ENRICHMENT_VERSION and re-run.
 
 const { getPlaceDetails } = require('./places');
 
 const DEFAULT_BATCH_SIZE = 50;
 
-function hasAllMealFields(pin) {
-  return (
-    pin.servesBreakfast !== undefined &&
-    pin.servesLunch !== undefined &&
-    pin.servesDinner !== undefined &&
-    pin.servesBrunch !== undefined
-  );
+// Bumped whenever the scope or persisted shape of a backfilled field
+// changes. Pins stamped with the current version are skipped — so a
+// legitimate `null` from "Google said unknown" doesn't relitigate, and
+// a real schema change (new field, changed shape) cleanly retriggers
+// every pin via this constant.
+//   v3: priceRange now persists startNanos/endNanos alongside units
+//   v2: initial backfill (serves* + priceRange.units/currencyCode — lossy, deprecated)
+const PLACE_ENRICHMENT_VERSION = 3;
+
+function mapMoney(money) {
+  if (!money) return null;
+  return {
+    units: money.units != null ? Number(money.units) : null,
+    nanos: money.nanos != null ? Number(money.nanos) : null,
+    currencyCode: money.currency_code || null,
+  };
+}
+
+function buildPriceRange(priceRange) {
+  if (!priceRange) return null;
+  const startPrice = mapMoney(priceRange.start_price);
+  const endPrice = mapMoney(priceRange.end_price);
+  const currencyCode =
+    (startPrice && startPrice.currencyCode) ||
+    (endPrice && endPrice.currencyCode) ||
+    null;
+  return {
+    startUnits: startPrice ? startPrice.units : null,
+    startNanos: startPrice ? startPrice.nanos : null,
+    endUnits: endPrice ? endPrice.units : null,
+    endNanos: endPrice ? endPrice.nanos : null,
+    currencyCode,
+  };
 }
 
 async function runBackfillMealTypes({
@@ -33,7 +61,6 @@ async function runBackfillMealTypes({
   startAfterDocId = null,
   dryRun = true,
   categoryFilter = 'food',
-  includePriceRange = true,
 } = {}) {
   if (!firestore) throw new Error('firestore admin not configured');
 
@@ -64,7 +91,10 @@ async function runBackfillMealTypes({
       continue;
     }
 
-    if (hasAllMealFields(pin) && (!includePriceRange || pin.priceRange !== undefined)) {
+    // Skip on the version marker, not on field presence. Field-presence
+    // skipping treats `null` from a stale cached Place Details payload as
+    // a completed backfill and prevents the pin from ever being retried.
+    if (pin.placeEnrichmentVersion === PLACE_ENRICHMENT_VERSION) {
       stats.skipped += 1;
       continue;
     }
@@ -89,28 +119,10 @@ async function runBackfillMealTypes({
       servesLunch: details.serves_lunch == null ? null : details.serves_lunch,
       servesDinner: details.serves_dinner == null ? null : details.serves_dinner,
       servesBrunch: details.serves_brunch == null ? null : details.serves_brunch,
+      priceRange: buildPriceRange(details.price_range),
+      placeEnrichmentVersion: PLACE_ENRICHMENT_VERSION,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     };
-
-    if (includePriceRange) {
-      patch.priceRange = details.price_range
-        ? {
-            startUnits:
-              details.price_range.start_price && details.price_range.start_price.units != null
-                ? Number(details.price_range.start_price.units)
-                : null,
-            endUnits:
-              details.price_range.end_price && details.price_range.end_price.units != null
-                ? Number(details.price_range.end_price.units)
-                : null,
-            currencyCode:
-              (details.price_range.start_price && details.price_range.start_price.currency_code) ||
-              (details.price_range.end_price && details.price_range.end_price.currency_code) ||
-              null,
-          }
-        : null;
-    }
-
-    patch.updatedAt = admin.firestore.FieldValue.serverTimestamp();
 
     if (!dryRun) {
       try {
@@ -130,4 +142,4 @@ async function runBackfillMealTypes({
   return stats;
 }
 
-module.exports = { runBackfillMealTypes };
+module.exports = { runBackfillMealTypes, PLACE_ENRICHMENT_VERSION };
