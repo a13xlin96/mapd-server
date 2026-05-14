@@ -332,10 +332,50 @@ describe('POST /lists/:listId/members/:pinId/overrides (Phase 4 P4-7)', () => {
       expect(ops).toHaveLength(0);
     });
 
-    it('returns 409 when role arrays are missing for non-owner (F18 carry-forward)', async () => {
+    it('round-9 F60: succeeds for editor when viewerIds is absent (treated as empty)', async () => {
+      // Round-6 F18 used to fail closed here. F60 relaxes that:
+      // absent viewerIds means nobody is view-only, so a caller in
+      // collaboratorIds is an editor. Aligns with firestore.rules's
+      // `.get('viewerIds', [])` and CLAUDE.md's documented data model.
       const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'carol' });
       const seed = defaultSeed();
       delete seed['lists/L1'].viewerIds;
+      const { app } = buildApp({ verifyIdToken, seed });
+      const res = await postOverrides(app, { overrides: { category: 'food' } });
+      expect(res.status).toBe(200);
+    });
+
+    it('round-9 F60: still 403 when caller is not in collaboratorIds (absent viewerIds)', async () => {
+      // Absent viewerIds doesn't grant authority — caller still has
+      // to be in collaboratorIds (or owner) to act on the list.
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'mallory' });
+      const seed = defaultSeed();
+      delete seed['lists/L1'].viewerIds;
+      const { app, ops } = buildApp({ verifyIdToken, seed });
+      const res = await postOverrides(app, { overrides: { category: 'food' } });
+      expect(res.status).toBe(403);
+      expect(ops).toHaveLength(0);
+    });
+
+    it('round-9 F60: still 409 when viewerIds is malformed (null) for non-owner', async () => {
+      // Relaxation applies only to the absent state. Malformed
+      // (null/non-array/oversized/mixed) remains a hard failure.
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'carol' });
+      const seed = defaultSeed();
+      seed['lists/L1'].viewerIds = null;
+      const { app, ops } = buildApp({ verifyIdToken, seed });
+      const res = await postOverrides(app, { overrides: { category: 'food' } });
+      expect(res.status).toBe(409);
+      expect(res.body.error).toMatch(/missing or malformed/);
+      expect(ops).toHaveLength(0);
+    });
+
+    it('round-9 F60: 409 when collaboratorIds is absent (strictness preserved on that array)', async () => {
+      // collaboratorIds remains strict — absent collaboratorIds is
+      // genuine corruption (list has no membership at all).
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'carol' });
+      const seed = defaultSeed();
+      delete seed['lists/L1'].collaboratorIds;
       const { app, ops } = buildApp({ verifyIdToken, seed });
       const res = await postOverrides(app, { overrides: { category: 'food' } });
       expect(res.status).toBe(409);
@@ -1191,12 +1231,38 @@ describe('POST /lists/:listId/members/:pinId/remove', () => {
       expect(ops).toHaveLength(0);
     });
 
-    it('round-6 F18: fails closed with 409 when viewerIds is undefined and caller is in collaboratorIds (auth-bypass closed)', async () => {
-      // Without this fix, a viewer in collaboratorIds with viewerIds
-      // simply deleted from the list doc would be silently classified as
-      // editor (`!isViewer` becomes vacuously true). Now: missing role
-      // arrays for non-owners → 409.
+    it('round-9 F60: succeeds for editor when viewerIds is absent (treated as empty)', async () => {
+      // Round-6 F18 used to fail closed here on the theory that a
+      // missing viewerIds was an auth-bypass vector. F60 relaxes
+      // that — only the list owner can write to the list doc per
+      // firestore.rules, so a non-owner can't induce the missing
+      // state. firestore.rules already uses `.get('viewerIds', [])`
+      // (rules:33,43-47), so the server now matches the data model.
       const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'carol' });
+      const { app, ops } = buildApp({
+        verifyIdToken,
+        seed: {
+          'lists/L1': {
+            ownerId: 'alice',
+            collaboratorIds: ['bob', 'carol'],
+            // viewerIds intentionally absent — under F60 this is OK
+            name: 'My List',
+          },
+          'pins/P1': { userId: 'alice', placeName: 'Cafe', listIds: ['L1'] },
+          'lists/L1/members/P1': { pinId: 'P1' },
+        },
+      });
+      const res = await request(app)
+        .post('/lists/L1/members/P1/remove')
+        .set('Authorization', 'Bearer good');
+      expect(res.status).toBe(200);
+      expect(ops.some((o) => o.type === 'delete' && o.path === 'lists/L1/members/P1')).toBe(true);
+    });
+
+    it('round-9 F60: still 403 when non-collaborator caller and viewerIds absent', async () => {
+      // Relaxing absent viewerIds doesn't grant authority — the
+      // caller still has to be in collaboratorIds (or owner).
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'mallory' });
       const { app, ops } = buildApp({
         verifyIdToken,
         seed: {
@@ -1213,8 +1279,7 @@ describe('POST /lists/:listId/members/:pinId/remove', () => {
       const res = await request(app)
         .post('/lists/L1/members/P1/remove')
         .set('Authorization', 'Bearer good');
-      expect(res.status).toBe(409);
-      expect(res.body.error).toMatch(/missing or malformed/);
+      expect(res.status).toBe(403);
       expect(ops).toHaveLength(0);
     });
 

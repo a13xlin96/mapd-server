@@ -1,7 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const { anthropic } = require('./lib/anthropic');
-const { firestore, admin } = require('./lib/firestore');
+const { firestore, admin, seedFeatureFlagsPromise } = require('./lib/firestore');
 const { getCached, setCache, normalizeUrlForCache } = require('./lib/cache');
 const { runYtDlp } = require('./lib/ytdlp');
 const { fetchTikTokPhotoPost, isTikTokPhotoUrl } = require('./lib/tiktokPhoto');
@@ -641,6 +641,26 @@ function firestoreTs() {
 }
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Mapd link extractor running on port ${PORT}`);
-});
+// F59 round-2: gate listen() on the featureFlags seed so user-facing
+// routes cannot observe a missing-doc state during a fresh deploy's
+// first few hundred ms. Round-3: cap the wait with a timeout so a
+// hung Firestore RPC can't wedge the deploy (health checks would
+// fail, the process would never listen). Seed failure or timeout
+// is non-fatal because the routes themselves still have the
+// fail-closed 409 trip-wire.
+const SEED_BOOT_TIMEOUT_MS = 5000;
+function bootListen() {
+  app.listen(PORT, () => {
+    console.log(`Mapd link extractor running on port ${PORT}`);
+  });
+}
+const seedTimeout = new Promise((resolve) => setTimeout(() => {
+  resolve({ action: 'timed-out' });
+}, SEED_BOOT_TIMEOUT_MS));
+Promise.race([seedFeatureFlagsPromise, seedTimeout])
+  .then((result) => {
+    if (result && result.action === 'timed-out') {
+      console.warn(`featureFlags seed did not complete within ${SEED_BOOT_TIMEOUT_MS}ms; listening anyway`);
+    }
+  })
+  .finally(bootListen);
