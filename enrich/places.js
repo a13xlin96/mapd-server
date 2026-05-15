@@ -342,22 +342,31 @@ async function getPlaceDetails(placeId) {
         : null,
       current_opening_periods: (r.currentOpeningHours && Array.isArray(r.currentOpeningHours.periods))
         ? r.currentOpeningHours.periods.map((p) => ({
-            open: {
-              day: (p.open && p.open.day) || 0,
-              hour: (p.open && p.open.hour) || 0,
-              minute: (p.open && p.open.minute) || 0,
-              date: p.open && p.open.date
-                ? { year: p.open.date.year, month: p.open.date.month, day: p.open.date.day }
-                : null,
-            },
-            close: {
-              day: (p.close && p.close.day) || 0,
-              hour: (p.close && p.close.hour) || 0,
-              minute: (p.close && p.close.minute) || 0,
-              date: p.close && p.close.date
-                ? { year: p.close.date.year, month: p.close.date.month, day: p.close.date.day }
-                : null,
-            },
+            open: p.open
+              ? {
+                  day: p.open.day || 0,
+                  hour: p.open.hour || 0,
+                  minute: p.open.minute || 0,
+                  date: p.open.date
+                    ? { year: p.open.date.year, month: p.open.date.month, day: p.open.date.day }
+                    : null,
+                }
+              : null,
+            // Google omits `close` for places that never close on that
+            // period (24/7 venues). Preserve the absence as null rather
+            // than synthesizing a fake Sunday-midnight close event.
+            // Downstream open-now / next-close consumers must treat a
+            // null close as "no scheduled close on this period".
+            close: p.close
+              ? {
+                  day: p.close.day || 0,
+                  hour: p.close.hour || 0,
+                  minute: p.close.minute || 0,
+                  date: p.close.date
+                    ? { year: p.close.date.year, month: p.close.date.month, day: p.close.date.day }
+                    : null,
+                }
+              : null,
           }))
         : null,
       current_weekday_descriptions: (r.currentOpeningHours && Array.isArray(r.currentOpeningHours.weekdayDescriptions))
