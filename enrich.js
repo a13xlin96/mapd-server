@@ -23,6 +23,8 @@ const {
 const { calculateConfidence } = require('./enrich/confidence');
 const { mapToCategory } = require('./enrich/categories');
 const { searchGooglePlaces, getPlaceDetails, findPlaceFromUrl } = require('./enrich/places');
+const { assertSaveReason } = require('./lib/saveReason');
+const { distanceKm } = require('./lib/geo');
 const { aiExtractPlaces, aiExtractPlace, aiVerifyPlace } = require('./enrich/ai');
 const { sendPushForJob } = require('./lib/push');
 
@@ -84,11 +86,152 @@ async function findPinByPlaceId(userId, placeId) {
   return { id: snap.docs[0].id, ...snap.docs[0].data() };
 }
 
-function buildPinFromDetails({ url, userId, ogData, details, topResult, category, location, confidenceScore }) {
+// Server-side mirror of the client lookupOrCreateTripSignal in
+// analyticsService.ts. Same deterministic doc ID scheme so the two
+// sides land on the same /tripSignals/{id} doc. Race-safe via
+// firestore.runTransaction (admin SDK).
+function computeTripSignalId(userId, city, country) {
+  const norm = (s) => s.toLowerCase().replace(/\s+/g, '_');
+  return `${userId}_${norm(city)}_${norm(country)}`;
+}
+
+const TRIP_SIGNAL_STATUSES = ['planning', 'traveling', 'returned'];
+
+async function serverLookupOrCreateTripSignal({ userId, city, country }) {
+  if (!firestore || !city || !country) return null;
+  const signalId = computeTripSignalId(userId, city, country);
+  const signalRef = firestore.collection('tripSignals').doc(signalId);
+  try {
+    return await firestore.runTransaction(async (txn) => {
+      const snap = await txn.get(signalRef);
+      if (snap.exists) {
+        const data = snap.data() || {};
+        const status = TRIP_SIGNAL_STATUSES.includes(data.status)
+          ? data.status
+          : 'planning';
+        return { tripSignalId: signalId, status };
+      }
+      txn.set(signalRef, {
+        userId,
+        city,
+        country,
+        status: 'planning',
+        confidence: 'low',
+        pinCount: 0,
+        categories: [],
+        createdAt: ts(),
+        updatedAt: ts(),
+        lastSaveDate: null,
+      });
+      return { tripSignalId: signalId, status: 'planning' };
+    });
+  } catch (err) {
+    console.warn('serverLookupOrCreateTripSignal failed:', err.message);
+    return null;
+  }
+}
+
+// Helper to invoke recordTripSignalSave only on a fresh pin write.
+// Codex review on Task 33 — duplicates (alreadyExists: true) must not
+// double-count aggregates. New writes only.
+function recordTripSignalSaveIfNew(pin, writeResult) {
+  if (!pin || !writeResult || writeResult.alreadyExists) return;
+  if (!pin.tripSignalIdAtSave) return;
+  serverRecordTripSignalSave({
+    tripSignalId: pin.tripSignalIdAtSave,
+    category: pin.category,
+  });
+}
+
+// Fire-and-forget — pin write proceeds regardless. Mirrors the
+// client recordTripSignalSave (atomic primitives only, no transaction
+// needed). Caller should NOT await.
+function serverRecordTripSignalSave({ tripSignalId, category }) {
+  if (!firestore || !tripSignalId) return;
+  const signalRef = firestore.collection('tripSignals').doc(tripSignalId);
+  signalRef
+    .update({
+      pinCount: admin.firestore.FieldValue.increment(1),
+      lastSaveDate: ts(),
+      categories: admin.firestore.FieldValue.arrayUnion(category),
+      updatedAt: ts(),
+    })
+    .catch((err) => {
+      console.warn('serverRecordTripSignalSave failed:', err.message);
+    });
+}
+
+// Reads the saving user's homeLocation from /users/{userId}. Returns
+// the structured object or null on any failure (no user doc, missing
+// field, malformed shape, network error). Validation mirrors the client
+// coerceHomeLocation tightening from commit 85bec33 — Codex flagged the
+// loose checks there and the same finite-coord + bounds invariants apply.
+async function getUserHomeLocation(userId) {
+  if (!firestore) return null;
+  try {
+    const snap = await firestore.collection('users').doc(userId).get();
+    if (!snap.exists) return null;
+    const home = (snap.data() || {}).homeLocation;
+    if (
+      !home ||
+      typeof home !== 'object' ||
+      typeof home.latitude !== 'number' ||
+      typeof home.longitude !== 'number' ||
+      !Number.isFinite(home.latitude) ||
+      !Number.isFinite(home.longitude) ||
+      home.latitude < -90 ||
+      home.latitude > 90 ||
+      home.longitude < -180 ||
+      home.longitude > 180
+    ) {
+      return null;
+    }
+    return { latitude: home.latitude, longitude: home.longitude };
+  } catch (err) {
+    console.warn('getUserHomeLocation failed:', err.message);
+    return null;
+  }
+}
+
+const roundKm = (d) => Math.round(d * 10) / 10;
+
+async function buildPinFromDetails({ url, userId, ogData, details, topResult, category, location, confidenceScore, saveReason }) {
+  // Pre-write invariant: every server pin construction path must declare
+  // its saveReason explicitly so saveOrigin always reflects how the pin
+  // entered the system. Codex review on Task K flagged the helper-only
+  // ship — wiring it here closes that gap on the actual write boundary.
+  assertSaveReason(saveReason);
+
   const sourceDomain = extractDomain(url);
   const sourceApp = determineSourceApp(url);
   const lat = details ? details.geometry.location.lat : (topResult && topResult.geometry.location.lat) || null;
   const lng = details ? details.geometry.location.lng : (topResult && topResult.geometry.location.lng) || null;
+
+  // Resolve trip-signal context + home-distance in parallel. Both may
+  // return null (no city/country, no homeLocation, transaction failure)
+  // — pin construction proceeds with null Phase 1 fields in those cases.
+  const city = (location && location.city) || null;
+  const country = (location && location.country) || null;
+  const [tripContext, homeLocation] = await Promise.all([
+    serverLookupOrCreateTripSignal({ userId, city, country }),
+    getUserHomeLocation(userId),
+  ]);
+
+  const distanceFromHomeCityKm =
+    homeLocation && typeof lat === 'number' && typeof lng === 'number'
+      ? roundKm(distanceKm(homeLocation.latitude, homeLocation.longitude, lat, lng))
+      : null;
+
+  // NOTE: trip-signal aggregate bump (serverRecordTripSignalSave) does
+  // NOT fire here. Codex review on Task 33 flagged that incrementing
+  // pinCount + arrayUnion(category) BEFORE the pin write commits would
+  // inflate aggregates whenever the write later fails — duplicate
+  // (alreadyExists), needs_selection (candidates whose pins the user
+  // rejects), or any transient writePinTransactional error. The bump
+  // is now the caller's responsibility, fired only after
+  // writePinTransactional confirms alreadyExists === false. The
+  // lookup itself stays here (idempotent — at worst creates a phantom
+  // pinCount:0 doc that the next real save picks up).
 
   return {
     userId,
@@ -109,6 +252,9 @@ function buildPinFromDetails({ url, userId, ogData, details, topResult, category
     priceLevel: (details && details.price_level) || null,
     shortFormattedAddress: (details && details.short_formatted_address) || null,
     primaryType: (details && details.primary_type) || null,
+    types:
+      (details && Array.isArray(details.types) && details.types.length > 0 && details.types) ||
+      (topResult && Array.isArray(topResult.types) && topResult.types.length > 0 ? topResult.types : null),
     dineIn: details ? details.dine_in : null,
     takeout: details ? details.takeout : null,
     delivery: details ? details.delivery : null,
@@ -121,14 +267,21 @@ function buildPinFromDetails({ url, userId, ogData, details, topResult, category
     status: 'pinned',
     confidenceScore: confidenceScore == null ? 85 : confidenceScore,
     listIds: [],
-    country: (location && location.country) || null,
+    country,
     region: (location && location.region) || null,
-    city: (location && location.city) || null,
+    city,
     visited: false,
     wouldGoBack: null,
     visitedAt: null,
     visitNote: null,
     serverEnriched: true,
+    // Phase 1 rec/ad signals
+    saveOrigin: saveReason,
+    tripSignalIdAtSave: tripContext ? tripContext.tripSignalId : null,
+    savedAtTripStatus: tripContext ? tripContext.status : null,
+    distanceFromUserAtSaveKm: null,
+    distanceFromHomeCityKm,
+    recAttributionId: null,
   };
 }
 
@@ -209,7 +362,7 @@ async function handleGoogleMapsUrl(url, userId) {
     ? extractLocationFromComponents(details.address_components)
     : extractLocation((details && details.formatted_address) || top.formatted_address || '');
 
-  return buildPinFromDetails({
+  return await buildPinFromDetails({
     url,
     userId,
     ogData: { title: parsed.placeName, description: '', image: '' },
@@ -218,6 +371,7 @@ async function handleGoogleMapsUrl(url, userId) {
     category,
     location,
     confidenceScore: 90,
+    saveReason: 'enrichment',
   });
 }
 
@@ -351,7 +505,7 @@ async function runAIPipeline({ url, userId, captionText }) {
       const location = details.address_components
         ? extractLocationFromComponents(details.address_components)
         : extractLocation(details.formatted_address || top.formatted_address);
-      candidates.push(buildPinFromDetails({
+      candidates.push(await buildPinFromDetails({
         url,
         userId,
         ogData,
@@ -360,6 +514,7 @@ async function runAIPipeline({ url, userId, captionText }) {
         category,
         location,
         confidenceScore: 85,
+        saveReason: 'enrichment',
       }));
     }
   }
@@ -421,7 +576,7 @@ async function runOGFallback({ url, userId, captionText, ogData }) {
     : extractLocation((details && details.formatted_address) || (place && place.formatted_address) || '');
 
   return {
-    pin: buildPinFromDetails({
+    pin: await buildPinFromDetails({
       url,
       userId,
       ogData,
@@ -430,6 +585,7 @@ async function runOGFallback({ url, userId, captionText, ogData }) {
       category,
       location,
       confidenceScore: score,
+      saveReason: 'enrichment',
     }),
   };
 }
@@ -454,6 +610,7 @@ async function runEnrichment(jobId, url, userId, captionText) {
       const pin = await handleGoogleMapsUrl(url, userId);
       if (pin) {
         const result = await writePinTransactional(pin, { title: pin.placeName });
+        recordTripSignalSaveIfNew(pin, result);
         if (result.alreadyExists) {
           await updateJob(jobId, { status: 'duplicate', existingPinId: result.pinId, completedAt: ts() });
           await sendPushForJob(jobId, userId, 'duplicate', { placeName: pin.placeName, pinId: result.pinId });
@@ -475,6 +632,7 @@ async function runEnrichment(jobId, url, userId, captionText) {
 
     if (ai.candidates.length === 1) {
       const result = await writePinTransactional(ai.candidates[0], ai.ogData);
+      recordTripSignalSaveIfNew(ai.candidates[0], result);
       if (result.alreadyExists) {
         await updateJob(jobId, { status: 'duplicate', existingPinId: result.pinId, completedAt: ts() });
         await sendPushForJob(jobId, userId, 'duplicate', { placeName: ai.candidates[0].placeName, pinId: result.pinId });
@@ -506,6 +664,7 @@ async function runEnrichment(jobId, url, userId, captionText) {
     }
     if (fallback && fallback.pin) {
       const result = await writePinTransactional(fallback.pin, ai.ogData);
+      recordTripSignalSaveIfNew(fallback.pin, result);
       if (result.alreadyExists) {
         await updateJob(jobId, { status: 'duplicate', existingPinId: result.pinId, completedAt: ts() });
         await sendPushForJob(jobId, userId, 'duplicate', { placeName: fallback.pin.placeName, pinId: result.pinId });
@@ -540,4 +699,4 @@ async function runEnrichment(jobId, url, userId, captionText) {
   }
 }
 
-module.exports = { runEnrichment, setJob, updateJob };
+module.exports = { runEnrichment, setJob, updateJob, buildPinFromDetails };
