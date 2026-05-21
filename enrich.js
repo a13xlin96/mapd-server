@@ -91,8 +91,44 @@ async function findPinByPlaceId(userId, placeId) {
 // sides land on the same /tripSignals/{id} doc. Race-safe via
 // firestore.runTransaction (admin SDK).
 function computeTripSignalId(userId, city, country) {
-  const norm = (s) => s.toLowerCase().replace(/\s+/g, '_');
-  return `${userId}_${norm(city)}_${norm(country)}`;
+  // Sanitize Firestore document IDs: strip path-illegal chars (/ \ .) and
+  // unicode control characters before collapsing whitespace. A city like
+  // "Donostia / San Sebastián" would otherwise survive as
+  // "donostia_/_san_sebastián" — which Firestore rejects as a multi-segment
+  // path. Accents are preserved on purpose: changing them would orphan
+  // existing /tripSignals docs for cities like "São Paulo".
+  // Applied to userId too even though Firebase Auth UIDs are
+  // alphanumeric today — defense in depth (per implementation-review 1b).
+  const norm = (s) =>
+    String(s ?? '')
+      .toLowerCase()
+      .replace(/[/\\.\x00-\x1f]/g, '_')
+      .replace(/\s+/g, '_')
+      .replace(/_+/g, '_')
+      .replace(/^_+|_+$/g, '');
+  const normCity = norm(city);
+  const normCountry = norm(country);
+  const normUid = norm(userId);
+  // Reject strings that normalize to empty (e.g. "/", "...", "\t\n") so we
+  // don't synthesize doc IDs like `uid__country` that collide with valid
+  // empty-city saves (per implementation-review 2a).
+  if (!normCity || !normCountry || !normUid) return null;
+  return `${normUid}_${normCity}_${normCountry}`;
+}
+
+// Defense-in-depth: even with sanitized signalId, the call to `.doc()` is
+// synchronous and throws on illegal paths. Wrap it in try/catch so future
+// gaps in sanitization fail soft (returns null) instead of bubbling up to
+// runEnrichment's outer catch and marking the whole job failed.
+// Used by both serverLookupOrCreateTripSignal AND serverRecordTripSignalSave.
+function safeSignalIdRef(firestore, signalId) {
+  if (!firestore || !signalId) return null;
+  try {
+    return firestore.collection('tripSignals').doc(signalId);
+  } catch (err) {
+    console.warn('safeSignalIdRef rejected signalId:', signalId, err.message);
+    return null;
+  }
 }
 
 const TRIP_SIGNAL_STATUSES = ['planning', 'traveling', 'returned'];
@@ -100,7 +136,10 @@ const TRIP_SIGNAL_STATUSES = ['planning', 'traveling', 'returned'];
 async function serverLookupOrCreateTripSignal({ userId, city, country }) {
   if (!firestore || !city || !country) return null;
   const signalId = computeTripSignalId(userId, city, country);
-  const signalRef = firestore.collection('tripSignals').doc(signalId);
+  // computeTripSignalId returns null when any segment normalizes to empty.
+  if (!signalId) return null;
+  const signalRef = safeSignalIdRef(firestore, signalId);
+  if (!signalRef) return null;
   try {
     return await firestore.runTransaction(async (txn) => {
       const snap = await txn.get(signalRef);
@@ -148,7 +187,8 @@ function recordTripSignalSaveIfNew(pin, writeResult) {
 // needed). Caller should NOT await.
 function serverRecordTripSignalSave({ tripSignalId, category }) {
   if (!firestore || !tripSignalId) return;
-  const signalRef = firestore.collection('tripSignals').doc(tripSignalId);
+  const signalRef = safeSignalIdRef(firestore, tripSignalId);
+  if (!signalRef) return;
   signalRef
     .update({
       pinCount: admin.firestore.FieldValue.increment(1),
@@ -195,6 +235,111 @@ async function getUserHomeLocation(userId) {
 
 const roundKm = (d) => Math.round(d * 10) / 10;
 
+// Mirror of client's mapAtmosphereFields (src/services/enrichmentService.ts:66-132).
+// Transforms server-side snake_case Place Details into the client Pin camelCase
+// shape so server-built candidates carry the full v3+ Atmosphere field set.
+// Without this, every multi-place candidate reaches the client with
+// `businessStatus === undefined`, which trips the listener's
+// `looksLikePreV3Server` heuristic and forces a redundant getPlaceDetails
+// refetch on every save (paid call + extra failure surface). Keep this
+// shape in sync with the client mirror until @a13xlin96/mapd-shared lands.
+function mapAtmosphereFields(details) {
+  // Defensive: callers may invoke with null/undefined; produce the all-null
+  // shape rather than throwing (per implementation-review 1c).
+  details = details || {};
+  return {
+    servesBreakfast: details.serves_breakfast ?? null,
+    servesLunch: details.serves_lunch ?? null,
+    servesDinner: details.serves_dinner ?? null,
+    servesBrunch: details.serves_brunch ?? null,
+    servesBeer: details.serves_beer ?? null,
+    servesWine: details.serves_wine ?? null,
+    servesCocktails: details.serves_cocktails ?? null,
+    servesCoffee: details.serves_coffee ?? null,
+    servesDessert: details.serves_dessert ?? null,
+    servesVegetarianFood: details.serves_vegetarian_food ?? null,
+    outdoorSeating: details.outdoor_seating ?? null,
+    goodForChildren: details.good_for_children ?? null,
+    goodForGroups: details.good_for_groups ?? null,
+    allowsDogs: details.allows_dogs ?? null,
+    restroom: details.restroom ?? null,
+    menuForChildren: details.menu_for_children ?? null,
+    liveMusic: details.live_music ?? null,
+    businessStatus: details.business_status ?? null,
+    editorialSummary: details.editorial_summary
+      ? {
+          text: details.editorial_summary.text ?? null,
+          languageCode: details.editorial_summary.language_code ?? null,
+        }
+      : null,
+    viewport: details.viewport
+      ? {
+          low: details.viewport.low ?? null,
+          high: details.viewport.high ?? null,
+        }
+      : null,
+    paymentOptions: details.payment_options
+      ? {
+          acceptsCreditCards: details.payment_options.accepts_credit_cards ?? null,
+          acceptsDebitCards: details.payment_options.accepts_debit_cards ?? null,
+          acceptsCashOnly: details.payment_options.accepts_cash_only ?? null,
+          acceptsNfc: details.payment_options.accepts_nfc ?? null,
+        }
+      : null,
+    parkingOptions: details.parking_options
+      ? {
+          freeParkingLot: details.parking_options.free_parking_lot ?? null,
+          paidParkingLot: details.parking_options.paid_parking_lot ?? null,
+          freeStreetParking: details.parking_options.free_street_parking ?? null,
+          paidStreetParking: details.parking_options.paid_street_parking ?? null,
+          valetParking: details.parking_options.valet_parking ?? null,
+          freeGarageParking: details.parking_options.free_garage_parking ?? null,
+          paidGarageParking: details.parking_options.paid_garage_parking ?? null,
+        }
+      : null,
+    accessibilityOptions: details.accessibility_options
+      ? {
+          wheelchairAccessibleParking:
+            details.accessibility_options.wheelchair_accessible_parking ?? null,
+          wheelchairAccessibleEntrance:
+            details.accessibility_options.wheelchair_accessible_entrance ?? null,
+          wheelchairAccessibleRestroom:
+            details.accessibility_options.wheelchair_accessible_restroom ?? null,
+          wheelchairAccessibleSeating:
+            details.accessibility_options.wheelchair_accessible_seating ?? null,
+        }
+      : null,
+    currentOpeningPeriods: details.current_opening_periods ?? null,
+    currentWeekdayDescriptions: details.current_weekday_descriptions ?? null,
+  };
+}
+
+// Mirror of client's priceRange shaping (enrichmentJobsListener.ts:119-142).
+// Google Places returns price_range with snake_case start_price/end_price,
+// nanos as bigint-stringified ints, and currency_code on each side. Pin's
+// schema wants flat camelCase startUnits/startNanos/endUnits/endNanos/currencyCode.
+function mapPriceRange(priceRangeRaw) {
+  if (!priceRangeRaw) return null;
+  // Guard NaN: Number('abc') and Number(undefined) yield NaN, which Firestore
+  // rejects. Per implementation-review 2f. Number.isFinite handles bigint
+  // strings (Number('1000000000') === 1e9, finite) AND rejects junk.
+  const toNum = (v) => {
+    if (v == null) return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+  return {
+    startUnits: toNum(priceRangeRaw.start_price?.units),
+    startNanos: toNum(priceRangeRaw.start_price?.nanos),
+    endUnits: toNum(priceRangeRaw.end_price?.units),
+    endNanos: toNum(priceRangeRaw.end_price?.nanos),
+    currencyCode:
+      priceRangeRaw.start_price?.currency_code ??
+      priceRangeRaw.end_price?.currency_code ??
+      null,
+  };
+}
+
 async function buildPinFromDetails({ url, userId, ogData, details, topResult, category, location, confidenceScore, saveReason }) {
   // Pre-write invariant: every server pin construction path must declare
   // its saveReason explicitly so saveOrigin always reflects how the pin
@@ -204,8 +349,12 @@ async function buildPinFromDetails({ url, userId, ogData, details, topResult, ca
 
   const sourceDomain = extractDomain(url);
   const sourceApp = determineSourceApp(url);
-  const lat = details ? details.geometry.location.lat : (topResult && topResult.geometry.location.lat) || null;
-  const lng = details ? details.geometry.location.lng : (topResult && topResult.geometry.location.lng) || null;
+  // Optional chaining throughout — topResult from text search may lack
+  // geometry, and details may be null when Places returned nothing. Without
+  // ?., `topResult.geometry.location.lat` throws on missing geometry,
+  // which the F3 details=null regression test exposed.
+  const lat = details?.geometry?.location?.lat ?? topResult?.geometry?.location?.lat ?? null;
+  const lng = details?.geometry?.location?.lng ?? topResult?.geometry?.location?.lng ?? null;
 
   // Resolve trip-signal context + home-distance in parallel. Both may
   // return null (no city/country, no homeLocation, transaction failure)
@@ -259,6 +408,17 @@ async function buildPinFromDetails({ url, userId, ogData, details, topResult, ca
     takeout: details ? details.takeout : null,
     delivery: details ? details.delivery : null,
     reservable: details ? details.reservable : null,
+    // v3+ Atmosphere fields. Server fetches these in places.js's field mask
+    // — write them through to the candidate so client-side multi-place save
+    // doesn't trigger a redundant Place Details refetch (skew-recovery path).
+    // CRITICAL (implementation-review 1a): spread the all-null shape even
+    // when details is missing. The client's pre-v3 detector at
+    // enrichmentJobsListener.ts:109 triggers on `businessStatus === undefined`
+    // — writing `{}` here would leave businessStatus undefined and re-arm
+    // Bug 2 on every single-place fallback path. mapAtmosphereFields({})
+    // produces all-null values, which the detector correctly ignores.
+    ...mapAtmosphereFields(details),
+    priceRange: mapPriceRange(details ? details.price_range : null),
     openingPeriods: (details && details.opening_periods) || null,
     weekdayDescriptions: (details && details.weekday_descriptions) || null,
     utcOffsetMinutes: details && typeof details.utc_offset_minutes === 'number' ? details.utc_offset_minutes : null,
@@ -699,4 +859,14 @@ async function runEnrichment(jobId, url, userId, captionText) {
   }
 }
 
-module.exports = { runEnrichment, setJob, updateJob, buildPinFromDetails };
+module.exports = {
+  runEnrichment,
+  setJob,
+  updateJob,
+  buildPinFromDetails,
+  // Exported for tests — not load-bearing public API.
+  computeTripSignalId,
+  safeSignalIdRef,
+  mapAtmosphereFields,
+  mapPriceRange,
+};
