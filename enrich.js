@@ -40,6 +40,38 @@ async function updateJob(jobId, data) {
   await firestore.collection('enrichmentJobs').doc(jobId).set({ ...data, updatedAt: ts() }, { merge: true });
 }
 
+// Best-effort classification from the error message. Lets the team alert on
+// dependency outages vs. real no-signal posts without parsing logs.
+function classifyError(err) {
+  const msg = String((err && err.message) || err || '').toLowerCase();
+  if (/timeout|etimedout|esockettimedout/.test(msg)) return 'dependency_timeout';
+  if (/429|rate.?limit|quota|exceeded/.test(msg)) return 'quota_exhausted';
+  if (/403|forbidden|blocked|access.?denied/.test(msg)) return 'blocked';
+  if (/parse|json|invalid/.test(msg)) return 'parse_error';
+  if (/enotfound|econnrefused|network/.test(msg)) return 'dependency_error';
+  return 'dependency_error';
+}
+
+// Appends a stage-failure record to the job doc so silent fallbacks
+// (vision/IG/Places/etc.) become attributable in Firestore. Uses a concrete
+// Timestamp instead of serverTimestamp() because Firestore rejects sentinel
+// values inside arrayUnion items.
+async function recordStageFailure(jobId, { stage, kind, message }) {
+  if (!firestore || !jobId) return;
+  try {
+    await updateJob(jobId, {
+      stageFailures: admin.firestore.FieldValue.arrayUnion({
+        stage,
+        kind,
+        message: String(message || '').slice(0, 500),
+        at: admin.firestore.Timestamp.fromMillis(Date.now()),
+      }),
+    });
+  } catch (err) {
+    console.warn(`recordStageFailure write failed for ${jobId}:`, err.message || err);
+  }
+}
+
 async function findPinByUrl(userId, url) {
   if (!firestore) return null;
   const normalized = normalizeUrl(url);
@@ -173,32 +205,37 @@ async function serverLookupOrCreateTripSignal({ userId, city, country }) {
 // Helper to invoke recordTripSignalSave only on a fresh pin write.
 // Codex review on Task 33 — duplicates (alreadyExists: true) must not
 // double-count aggregates. New writes only.
-function recordTripSignalSaveIfNew(pin, writeResult) {
-  if (!pin || !writeResult || writeResult.alreadyExists) return;
-  if (!pin.tripSignalIdAtSave) return;
-  serverRecordTripSignalSave({
+// Returns a promise the caller awaits; on failure, attributes the silent
+// undercount to the job doc as a stage failure (so the drift becomes visible
+// in Firestore rather than only in server logs). Used to be fire-and-forget
+// per the Task 33 review note above, but Codex hardening flagged the silent
+// undercount risk — observable failure beats unobservable correctness loss.
+function recordTripSignalSaveIfNew(pin, writeResult, jobId) {
+  if (!pin || !writeResult || writeResult.alreadyExists) return Promise.resolve();
+  if (!pin.tripSignalIdAtSave) return Promise.resolve();
+  return serverRecordTripSignalSave({
     tripSignalId: pin.tripSignalIdAtSave,
     category: pin.category,
+  }).catch((err) => {
+    console.warn('serverRecordTripSignalSave failed:', err.message);
+    return recordStageFailure(jobId, {
+      stage: 'trip_signal_aggregate',
+      kind: classifyError(err),
+      message: err.message,
+    });
   });
 }
 
-// Fire-and-forget — pin write proceeds regardless. Mirrors the
-// client recordTripSignalSave (atomic primitives only, no transaction
-// needed). Caller should NOT await.
-function serverRecordTripSignalSave({ tripSignalId, category }) {
+async function serverRecordTripSignalSave({ tripSignalId, category }) {
   if (!firestore || !tripSignalId) return;
   const signalRef = safeSignalIdRef(firestore, tripSignalId);
   if (!signalRef) return;
-  signalRef
-    .update({
-      pinCount: admin.firestore.FieldValue.increment(1),
-      lastSaveDate: ts(),
-      categories: admin.firestore.FieldValue.arrayUnion(category),
-      updatedAt: ts(),
-    })
-    .catch((err) => {
-      console.warn('serverRecordTripSignalSave failed:', err.message);
-    });
+  await signalRef.update({
+    pinCount: admin.firestore.FieldValue.increment(1),
+    lastSaveDate: ts(),
+    categories: admin.firestore.FieldValue.arrayUnion(category),
+    updatedAt: ts(),
+  });
 }
 
 // Reads the saving user's homeLocation from /users/{userId}. Returns
@@ -536,7 +573,7 @@ async function handleGoogleMapsUrl(url, userId) {
 }
 
 /** AI-first pipeline: extract, dedup, AI places, Places API, return candidates. */
-async function runAIPipeline({ url, userId, captionText }) {
+async function runAIPipeline({ jobId, url, userId, captionText }) {
   const isSocial = url.includes('instagram.com') || url.includes('tiktok.com');
 
   // Resolve social short URLs once so the TikTok-photo router below can see
@@ -558,6 +595,7 @@ async function runAIPipeline({ url, userId, captionText }) {
           extracted = await fetchInstagramCarouselPost(resolvedUrl);
         } catch (igErr) {
           console.warn('IG embed extract failed, falling back to yt-dlp:', igErr.message);
+          recordStageFailure(jobId, { stage: 'instagram_carousel', kind: classifyError(igErr), message: igErr.message });
           extracted = await runYtDlp(url);
         }
       } else if (isInstagramReelUrl(resolvedUrl)) {
@@ -569,6 +607,7 @@ async function runAIPipeline({ url, userId, captionText }) {
           extracted = await fetchInstagramReelPost(resolvedUrl);
         } catch (reelErr) {
           console.warn('IG reel OG extract failed, falling back to yt-dlp:', reelErr.message);
+          recordStageFailure(jobId, { stage: 'instagram_reel', kind: classifyError(reelErr), message: reelErr.message });
           extracted = await runYtDlp(url);
         }
       } else {
@@ -576,6 +615,7 @@ async function runAIPipeline({ url, userId, captionText }) {
       }
     } catch (err) {
       console.warn('social extraction failed, falling back to OG scraping:', err.message);
+      recordStageFailure(jobId, { stage: 'social_extraction', kind: classifyError(err), message: err.message });
     }
   }
 
@@ -637,6 +677,7 @@ async function runAIPipeline({ url, userId, captionText }) {
       }));
     } catch (err) {
       console.warn('vision extractPlacesFromSlides failed, continuing with text AI only:', err.message);
+      recordStageFailure(jobId, { stage: 'vision', kind: classifyError(err), message: err.message });
       visionPlaces = [];
     }
   }
@@ -750,11 +791,27 @@ async function runOGFallback({ url, userId, captionText, ogData }) {
   };
 }
 
+// Keeps `updatedAt` advancing while runEnrichment is alive so the orphan
+// sweeper (which now checks `updatedAt`) won't race a slow-but-live worker.
+// Returns a stop function the caller MUST invoke in a `finally`.
+function startJobHeartbeat(jobId, intervalMs) {
+  const ms = typeof intervalMs === 'number' ? intervalMs : 30 * 1000;
+  const id = setInterval(() => {
+    updateJob(jobId, {}).catch((err) => {
+      console.warn(`heartbeat for ${jobId} failed:`, err && err.message);
+    });
+  }, ms);
+  if (typeof id.unref === 'function') id.unref();
+  return () => clearInterval(id);
+}
+
 async function runEnrichment(jobId, url, userId, captionText) {
   if (!firestore) {
     console.error('runEnrichment called but Firestore is not initialized');
     return;
   }
+
+  const stopHeartbeat = startJobHeartbeat(jobId);
 
   try {
     // 1. Raw-URL dedup
@@ -770,7 +827,7 @@ async function runEnrichment(jobId, url, userId, captionText) {
       const pin = await handleGoogleMapsUrl(url, userId);
       if (pin) {
         const result = await writePinTransactional(pin, { title: pin.placeName });
-        recordTripSignalSaveIfNew(pin, result);
+        await recordTripSignalSaveIfNew(pin, result, jobId);
         if (result.alreadyExists) {
           await updateJob(jobId, { status: 'duplicate', existingPinId: result.pinId, completedAt: ts() });
           await sendPushForJob(jobId, userId, 'duplicate', { placeName: pin.placeName, pinId: result.pinId });
@@ -783,7 +840,7 @@ async function runEnrichment(jobId, url, userId, captionText) {
     }
 
     // 3. AI-first pipeline
-    const ai = await runAIPipeline({ url, userId, captionText });
+    const ai = await runAIPipeline({ jobId, url, userId, captionText });
     if (ai.duplicate) {
       await updateJob(jobId, { status: 'duplicate', existingPinId: ai.duplicate.id, completedAt: ts() });
       await sendPushForJob(jobId, userId, 'duplicate', { placeName: ai.duplicate.placeName, pinId: ai.duplicate.id });
@@ -792,7 +849,7 @@ async function runEnrichment(jobId, url, userId, captionText) {
 
     if (ai.candidates.length === 1) {
       const result = await writePinTransactional(ai.candidates[0], ai.ogData);
-      recordTripSignalSaveIfNew(ai.candidates[0], result);
+      await recordTripSignalSaveIfNew(ai.candidates[0], result, jobId);
       if (result.alreadyExists) {
         await updateJob(jobId, { status: 'duplicate', existingPinId: result.pinId, completedAt: ts() });
         await sendPushForJob(jobId, userId, 'duplicate', { placeName: ai.candidates[0].placeName, pinId: result.pinId });
@@ -824,7 +881,7 @@ async function runEnrichment(jobId, url, userId, captionText) {
     }
     if (fallback && fallback.pin) {
       const result = await writePinTransactional(fallback.pin, ai.ogData);
-      recordTripSignalSaveIfNew(fallback.pin, result);
+      await recordTripSignalSaveIfNew(fallback.pin, result, jobId);
       if (result.alreadyExists) {
         await updateJob(jobId, { status: 'duplicate', existingPinId: result.pinId, completedAt: ts() });
         await sendPushForJob(jobId, userId, 'duplicate', { placeName: fallback.pin.placeName, pinId: result.pinId });
@@ -856,6 +913,8 @@ async function runEnrichment(jobId, url, userId, captionText) {
     } catch (writeErr) {
       console.error('Also failed to write failure status:', writeErr.message);
     }
+  } finally {
+    stopHeartbeat();
   }
 }
 
@@ -869,4 +928,10 @@ module.exports = {
   safeSignalIdRef,
   mapAtmosphereFields,
   mapPriceRange,
+  startJobHeartbeat,
+  recordStageFailure,
+  classifyError,
+  recordTripSignalSaveIfNew,
+  serverRecordTripSignalSave,
+  writePinTransactional,
 };

@@ -619,6 +619,7 @@ app.post('/enrich', authenticateRequest, async (req, res) => {
       userId,
       url,
       status: 'processing',
+      attempts: 0,
       createdAt: firestoreTs(),
       updatedAt: firestoreTs(),
     });
