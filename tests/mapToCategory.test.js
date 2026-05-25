@@ -69,6 +69,47 @@ describe('mapToCategory — 3-way food split', () => {
     expect(mapToCategory(['ethiopian_restaurant'])).toBe('restaurant');
     expect(mapToCategory(['afghan_restaurant'])).toBe('restaurant');
   });
+
+  // Regression: pre-v3 backfilled pins have types:[] but a valid primaryType.
+  // The 2026-05-25 dry-run found 80% of the legacy food cohort hit this
+  // pattern. Without the primaryType fallback, all of them get misclassified
+  // as 'other' and skipped by the backfill.
+  test('primaryType fallback: classifies pins whose types[] is empty', () => {
+    expect(mapToCategory([], 'italian_restaurant')).toBe('restaurant');
+    expect(mapToCategory([], 'bakery')).toBe('cafe');
+    expect(mapToCategory([], 'coffee_shop')).toBe('cafe');
+    expect(mapToCategory([], 'wine_bar')).toBe('bar');
+    expect(mapToCategory([], 'asian_restaurant')).toBe('restaurant');
+    expect(mapToCategory([], 'museum')).toBe('attraction');
+  });
+
+  test('primaryType fallback: null when both types and primaryType are unhelpful', () => {
+    expect(mapToCategory([], null)).toBe('other');
+    expect(mapToCategory([], '')).toBe('other');
+    expect(mapToCategory([], undefined)).toBe('other');
+    expect(mapToCategory(null, null)).toBe('other');
+    expect(mapToCategory([], 'totally_unknown_type')).toBe('other');
+  });
+
+  test('primaryType fills in only when types[] is empty OR returns "other"', () => {
+    // types[] has only generic tokens → classification is 'other' → fall back.
+    expect(mapToCategory(['point_of_interest', 'establishment'], 'italian_restaurant')).toBe('restaurant');
+    // Both agree — types still classifies first; outcome same.
+    expect(mapToCategory(['cafe'], 'coffee_shop')).toBe('cafe');
+    // De-dup harmless even with fallback semantics.
+    expect(mapToCategory(['restaurant'], 'restaurant')).toBe('restaurant');
+  });
+
+  test('CONFLICT: types[] wins when it produces a definite classification', () => {
+    // The crux of the R1 hotfix-review finding: do NOT silently re-migrate
+    // a clear bar into a restaurant just because primaryType says otherwise.
+    expect(mapToCategory(['wine_bar'], 'italian_restaurant')).toBe('bar');
+    expect(mapToCategory(['cafe'], 'sushi_restaurant')).toBe('cafe');
+    expect(mapToCategory(['museum'], 'italian_restaurant')).toBe('attraction');
+    // Multiple types — restaurant has internal precedence over bar, but only
+    // because BOTH come from types[]. primaryType doesn't change that.
+    expect(mapToCategory(['bar', 'restaurant'], 'wine_bar')).toBe('restaurant');
+  });
 });
 
 describe('isRestaurantType', () => {

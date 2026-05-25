@@ -41,7 +41,7 @@ function deriveFromPin(data) {
   return {
     types,
     primaryType,
-    category: mapToCategory(types),
+    category: mapToCategory(types, primaryType),
     cuisine: extractCuisine(types, primaryType),
   };
 }

@@ -84,10 +84,33 @@ describe('runBackfillCategoryCuisine', () => {
     expect(fs.read('pins', 'pin-park').category).toBe('nature');
   });
 
-  test('skippedUnclassifiable: legacy food pins with missing/unknown types preserved + surfaced for triage', async () => {
-    seedPin('pin-empty-types', { category: 'food' });
-    seedPin('pin-null-types', { category: 'food', types: null, primaryType: null });
-    seedPin('pin-unknown', { category: 'food', types: ['totally_unknown_type'] });
+  test('primaryType fallback: legacy food pins with empty types but valid primaryType DO migrate', async () => {
+    // Regression for the 2026-05-25 dry-run finding — 80% of legacy food
+    // pins had this shape and were being silently skipped.
+    seedPin('pin-italian-pt', {
+      category: 'food',
+      types: [],
+      primaryType: 'italian_restaurant',
+    });
+    seedPin('pin-bakery-pt', {
+      category: 'food',
+      types: [],
+      primaryType: 'bakery',
+    });
+
+    const stats = await runBackfillCategoryCuisine({ firestore: fs, dryRun: false });
+
+    expect(stats.processed).toBe(2);
+    expect(stats.updated).toBe(2);
+    expect(stats.skippedUnclassifiable).toBe(0);
+    expect(fs.read('pins', 'pin-italian-pt')).toMatchObject({ category: 'restaurant', cuisine: 'italian' });
+    expect(fs.read('pins', 'pin-bakery-pt')).toMatchObject({ category: 'cafe', cuisine: 'other' });
+  });
+
+  test('skippedUnclassifiable: legacy food pins with NO usable signal preserved + surfaced for triage', async () => {
+    seedPin('pin-empty-everything', { category: 'food' });
+    seedPin('pin-null-everything', { category: 'food', types: null, primaryType: null });
+    seedPin('pin-unknown', { category: 'food', types: ['totally_unknown_type'], primaryType: 'totally_unknown_type' });
 
     const stats = await runBackfillCategoryCuisine({ firestore: fs, dryRun: false });
 
@@ -96,15 +119,13 @@ describe('runBackfillCategoryCuisine', () => {
     expect(stats.skippedNonCohort).toBe(0);
     expect(stats.skippedUnclassifiable).toBe(3);
 
-    // All three IDs are in the triage sample so operators can investigate.
     expect(stats.unclassifiableSample).toHaveLength(3);
     expect(stats.unclassifiableSample.map((s) => s.id).sort()).toEqual([
-      'pin-empty-types', 'pin-null-types', 'pin-unknown',
+      'pin-empty-everything', 'pin-null-everything', 'pin-unknown',
     ]);
 
-    // The pins themselves stay as food (no downgrade to 'other').
-    expect(fs.read('pins', 'pin-empty-types').category).toBe('food');
-    expect(fs.read('pins', 'pin-null-types').category).toBe('food');
+    expect(fs.read('pins', 'pin-empty-everything').category).toBe('food');
+    expect(fs.read('pins', 'pin-null-everything').category).toBe('food');
     expect(fs.read('pins', 'pin-unknown').category).toBe('food');
   });
 

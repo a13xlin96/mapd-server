@@ -54,17 +54,34 @@ function isRestaurantType(t) {
   return RESTAURANT_TYPES.has(t) || t.endsWith('_restaurant');
 }
 
-function mapToCategory(types) {
-  if (!Array.isArray(types) || types.length === 0) return 'other';
-  if (types.some(isRestaurantType)) return 'restaurant';
-  if (types.some((t) => CAFE_TYPES.has(t))) return 'cafe';
-  if (types.some((t) => BAR_TYPES.has(t))) return 'bar';
-  if (types.some((t) => ACCOMMODATION_TYPES.has(t))) return 'accommodation';
-  if (types.some((t) => ATTRACTION_TYPES.has(t))) return 'attraction';
-  if (types.some((t) => NATURE_TYPES.has(t))) return 'nature';
-  if (types.some((t) => SHOPPING_TYPES.has(t))) return 'shopping';
-  if (types.some((t) => WELLNESS_TYPES.has(t))) return 'wellness';
-  if (types.some((t) => ENTERTAINMENT_TYPES.has(t))) return 'entertainment';
+function classifyTypes(list) {
+  if (list.some(isRestaurantType)) return 'restaurant';
+  if (list.some((t) => CAFE_TYPES.has(t))) return 'cafe';
+  if (list.some((t) => BAR_TYPES.has(t))) return 'bar';
+  if (list.some((t) => ACCOMMODATION_TYPES.has(t))) return 'accommodation';
+  if (list.some((t) => ATTRACTION_TYPES.has(t))) return 'attraction';
+  if (list.some((t) => NATURE_TYPES.has(t))) return 'nature';
+  if (list.some((t) => SHOPPING_TYPES.has(t))) return 'shopping';
+  if (list.some((t) => WELLNESS_TYPES.has(t))) return 'wellness';
+  if (list.some((t) => ENTERTAINMENT_TYPES.has(t))) return 'entertainment';
+  return 'other';
+}
+
+// Smart-fallback semantics: trust `types[]` when it produces a definite
+// classification. Fall back to `primaryType` only when `types[]` is empty
+// or contains only generic tokens (returns 'other'). This protects against
+// the conflict case where `types: ['wine_bar']` and `primaryType:
+// 'italian_restaurant'` would otherwise mis-migrate a bar into restaurant
+// just because restaurant has higher bucket precedence.
+function mapToCategory(types, primaryType) {
+  const validTypes = Array.isArray(types) ? types : [];
+  if (validTypes.length > 0) {
+    const fromTypes = classifyTypes(validTypes);
+    if (fromTypes !== 'other') return fromTypes;
+  }
+  if (typeof primaryType === 'string' && primaryType.length > 0) {
+    return classifyTypes([primaryType]);
+  }
   return 'other';
 }
 

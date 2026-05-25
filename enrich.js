@@ -22,6 +22,26 @@ const {
 } = require('./enrich/locationParser');
 const { calculateConfidence } = require('./enrich/confidence');
 const { mapToCategory } = require('./enrich/categories');
+
+// Combines (de-duped, string-only) the candidate type arrays from multiple
+// Places API sources. Empty arrays are falsy in business sense but truthy
+// in JS — `||` chains silently swallow that, so we explicitly merge.
+// Union (not "first-populated") so a generic top.types like ['establishment']
+// can't shadow a richer details.types like ['italian_restaurant'].
+function unionTypes(...candidates) {
+  const seen = new Set();
+  const out = [];
+  for (const c of candidates) {
+    if (!Array.isArray(c)) continue;
+    for (const t of c) {
+      if (typeof t === 'string' && !seen.has(t)) {
+        seen.add(t);
+        out.push(t);
+      }
+    }
+  }
+  return out;
+}
 const { extractCuisine } = require('./enrich/cuisine');
 const { searchGooglePlaces, getPlaceDetails, findPlaceFromUrl } = require('./enrich/places');
 const { assertSaveReason } = require('./lib/saveReason');
@@ -387,6 +407,12 @@ async function buildPinFromDetails({ url, userId, ogData, details, topResult, ca
 
   const sourceDomain = extractDomain(url);
   const sourceApp = determineSourceApp(url);
+  // Canonical type set: union of every signal Google handed us. Used as
+  // the single source of truth for persisted `types`, `cuisine`, and the
+  // category that was already computed at the call site from the same
+  // union. Codex R4 caught the consistency gap where persisted types
+  // diverged from category/cuisine and broke downstream re-derivation.
+  const unionedTypes = unionTypes(details && details.types, topResult && topResult.types);
   // Optional chaining throughout — topResult from text search may lack
   // geometry, and details may be null when Places returned nothing. Without
   // ?., `topResult.geometry.location.lat` throws on missing geometry,
@@ -439,18 +465,12 @@ async function buildPinFromDetails({ url, userId, ogData, details, topResult, ca
     priceLevel: (details && details.price_level) || null,
     shortFormattedAddress: (details && details.short_formatted_address) || null,
     primaryType: (details && details.primary_type) || null,
-    types:
-      (details && Array.isArray(details.types) && details.types.length > 0 && details.types) ||
-      (topResult && Array.isArray(topResult.types) && topResult.types.length > 0 ? topResult.types : null),
-    // Normalized cuisine label derived from types + primaryType; null for
-    // non-food places. Powers the client cuisine filter chip. Mirrors the
-    // length>0 fallback semantics of the `types` field above so an empty
-    // details.types array doesn't shadow topResult.types.
-    cuisine: extractCuisine(
-      (details && Array.isArray(details.types) && details.types.length > 0 && details.types) ||
-        (topResult && Array.isArray(topResult.types) && topResult.types.length > 0 ? topResult.types : []),
-      (details && details.primary_type) || null,
-    ),
+    // Persisted as the union so downstream re-derivation jobs (the backfill,
+    // a future repair pass) see the same input the original write
+    // classified on. null-when-empty preserved for backward-compat with
+    // existing Pin schema consumers.
+    types: unionedTypes.length > 0 ? unionedTypes : null,
+    cuisine: extractCuisine(unionedTypes, (details && details.primary_type) || null),
     dineIn: details ? details.dine_in : null,
     takeout: details ? details.takeout : null,
     delivery: details ? details.delivery : null,
@@ -564,7 +584,10 @@ async function handleGoogleMapsUrl(url, userId) {
   if (!top) return null;
 
   const details = await getPlaceDetails(top.place_id);
-  const category = mapToCategory((top.types || []));
+  const category = mapToCategory(
+    unionTypes(top.types, details && details.types),
+    (details && details.primary_type) || null,
+  );
   const location = details && details.address_components
     ? extractLocationFromComponents(details.address_components)
     : extractLocation((details && details.formatted_address) || top.formatted_address || '');
@@ -712,7 +735,10 @@ async function runAIPipeline({ jobId, url, userId, captionText }) {
       if (existing) continue;
       const details = await getPlaceDetails(top.place_id);
       if (!details) continue;
-      const category = mapToCategory(top.types || details.types || []);
+      const category = mapToCategory(
+        unionTypes(top.types, details.types),
+        details.primary_type || null,
+      );
       const location = details.address_components
         ? extractLocationFromComponents(details.address_components)
         : extractLocation(details.formatted_address || top.formatted_address);
@@ -781,7 +807,10 @@ async function runOGFallback({ url, userId, captionText, ogData }) {
   if (existing) return { duplicate: existing };
 
   const details = await getPlaceDetails(place.place_id);
-  const category = mapToCategory((place.types || (details && details.types) || []));
+  const category = mapToCategory(
+    unionTypes(place.types, details && details.types),
+    (details && details.primary_type) || null,
+  );
   const location = details && details.address_components
     ? extractLocationFromComponents(details.address_components)
     : extractLocation((details && details.formatted_address) || (place && place.formatted_address) || '');
