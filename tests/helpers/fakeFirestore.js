@@ -112,25 +112,75 @@ function makeDocSnap(store, collection, id, data) {
 }
 
 class FakeCollection {
-  constructor(store, name, filters = []) {
+  constructor(store, name, opts = {}) {
     this.store = store;
     this.name = name;
-    this.filters = filters;
+    this.filters = opts.filters || [];
+    this.orderField = opts.orderField || null;  // '__name__' = sort by doc id
+    this.orderDir = opts.orderDir || 'asc';
+    this.limitN = opts.limitN || null;
+    this.startAfterId = opts.startAfterId || null;
+  }
+  _clone(overrides) {
+    return new FakeCollection(this.store, this.name, {
+      filters: this.filters,
+      orderField: this.orderField,
+      orderDir: this.orderDir,
+      limitN: this.limitN,
+      startAfterId: this.startAfterId,
+      ...overrides,
+    });
   }
   doc(id) {
     const docId = id === undefined ? this.store.nextDocId() : id;
     return new FakeDocRef(this.store, this.name, docId);
   }
   where(field, op, value) {
-    return new FakeCollection(this.store, this.name, [...this.filters, { field, op, value }]);
+    return this._clone({ filters: [...this.filters, { field, op, value }] });
   }
-  limit() { return this; }
+  orderBy(field, direction = 'asc') {
+    return this._clone({ orderField: field, orderDir: direction });
+  }
+  limit(n) {
+    return this._clone({ limitN: n });
+  }
+  startAfter(snapOrValue) {
+    // Backfill calls startAfter(docSnap). If the caller passes a snapshot we
+    // pick up its id; if they pass a raw value, fall back to that as the id.
+    const id = snapOrValue && typeof snapOrValue === 'object' && snapOrValue.id
+      ? snapOrValue.id
+      : snapOrValue;
+    return this._clone({ startAfterId: id });
+  }
   async get() {
     const map = this.store.collections.get(this.name) || new Map();
-    const all = [...map.entries()]
-      .filter(([, data]) => this.filters.every((f) => valuesMatch(data[f.field], f.op, f.value)))
-      .map(([id, data]) => makeDocSnap(this.store, this.name, id, data));
-    return { empty: all.length === 0, docs: all, size: all.length };
+    let entries = [...map.entries()]
+      .filter(([, data]) => this.filters.every((f) => valuesMatch(data[f.field], f.op, f.value)));
+
+    if (this.orderField) {
+      entries.sort(([idA, a], [idB, b]) => {
+        const av = this.orderField === '__name__' ? idA : a[this.orderField];
+        const bv = this.orderField === '__name__' ? idB : b[this.orderField];
+        const cmp = av < bv ? -1 : av > bv ? 1 : 0;
+        return this.orderDir === 'desc' ? -cmp : cmp;
+      });
+    }
+
+    if (this.startAfterId !== null) {
+      // Real Firestore's startAfter is a lexicographic (or value-based)
+      // boundary — it doesn't require the cursor doc to exist. Filter by
+      // strict-greater so a deleted cursor still advances pagination
+      // correctly. Only ordered queries can have a cursor.
+      entries = entries.filter(([id, data]) => {
+        const fieldVal = this.orderField === '__name__' ? id : data && data[this.orderField];
+        return fieldVal > this.startAfterId;
+      });
+    }
+
+    if (this.limitN !== null) entries = entries.slice(0, this.limitN);
+
+    const docs = entries.map(([id, data]) => makeDocSnap(this.store, this.name, id, data));
+    return { empty: docs.length === 0, docs, size: docs.length };
   }
 }
 

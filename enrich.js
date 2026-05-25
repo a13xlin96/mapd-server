@@ -22,6 +22,7 @@ const {
 } = require('./enrich/locationParser');
 const { calculateConfidence } = require('./enrich/confidence');
 const { mapToCategory } = require('./enrich/categories');
+const { extractCuisine } = require('./enrich/cuisine');
 const { searchGooglePlaces, getPlaceDetails, findPlaceFromUrl } = require('./enrich/places');
 const { assertSaveReason } = require('./lib/saveReason');
 const { distanceKm } = require('./lib/geo');
@@ -441,6 +442,15 @@ async function buildPinFromDetails({ url, userId, ogData, details, topResult, ca
     types:
       (details && Array.isArray(details.types) && details.types.length > 0 && details.types) ||
       (topResult && Array.isArray(topResult.types) && topResult.types.length > 0 ? topResult.types : null),
+    // Normalized cuisine label derived from types + primaryType; null for
+    // non-food places. Powers the client cuisine filter chip. Mirrors the
+    // length>0 fallback semantics of the `types` field above so an empty
+    // details.types array doesn't shadow topResult.types.
+    cuisine: extractCuisine(
+      (details && Array.isArray(details.types) && details.types.length > 0 && details.types) ||
+        (topResult && Array.isArray(topResult.types) && topResult.types.length > 0 ? topResult.types : []),
+      (details && details.primary_type) || null,
+    ),
     dineIn: details ? details.dine_in : null,
     takeout: details ? details.takeout : null,
     delivery: details ? details.delivery : null,
