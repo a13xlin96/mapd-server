@@ -1,4 +1,5 @@
 const express = require('express');
+const crypto = require('crypto');
 const cors = require('cors');
 const { anthropic } = require('./lib/anthropic');
 const { firestore, admin, seedFeatureFlagsPromise } = require('./lib/firestore');
@@ -9,6 +10,7 @@ const { fetchInstagramCarouselPost, isInstagramPostUrl } = require('./lib/instag
 const { extractPlacesFromSlides } = require('./lib/vision');
 const { resolveOneRedirect, isShortSocialUrl } = require('./lib/urlResolve');
 const { runEnrichment } = require('./enrich');
+const { claimEnrichmentJob } = require('./lib/enrichClaim');
 const { router: adminRouter } = require('./lib/admin');
 const { router: listMembershipRouter } = require('./lib/listMembership');
 require('./lib/enrichmentSweeper'); // boots the orphan-job sweeper
@@ -568,9 +570,40 @@ app.post('/ai/vision-extract', async (req, res) => {
   res.json(result);
 });
 
-// Verify a Firebase ID token on the Authorization header and attach the decoded
-// uid to req.authUid. Rejects with 401 on missing/invalid token.
+// Authenticate /enrich requests. Two paths:
+//   1. User path: Bearer Firebase ID token (clients). Server verifies the
+//      token and trusts decoded.uid; the userId in the request body must
+//      match (enforced downstream).
+//   2. Admin path: X-Admin-Token header containing the ENRICH_ADMIN_TOKEN
+//      env var. Used by the Firebase Cloud Function that triggers on
+//      `enrichmentJobs/{jobId}` doc-creates. Identity is sourced from
+//      req.body.userId, but the /enrich handler also requires the doc to
+//      pre-exist with a matching userId+url (see the transactional claim
+//      below) — that constraint shrinks impersonation blast-radius if the
+//      admin token ever leaks.
 async function authenticateRequest(req, res, next) {
+  const adminTokenHeader = req.headers['x-admin-token'];
+  if (typeof adminTokenHeader === 'string' && adminTokenHeader.length > 0) {
+    const expected = process.env.ENRICH_ADMIN_TOKEN;
+    if (!expected) {
+      // Fail closed: never accept the admin header unless the env var is set.
+      return res.status(503).json({ error: 'admin path not configured' });
+    }
+    const provided = Buffer.from(adminTokenHeader);
+    const reference = Buffer.from(expected);
+    if (provided.length !== reference.length ||
+        !crypto.timingSafeEqual(provided, reference)) {
+      return res.status(401).json({ error: 'invalid admin token' });
+    }
+    const bodyUserId = req.body && typeof req.body.userId === 'string' ? req.body.userId : null;
+    if (!bodyUserId) {
+      return res.status(400).json({ error: 'userId required on admin path' });
+    }
+    req.authUid = bodyUserId;
+    req.adminBypass = true;
+    return next();
+  }
+
   const authHeader = req.headers.authorization || '';
   const match = authHeader.match(/^Bearer (.+)$/);
   if (!match) {
@@ -579,6 +612,7 @@ async function authenticateRequest(req, res, next) {
   try {
     const decoded = await admin.auth().verifyIdToken(match[1]);
     req.authUid = decoded.uid;
+    req.adminBypass = false;
     return next();
   } catch (err) {
     console.warn('Auth verify failed:', err.message);
@@ -586,11 +620,22 @@ async function authenticateRequest(req, res, next) {
   }
 }
 
-// Server-side enrichment. Client POSTs URL + jobId, receives 202 immediately,
-// processing continues async and writes results to enrichmentJobs/{jobId}.
+// Server-side enrichment. Two callers:
+//   1. Direct: phone POSTs with Bearer ID token (legacy + fallback path).
+//      No pre-existing doc in this case — the handler creates the job doc
+//      from scratch with status:'processing'.
+//   2. Cloud Function: triggers on Firestore enrichmentJobs/{jobId} creates
+//      where status:'pending' (client wrote it). Uses X-Admin-Token. The
+//      pending doc already exists with userId+url; handler verifies they
+//      match the body, then claims it (pending → processing).
+//
+// Both paths share a Firestore transaction that atomically claims the job.
+// Only the transaction's winner fires runEnrichment(); losers (concurrent
+// retries / dual-trigger from in-app POST + Cloud Function during rollout)
+// see status:'processing' and return 202 without spawning a second pipeline.
 app.post('/enrich', authenticateRequest, async (req, res) => {
   const { url, userId, captionText, jobId } = req.body || {};
-  console.log(`[/enrich] job=${jobId || '?'} user=${userId || '?'} url=${url || '?'}`);
+  console.log(`[/enrich] job=${jobId || '?'} user=${userId || '?'} url=${url || '?'} admin=${req.adminBypass ? 1 : 0}`);
 
   if (!url || !userId || !jobId) {
     return res.status(400).json({ error: 'url, userId, and jobId are required' });
@@ -602,44 +647,32 @@ app.post('/enrich', authenticateRequest, async (req, res) => {
     return res.status(503).json({ error: 'Firestore not configured on server' });
   }
 
+  let result;
   try {
-    const jobRef = firestore.collection('enrichmentJobs').doc(jobId);
-    const snap = await jobRef.get();
-
-    if (snap.exists) {
-      const existing = snap.data();
-      if (existing.status && existing.status !== 'processing') {
-        return res.status(200).json({ jobId, status: existing.status });
-      }
-      // A processing job with same id — treat as idempotent retry
-      return res.status(202).json({ jobId, status: 'processing' });
-    }
-
-    await jobRef.set({
+    result = await claimEnrichmentJob(firestore, {
+      jobId,
       userId,
       url,
-      status: 'processing',
-      attempts: 0,
-      createdAt: firestoreTs(),
-      updatedAt: firestoreTs(),
+      captionText,
+      adminBypass: !!req.adminBypass,
     });
-
-    // Fire-and-forget: the response returns immediately; the pipeline runs in the background
-    runEnrichment(jobId, url, userId, captionText || '').catch((err) => {
-      console.error(`runEnrichment unhandled error for ${jobId}:`, err);
-    });
-
-    return res.status(202).json({ jobId, status: 'processing' });
   } catch (err) {
-    console.error('/enrich failed:', err);
+    console.error('/enrich claim failed:', err);
     return res.status(500).json({ error: err.message || 'Internal error' });
   }
-});
 
-function firestoreTs() {
-  const admin = require('firebase-admin');
-  return admin.firestore.FieldValue.serverTimestamp();
-}
+  if (result.shouldEnrich) {
+    // Fire-and-forget: response returns immediately; pipeline runs in background.
+    // Use result.enrichArgs (stored doc fields when pre-existing) — NEVER trust
+    // the request body for fields that drive enrichment, per Codex P2 fix.
+    const args = result.enrichArgs;
+    runEnrichment(jobId, args.url, args.userId, args.captionText).catch((err) => {
+      console.error(`runEnrichment unhandled error for ${jobId}:`, err);
+    });
+  }
+
+  return res.status(result.code).json(result.body);
+});
 
 const PORT = process.env.PORT || 3000;
 // F59 round-2: gate listen() on the featureFlags seed so user-facing
