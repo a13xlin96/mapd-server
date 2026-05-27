@@ -349,4 +349,88 @@ describe('runBackfillCategoryCuisine', () => {
     expect(page3.processed).toBe(1);
     expect(page3.hasMore).toBe(false);
   });
+
+  // Final-sweep mode: closes the `food` cohort before the client drops
+  // `food` from the Category type. Stragglers that the strict pass
+  // correctly refused (grocery_store etc.) get pushed onto whatever
+  // mapToCategory returns — `other`, `shopping`, etc.
+  describe('acceptAnyCategory=true (final-sweep mode)', () => {
+    test('writes derived category for pins the strict pass would skip', async () => {
+      seedPin('pin-supermarket', { category: 'food', types: ['supermarket'], primaryType: 'supermarket' });
+      seedPin('pin-unknown', { category: 'food', types: ['totally_unknown_type'], primaryType: 'totally_unknown_type' });
+      seedPin('pin-empty', { category: 'food' });
+
+      const stats = await runBackfillCategoryCuisine({
+        firestore: fs, dryRun: false, acceptAnyCategory: true,
+      });
+
+      expect(stats.processed).toBe(3);
+      expect(stats.updated).toBe(3);
+      expect(stats.skippedUnclassifiable).toBe(0);
+      expect(stats.unclassifiableSample).toEqual([]);
+
+      expect(fs.read('pins', 'pin-supermarket')).toMatchObject({ category: 'shopping', cuisine: null });
+      expect(fs.read('pins', 'pin-unknown')).toMatchObject({ category: 'other', cuisine: null });
+      expect(fs.read('pins', 'pin-empty')).toMatchObject({ category: 'other', cuisine: null });
+    });
+
+    test('still migrates classifiable food pins correctly', async () => {
+      seedPin('pin-italian', {
+        category: 'food',
+        types: ['italian_restaurant', 'restaurant'],
+        primaryType: 'italian_restaurant',
+      });
+      seedPin('pin-supermarket', { category: 'food', types: ['supermarket'], primaryType: 'supermarket' });
+
+      const stats = await runBackfillCategoryCuisine({
+        firestore: fs, dryRun: false, acceptAnyCategory: true,
+      });
+
+      expect(stats.updated).toBe(2);
+      expect(fs.read('pins', 'pin-italian')).toMatchObject({ category: 'restaurant', cuisine: 'italian' });
+      expect(fs.read('pins', 'pin-supermarket')).toMatchObject({ category: 'shopping', cuisine: null });
+    });
+
+    test('cohort guard still applies — non-food pins untouched', async () => {
+      seedPin('pin-already-other', { category: 'other', types: ['totally_unknown_type'] });
+      seedPin('pin-food-straggler', { category: 'food', types: ['supermarket'], primaryType: 'supermarket' });
+
+      const stats = await runBackfillCategoryCuisine({
+        firestore: fs, dryRun: false, acceptAnyCategory: true,
+      });
+
+      expect(stats.updated).toBe(1);
+      expect(stats.skippedNonCohort).toBe(1);
+      expect(fs.read('pins', 'pin-already-other').category).toBe('other');
+      expect(fs.read('pins', 'pin-food-straggler').category).toBe('shopping');
+    });
+
+    test('dry-run previews the sweep without writing', async () => {
+      seedPin('pin-supermarket', { category: 'food', types: ['supermarket'], primaryType: 'supermarket' });
+
+      const stats = await runBackfillCategoryCuisine({
+        firestore: fs, dryRun: true, acceptAnyCategory: true,
+      });
+
+      expect(stats.updated).toBe(1);
+      expect(stats.dryRun).toBe(true);
+      expect(stats.sample[0]).toMatchObject({
+        id: 'pin-supermarket',
+        old: { category: 'food', cuisine: null },
+        new: { category: 'shopping', cuisine: null },
+      });
+
+      expect(fs.read('pins', 'pin-supermarket').category).toBe('food');
+    });
+
+    test('default (acceptAnyCategory omitted) preserves strict behavior', async () => {
+      seedPin('pin-supermarket', { category: 'food', types: ['supermarket'], primaryType: 'supermarket' });
+
+      const stats = await runBackfillCategoryCuisine({ firestore: fs, dryRun: false });
+
+      expect(stats.updated).toBe(0);
+      expect(stats.skippedUnclassifiable).toBe(1);
+      expect(fs.read('pins', 'pin-supermarket').category).toBe('food');
+    });
+  });
 });

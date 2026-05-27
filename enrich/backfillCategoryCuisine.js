@@ -14,10 +14,15 @@
 // If `types[]` changed concurrently while category stayed `food`, the
 // commit uses the fresh classification, not stale page data.
 //
-// Confidence guard: skips writes when `mapToCategory(types)` returns
-// `other`. A legacy `food` pin with missing/unknown types is better
-// preserved as-is than downgraded. Sample of unresolved IDs surfaces under
-// `unclassifiableSample` so operators can triage.
+// Confidence guard: skips writes when `mapToCategory(types)` returns a
+// category outside restaurant/cafe/bar. A legacy `food` pin with
+// missing/unknown types is better preserved as-is than downgraded. Sample
+// of unresolved IDs surfaces under `unclassifiableSample` for triage.
+//
+// acceptAnyCategory=true inverts the guard: writes whatever
+// `mapToCategory` derives, including `other` / `shopping` / etc. Used for
+// the final-sweep pass that closes out the `food` cohort before the
+// `Category` type drops `food` on the client.
 //
 // Input validation: `batchSize` must be an integer in [1, MAX_BATCH_SIZE]
 // — rejecting 0 prevents a `hasMore=true` / `processed=0` infinite-loop
@@ -51,6 +56,7 @@ async function runBackfillCategoryCuisine({
   batchSize = DEFAULT_BATCH_SIZE,
   startAfterDocId = null,
   dryRun = true,
+  acceptAnyCategory = false,
 }) {
   if (!firestore) throw new Error('firestore is required');
   if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > MAX_BATCH_SIZE) {
@@ -102,7 +108,7 @@ async function runBackfillCategoryCuisine({
       // Dry-run: derive from page-snapshot data. Best-effort preview — can't
       // reflect concurrent type mutations.
       const previewed = deriveFromPin(data);
-      if (!TARGET_CATEGORIES.has(previewed.category)) {
+      if (!acceptAnyCategory && !TARGET_CATEGORIES.has(previewed.category)) {
         skippedUnclassifiable += 1;
         if (unclassifiableSample.length < SAMPLE_LIMIT) {
           unclassifiableSample.push({
@@ -135,7 +141,7 @@ async function runBackfillCategoryCuisine({
         if (freshData.category !== 'food') return { state: 'raced' };
 
         const derived = deriveFromPin(freshData);
-        if (!TARGET_CATEGORIES.has(derived.category)) {
+        if (!acceptAnyCategory && !TARGET_CATEGORIES.has(derived.category)) {
           return {
             state: 'unclassifiable',
             types: derived.types,
