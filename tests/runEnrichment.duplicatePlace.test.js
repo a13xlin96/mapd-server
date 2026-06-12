@@ -276,4 +276,68 @@ describe('runEnrichment — place already pinned, NEW video', () => {
       expect.objectContaining({ pinId: 'pin_ramen', sourceAdded: true }),
     );
   });
+
+  test('race on the lone new candidate still reports the pin that received the link', async () => {
+    // Codex round-2 P3s: ramen is existing (gets the source appended); the
+    // taco place passes the loop's dedup check but is saved concurrently
+    // (another device) before writePinTransactional runs — its txn returns
+    // alreadyExists + sourceAdded:false. The job must still report
+    // sourceAdded:true AND point existingPinId at the pin that actually
+    // received the link (ramen), not the raced taco pin.
+    seedJob('job5');
+    seedRamenPin();
+
+    runYtDlp.mockResolvedValue({
+      title: 'ramen and tacos tour',
+      description: 'two spots',
+      webpage_url: VIDEO_B,
+      thumbnail_url: '',
+      hashtags: [],
+      uploader: 'foodie',
+      subtitles: '',
+    });
+    aiExtractPlaces.mockResolvedValue({
+      places: [
+        { name: 'Ramen Spot', city: 'New York', address: '' },
+        { name: 'Taco Stand', city: 'New York', address: '' },
+      ],
+    });
+    searchGooglePlaces.mockImplementation(async (query) =>
+      query.includes('Ramen') ? [RAMEN_PLACE] : [TACO_PLACE]);
+    // Simulate the concurrent save: by the time details are fetched (after
+    // the loop's findPinByPlaceId check), the taco pin exists with this
+    // exact share already as its url.
+    getPlaceDetails.mockImplementation(async () => {
+      if (!fs.read('pins', 'pin_taco')) {
+        fs.seed('pins', 'pin_taco', {
+          userId: USER,
+          url: VIDEO_B,
+          placeId: 'P_taco',
+          placeName: 'Taco Stand',
+          sources: [
+            { url: VIDEO_B, ogTitle: '', ogImage: '', sourceApp: 'tiktok', sourceDomain: 'tiktok.com', addedAt: new Date(0) },
+          ],
+        });
+      }
+      return {
+        types: ['restaurant'],
+        formatted_address: '2 Side St, New York, NY, USA',
+        geometry: { location: { lat: 40.71, lng: -74.01 } },
+      };
+    });
+
+    await runEnrichment('job5', SHORT_B, USER, '');
+
+    expect(fs.read('pins', 'pin_ramen').sources).toHaveLength(2);
+
+    const job = fs.read('enrichmentJobs', 'job5');
+    expect(job.status).toBe('duplicate');
+    expect(job.sourceAdded).toBe(true);
+    expect(job.existingPinId).toBe('pin_ramen');
+
+    expect(sendPushForJob).toHaveBeenCalledWith(
+      'job5', USER, 'duplicate',
+      expect.objectContaining({ pinId: 'pin_ramen', sourceAdded: true }),
+    );
+  });
 });

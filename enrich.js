@@ -1007,12 +1007,17 @@ async function runEnrichment(jobId, url, userId, captionText) {
     // existing) appends too, not just the all-existing case.
     const existingMatches = Array.isArray(ai.existingMatches) ? ai.existingMatches : [];
     let appendedToExisting = false;
+    // First pin that actually received the link — terminal duplicate
+    // verdicts point existingPinId at it so the "new link added" push opens
+    // a pin that really has the new source.
+    let appendedPin = null;
     for (const match of existingMatches) {
       const added = await appendSourceToExistingPin(
         match.id,
         sourceEntryFor(ai.canonicalUrl || url, ai.ogData),
       );
       appendedToExisting = appendedToExisting || added;
+      if (added && !appendedPin) appendedPin = match;
     }
 
     // Every place in the video resolved to an already-pinned place —
@@ -1026,7 +1031,7 @@ async function runEnrichment(jobId, url, userId, captionText) {
       existingMatches.length > 0 &&
       (ai.unresolvedCount || 0) === 0
     ) {
-      await finishDuplicate(existingMatches[0], appendedToExisting);
+      await finishDuplicate(appendedPin || existingMatches[0], appendedToExisting);
       return;
     }
 
@@ -1034,7 +1039,14 @@ async function runEnrichment(jobId, url, userId, captionText) {
       const result = await writePinTransactional(ai.candidates[0], ai.ogData);
       await recordTripSignalSaveIfNew(ai.candidates[0], result, jobId);
       if (result.alreadyExists) {
-        await finishDuplicate({ id: result.pinId, placeName: ai.candidates[0].placeName }, result.sourceAdded);
+        // If the raced txn pin didn't take the source but an earlier
+        // existing match did, report THAT pin — its sources really gained
+        // the link this push announces.
+        if (result.sourceAdded !== true && appendedPin) {
+          await finishDuplicate(appendedPin, true);
+        } else {
+          await finishDuplicate({ id: result.pinId, placeName: ai.candidates[0].placeName }, result.sourceAdded || appendedToExisting);
+        }
       } else {
         await updateJob(jobId, { status: 'complete', pinId: result.pinId, completedAt: ts() });
         await sendPushForJob(jobId, userId, 'complete', { placeName: ai.candidates[0].placeName, pinId: result.pinId });
@@ -1063,16 +1075,24 @@ async function runEnrichment(jobId, url, userId, captionText) {
         fallback.duplicate.id,
         sourceEntryFor(ai.canonicalUrl || url, ai.ogData),
       );
-      // appendedToExisting: the share may already have landed on another
-      // existing pin during the candidate loop — still a kept link.
-      await finishDuplicate(fallback.duplicate, added || appendedToExisting);
+      // If this pin didn't take the source but an earlier existing match
+      // did, report the pin whose sources really gained the link.
+      if (!added && appendedPin) {
+        await finishDuplicate(appendedPin, true);
+      } else {
+        await finishDuplicate(fallback.duplicate, added || appendedToExisting);
+      }
       return;
     }
     if (fallback && fallback.pin) {
       const result = await writePinTransactional(fallback.pin, ai.ogData);
       await recordTripSignalSaveIfNew(fallback.pin, result, jobId);
       if (result.alreadyExists) {
-        await finishDuplicate({ id: result.pinId, placeName: fallback.pin.placeName }, result.sourceAdded || appendedToExisting);
+        if (result.sourceAdded !== true && appendedPin) {
+          await finishDuplicate(appendedPin, true);
+        } else {
+          await finishDuplicate({ id: result.pinId, placeName: fallback.pin.placeName }, result.sourceAdded || appendedToExisting);
+        }
       } else {
         await updateJob(jobId, { status: 'complete', pinId: result.pinId, completedAt: ts() });
         await sendPushForJob(jobId, userId, 'complete', { placeName: fallback.pin.placeName, pinId: result.pinId });
@@ -1084,7 +1104,7 @@ async function runEnrichment(jobId, url, userId, captionText) {
     // during the candidate loop. Reporting 'failed' there would tell the
     // user their link was lost when it's actually attached to their pin.
     if (existingMatches.length > 0) {
-      await finishDuplicate(existingMatches[0], appendedToExisting);
+      await finishDuplicate(appendedPin || existingMatches[0], appendedToExisting);
       return;
     }
     await updateJob(jobId, {
