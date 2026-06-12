@@ -229,4 +229,51 @@ describe('runEnrichment — place already pinned, NEW video', () => {
     const job = fs.read('enrichmentJobs', 'job3');
     expect(['complete', 'needs_selection']).toContain(job.status);
   });
+
+  test('existing match + UNRESOLVED place: OG fallback still runs, and a dead fallback keeps the duplicate verdict with sourceAdded', async () => {
+    // Codex P3: candidates.length === 0 can also mean "Places couldn't
+    // resolve a name", not "everything already pinned". The OG fallback must
+    // still get its shot at the unresolved place; but if it comes up empty,
+    // the job must finish as duplicate (the share DID land on the existing
+    // pin) — not as a scary 'failed'.
+    seedJob('job4');
+    seedRamenPin();
+
+    runYtDlp.mockResolvedValue({
+      title: 'ramen and a mystery spot',
+      description: 'two places',
+      webpage_url: VIDEO_B,
+      thumbnail_url: '',
+      hashtags: [],
+      uploader: 'foodie',
+      subtitles: '',
+    });
+    aiExtractPlaces.mockResolvedValue({
+      places: [
+        { name: 'Ramen Spot', city: 'New York', address: '' },
+        { name: 'Mystery Cafe', city: 'Nowhere', address: '' },
+      ],
+    });
+    // Ramen resolves to the existing pin; Mystery Cafe gets no results.
+    searchGooglePlaces.mockImplementation(async (query) =>
+      query.includes('Ramen') ? [RAMEN_PLACE] : []);
+    // OG fallback's single-place inference also dead-ends.
+    aiExtractPlace.mockResolvedValue('');
+
+    await runEnrichment('job4', SHORT_B, USER, '');
+
+    // The fallback was attempted for the unresolved place...
+    expect(aiExtractPlace).toHaveBeenCalled();
+
+    // ...but the job still reports the salvaged share, not failure.
+    const job = fs.read('enrichmentJobs', 'job4');
+    expect(job.status).toBe('duplicate');
+    expect(job.sourceAdded).toBe(true);
+    expect(fs.read('pins', 'pin_ramen').sources).toHaveLength(2);
+
+    expect(sendPushForJob).toHaveBeenCalledWith(
+      'job4', USER, 'duplicate',
+      expect.objectContaining({ pinId: 'pin_ramen', sourceAdded: true }),
+    );
+  });
 });

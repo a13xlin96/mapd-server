@@ -102,4 +102,21 @@ describe('appendSourceToExistingPin', () => {
     const added = await appendSourceToExistingPin('missing_pin', NEW_SOURCE);
     expect(added).toBe(false);
   });
+
+  test('does NOT rewrite a non-social pin.url (Google Maps origin)', async () => {
+    // Codex P2: the upgrade exists to fix social SHORT urls (no content ID).
+    // A pin created from a Google Maps link / website must keep its primary
+    // URL — rewriting it to a later TikTok video is a hidden data migration.
+    const mapsUrl = 'https://maps.google.com/?cid=12345';
+    seedPin({ url: mapsUrl, sources: [
+      { url: mapsUrl, ogTitle: 'maps', ogImage: '', sourceApp: 'google_maps', sourceDomain: 'google.com', addedAt: new Date(0) },
+    ] });
+
+    const added = await appendSourceToExistingPin('pin1', NEW_SOURCE);
+
+    expect(added).toBe(true);
+    const doc = fs.read('pins', 'pin1');
+    expect(doc.url).toBe(mapsUrl);
+    expect(doc.sources).toHaveLength(2);
+  });
 });

@@ -538,7 +538,14 @@ function computeSourceAppend(data, source) {
   const alreadyHas = sameLink(data.url) || sources.some((s) => s && sameLink(s.url));
   const update = {};
   if (!alreadyHas) update.sources = [...sources, source];
-  if (!extractContentId(data.url) && newContentId) update.url = source.url;
+  // Upgrade is scoped to SOCIAL pins whose url is a short link (no content
+  // ID) — the TikTok /t/XXXX case the upgrade exists for. Non-social pins
+  // (Google Maps, websites) keep their primary URL: rewriting it to a later
+  // video would be a hidden semantic migration, and their dedup doesn't
+  // depend on content IDs anyway (placeId + the appended source cover it).
+  const existingApp = determineSourceApp(data.url || '');
+  const upgradeEligible = existingApp === 'tiktok' || existingApp === 'instagram' || existingApp === 'youtube';
+  if (upgradeEligible && !extractContentId(data.url) && newContentId) update.url = source.url;
   return { update, sourceAdded: !alreadyHas };
 }
 
@@ -793,12 +800,17 @@ async function runAIPipeline({ jobId, url, userId, captionText }) {
 
   const candidates = [];
   const existingMatches = [];
+  // AI-extracted places that fell out of the loop WITHOUT being proven
+  // already-pinned (bad query, no search results, missing details). The
+  // caller may only treat "all existing" as terminal when this is zero —
+  // otherwise the OG fallback still deserves a shot at the unresolved ones.
+  let unresolvedCount = 0;
   if (allCandidates.length > 0) {
     for (const p of allCandidates) {
       const query = [p.name, p.address, p.city].filter(Boolean).join(' ');
-      if (!query || query.trim().length < 3) continue;
+      if (!query || query.trim().length < 3) { unresolvedCount++; continue; }
       const results = await searchGooglePlaces(query);
-      if (results.length === 0) continue;
+      if (results.length === 0) { unresolvedCount++; continue; }
       const top = results[0];
       // Per-place placeId dedup: skip if user already has this pin
       const existing = await findPinByPlaceId(userId, top.place_id);
@@ -810,7 +822,7 @@ async function runAIPipeline({ jobId, url, userId, captionText }) {
         continue;
       }
       const details = await getPlaceDetails(top.place_id);
-      if (!details) continue;
+      if (!details) { unresolvedCount++; continue; }
       const category = mapToCategory(
         unionTypes(top.types, details.types),
         details.primary_type || null,
@@ -835,7 +847,7 @@ async function runAIPipeline({ jobId, url, userId, captionText }) {
     }
   }
 
-  return { duplicate: null, candidates, ogData, canonicalUrl, existingMatches };
+  return { duplicate: null, candidates, ogData, canonicalUrl, existingMatches, unresolvedCount };
 }
 
 /** OG-first fallback pipeline (port of client processUrl) — used when AI returns no places. */
@@ -1003,10 +1015,17 @@ async function runEnrichment(jobId, url, userId, captionText) {
       appendedToExisting = appendedToExisting || added;
     }
 
-    // Every place in the video is already pinned — terminal duplicate. Do
-    // NOT fall through to the OG fallback: it would re-run AI + Places for
-    // places we already matched, and can mis-resolve to a different place.
-    if (ai.candidates.length === 0 && existingMatches.length > 0) {
+    // Every place in the video resolved to an already-pinned place —
+    // terminal duplicate. Do NOT fall through to the OG fallback: it would
+    // re-run AI + Places for places we already matched, and can mis-resolve
+    // to a different place. Gated on unresolvedCount so a place that merely
+    // FAILED to resolve (no search results, missing details) still gets the
+    // fallback's attempt below.
+    if (
+      ai.candidates.length === 0 &&
+      existingMatches.length > 0 &&
+      (ai.unresolvedCount || 0) === 0
+    ) {
       await finishDuplicate(existingMatches[0], appendedToExisting);
       return;
     }
@@ -1044,14 +1063,16 @@ async function runEnrichment(jobId, url, userId, captionText) {
         fallback.duplicate.id,
         sourceEntryFor(ai.canonicalUrl || url, ai.ogData),
       );
-      await finishDuplicate(fallback.duplicate, added);
+      // appendedToExisting: the share may already have landed on another
+      // existing pin during the candidate loop — still a kept link.
+      await finishDuplicate(fallback.duplicate, added || appendedToExisting);
       return;
     }
     if (fallback && fallback.pin) {
       const result = await writePinTransactional(fallback.pin, ai.ogData);
       await recordTripSignalSaveIfNew(fallback.pin, result, jobId);
       if (result.alreadyExists) {
-        await finishDuplicate({ id: result.pinId, placeName: fallback.pin.placeName }, result.sourceAdded);
+        await finishDuplicate({ id: result.pinId, placeName: fallback.pin.placeName }, result.sourceAdded || appendedToExisting);
       } else {
         await updateJob(jobId, { status: 'complete', pinId: result.pinId, completedAt: ts() });
         await sendPushForJob(jobId, userId, 'complete', { placeName: fallback.pin.placeName, pinId: result.pinId });
@@ -1059,7 +1080,13 @@ async function runEnrichment(jobId, url, userId, captionText) {
       return;
     }
 
-    // 5. Give up
+    // 5. Give up — unless the share already landed on an existing pin
+    // during the candidate loop. Reporting 'failed' there would tell the
+    // user their link was lost when it's actually attached to their pin.
+    if (existingMatches.length > 0) {
+      await finishDuplicate(existingMatches[0], appendedToExisting);
+      return;
+    }
     await updateJob(jobId, {
       status: 'failed',
       error: 'No places could be extracted from this link',
