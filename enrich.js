@@ -120,8 +120,13 @@ async function findPinByContentId(userId, contentId) {
   for (const doc of snap.docs) {
     const data = doc.data();
     const pinUrl = data.url;
-    if (!pinUrl) continue;
-    if (extractContentId(pinUrl) === contentId) {
+    if (pinUrl && extractContentId(pinUrl) === contentId) {
+      return { id: doc.id, ...data };
+    }
+    // A video appended to sources[] by the duplicate-place flow must also
+    // count as "already processed" — pin.url only covers the creating video.
+    const sources = Array.isArray(data.sources) ? data.sources : [];
+    if (sources.some((s) => s && s.url && extractContentId(s.url) === contentId)) {
       return { id: doc.id, ...data };
     }
   }
@@ -512,6 +517,63 @@ async function buildPinFromDetails({ url, userId, ogData, details, topResult, ca
   };
 }
 
+// Shared "duplicate place, maybe-new link" computation. Dedupe by normalized
+// URL OR content ID against pin.url and every sources[] entry; append the
+// source otherwise. Also upgrades pin.url to the incoming (canonical) URL
+// when pin.url lacks a content ID, so future reshares of this video stay
+// content-ID-matchable — TikTok mints a different short URL on every share.
+// Mirrors the client's addSourceToPin dedupe (pinsStore.ts) and the legacy
+// pipeline's URL-upgrade step (enrichmentTask.ts). Pure: returns the update
+// to write (possibly empty) and whether a source would be appended.
+function computeSourceAppend(data, source) {
+  const newContentId = extractContentId(source.url);
+  const newNormalized = normalizeUrl(source.url);
+  const sameLink = (u) => {
+    if (!u) return false;
+    if (normalizeUrl(u) === newNormalized) return true;
+    const cid = extractContentId(u);
+    return !!(newContentId && cid && cid === newContentId);
+  };
+  const sources = Array.isArray(data.sources) ? data.sources : [];
+  const alreadyHas = sameLink(data.url) || sources.some((s) => s && sameLink(s.url));
+  const update = {};
+  if (!alreadyHas) update.sources = [...sources, source];
+  // Upgrade is scoped to SOCIAL pins whose url is a short link (no content
+  // ID) — the TikTok /t/XXXX case the upgrade exists for. Non-social pins
+  // (Google Maps, websites) keep their primary URL: rewriting it to a later
+  // video would be a hidden semantic migration, and their dedup doesn't
+  // depend on content IDs anyway (placeId + the appended source cover it).
+  const existingApp = determineSourceApp(data.url || '');
+  const upgradeEligible = existingApp === 'tiktok' || existingApp === 'instagram' || existingApp === 'youtube';
+  if (upgradeEligible && !extractContentId(data.url) && newContentId) update.url = source.url;
+  return { update, sourceAdded: !alreadyHas };
+}
+
+// Append a share to a pin found OUTSIDE writePinTransactional (content-ID
+// dedup, AI candidate-loop skip, OG-fallback duplicate). Own transaction so
+// a concurrent enrichment appending to the same pin can't clobber sources[].
+// Returns whether a new source landed; failures degrade to false — the job
+// still finishes as 'duplicate', we just don't claim "new link added".
+async function appendSourceToExistingPin(pinId, source) {
+  if (!firestore || !pinId) return false;
+  const entry = { ...source, addedAt: new Date() };
+  try {
+    return await firestore.runTransaction(async (txn) => {
+      const ref = firestore.collection('pins').doc(pinId);
+      const snap = await txn.get(ref);
+      if (!snap.exists) return false;
+      const { update, sourceAdded } = computeSourceAppend(snap.data() || {}, entry);
+      if (Object.keys(update).length > 0) {
+        txn.update(ref, { ...update, updatedAt: ts() });
+      }
+      return sourceAdded;
+    });
+  } catch (err) {
+    console.warn(`appendSourceToExistingPin failed for ${pinId}:`, err && err.message);
+    return false;
+  }
+}
+
 // Transactional pin write — re-checks placeId, raw URL, and normalized URL
 // dedup INSIDE the txn so two concurrent jobs (different jobIds, same place)
 // can't both pass the pre-AI dedup check and write two pins. Mirrors the
@@ -529,6 +591,17 @@ async function writePinTransactional(pin, _ogData) {
     addedAt: new Date(),
   };
   const normalizedUrl = normalizeUrl(pin.url);
+  // Duplicate place, possibly a NEW video about it — attach the share as an
+  // additional source on the existing pin instead of dropping it (the old
+  // client pipeline did this via addSourceToPin; the server path lost it in
+  // the cloud-function migration).
+  const appendSourceToDoc = (txn, docSnap) => {
+    const { update, sourceAdded } = computeSourceAppend(docSnap.data() || {}, source);
+    if (Object.keys(update).length > 0) {
+      txn.update(docSnap.ref, { ...update, updatedAt: ts() });
+    }
+    return sourceAdded;
+  };
   return await firestore.runTransaction(async (txn) => {
     if (pin.placeId) {
       const placeSnap = await txn.get(
@@ -538,7 +611,8 @@ async function writePinTransactional(pin, _ogData) {
           .limit(1)
       );
       if (!placeSnap.empty) {
-        return { pinId: placeSnap.docs[0].id, alreadyExists: true };
+        const sourceAdded = appendSourceToDoc(txn, placeSnap.docs[0]);
+        return { pinId: placeSnap.docs[0].id, alreadyExists: true, sourceAdded };
       }
     }
     const rawUrlSnap = await txn.get(
@@ -548,7 +622,8 @@ async function writePinTransactional(pin, _ogData) {
         .limit(1)
     );
     if (!rawUrlSnap.empty) {
-      return { pinId: rawUrlSnap.docs[0].id, alreadyExists: true };
+      const sourceAdded = appendSourceToDoc(txn, rawUrlSnap.docs[0]);
+      return { pinId: rawUrlSnap.docs[0].id, alreadyExists: true, sourceAdded };
     }
     if (normalizedUrl !== pin.url) {
       const normSnap = await txn.get(
@@ -558,7 +633,8 @@ async function writePinTransactional(pin, _ogData) {
           .limit(1)
       );
       if (!normSnap.empty) {
-        return { pinId: normSnap.docs[0].id, alreadyExists: true };
+        const sourceAdded = appendSourceToDoc(txn, normSnap.docs[0]);
+        return { pinId: normSnap.docs[0].id, alreadyExists: true, sourceAdded };
       }
     }
     const ref = firestore.collection('pins').doc();
@@ -668,7 +744,7 @@ async function runAIPipeline({ jobId, url, userId, captionText }) {
   const contentId = extractContentId(canonicalUrl);
   if (contentId) {
     const dup = await findPinByContentId(userId, contentId);
-    if (dup) return { duplicate: dup, candidates: [] };
+    if (dup) return { duplicate: dup, candidates: [], canonicalUrl, ogData };
   }
 
   // Parse @mentions from the caption and feed them into the AI prompt so
@@ -723,18 +799,30 @@ async function runAIPipeline({ jobId, url, userId, captionText }) {
   );
 
   const candidates = [];
+  const existingMatches = [];
+  // AI-extracted places that fell out of the loop WITHOUT being proven
+  // already-pinned (bad query, no search results, missing details). The
+  // caller may only treat "all existing" as terminal when this is zero —
+  // otherwise the OG fallback still deserves a shot at the unresolved ones.
+  let unresolvedCount = 0;
   if (allCandidates.length > 0) {
     for (const p of allCandidates) {
       const query = [p.name, p.address, p.city].filter(Boolean).join(' ');
-      if (!query || query.trim().length < 3) continue;
+      if (!query || query.trim().length < 3) { unresolvedCount++; continue; }
       const results = await searchGooglePlaces(query);
-      if (results.length === 0) continue;
+      if (results.length === 0) { unresolvedCount++; continue; }
       const top = results[0];
       // Per-place placeId dedup: skip if user already has this pin
       const existing = await findPinByPlaceId(userId, top.place_id);
-      if (existing) continue;
+      if (existing) {
+        // Already pinned — not a candidate, but the caller appends this
+        // share as a new source on the existing pin (the old client
+        // pipeline's "Already on your map — new link added" behavior).
+        existingMatches.push(existing);
+        continue;
+      }
       const details = await getPlaceDetails(top.place_id);
-      if (!details) continue;
+      if (!details) { unresolvedCount++; continue; }
       const category = mapToCategory(
         unionTypes(top.types, details.types),
         details.primary_type || null,
@@ -743,7 +831,10 @@ async function runAIPipeline({ jobId, url, userId, captionText }) {
         ? extractLocationFromComponents(details.address_components)
         : extractLocation(details.formatted_address || top.formatted_address);
       candidates.push(await buildPinFromDetails({
-        url,
+        // Canonical, not the raw share URL — TikTok short URLs carry no
+        // content ID, so a pin created with one is invisible to future
+        // same-video dedup (the legacy client pipeline stored canonical).
+        url: canonicalUrl,
         userId,
         ogData,
         details,
@@ -756,7 +847,7 @@ async function runAIPipeline({ jobId, url, userId, captionText }) {
     }
   }
 
-  return { duplicate: null, candidates, ogData };
+  return { duplicate: null, candidates, ogData, canonicalUrl, existingMatches, unresolvedCount };
 }
 
 /** OG-first fallback pipeline (port of client processUrl) — used when AI returns no places. */
@@ -852,12 +943,32 @@ async function runEnrichment(jobId, url, userId, captionText) {
 
   const stopHeartbeat = startJobHeartbeat(jobId);
 
+  // Terminal 'duplicate' writer. sourceAdded records whether this share's
+  // link was appended to the existing pin as a new source — the client toast
+  // and push copy say "new link added" instead of "already saved" when true.
+  const finishDuplicate = async (existingPin, sourceAdded) => {
+    const added = sourceAdded === true;
+    await updateJob(jobId, { status: 'duplicate', existingPinId: existingPin.id, sourceAdded: added, completedAt: ts() });
+    await sendPushForJob(jobId, userId, 'duplicate', { placeName: existingPin.placeName, pinId: existingPin.id, sourceAdded: added });
+  };
+
+  // Source entry for appending this share onto an existing pin. Always the
+  // canonical URL (yt-dlp webpage_url) — TikTok short URLs carry no content
+  // ID, so appending them would break future same-video dedup.
+  const sourceEntryFor = (sourceUrl, ogData) => ({
+    url: sourceUrl,
+    ogTitle: (ogData && ogData.title) || '',
+    ogImage: (ogData && ogData.image) || '',
+    sourceApp: determineSourceApp(sourceUrl),
+    sourceDomain: extractDomain(sourceUrl),
+  });
+
   try {
-    // 1. Raw-URL dedup
+    // 1. Raw-URL dedup — the exact same link is already pinned; nothing new
+    // to attach.
     const existingByUrl = await findPinByUrl(userId, url);
     if (existingByUrl) {
-      await updateJob(jobId, { status: 'duplicate', existingPinId: existingByUrl.id, completedAt: ts() });
-      await sendPushForJob(jobId, userId, 'duplicate', { placeName: existingByUrl.placeName, pinId: existingByUrl.id });
+      await finishDuplicate(existingByUrl, false);
       return;
     }
 
@@ -868,8 +979,7 @@ async function runEnrichment(jobId, url, userId, captionText) {
         const result = await writePinTransactional(pin, { title: pin.placeName });
         await recordTripSignalSaveIfNew(pin, result, jobId);
         if (result.alreadyExists) {
-          await updateJob(jobId, { status: 'duplicate', existingPinId: result.pinId, completedAt: ts() });
-          await sendPushForJob(jobId, userId, 'duplicate', { placeName: pin.placeName, pinId: result.pinId });
+          await finishDuplicate({ id: result.pinId, placeName: pin.placeName }, result.sourceAdded);
         } else {
           await updateJob(jobId, { status: 'complete', pinId: result.pinId, completedAt: ts() });
           await sendPushForJob(jobId, userId, 'complete', { placeName: pin.placeName, pinId: result.pinId });
@@ -881,8 +991,47 @@ async function runEnrichment(jobId, url, userId, captionText) {
     // 3. AI-first pipeline
     const ai = await runAIPipeline({ jobId, url, userId, captionText });
     if (ai.duplicate) {
-      await updateJob(jobId, { status: 'duplicate', existingPinId: ai.duplicate.id, completedAt: ts() });
-      await sendPushForJob(jobId, userId, 'duplicate', { placeName: ai.duplicate.placeName, pinId: ai.duplicate.id });
+      // Same video (content-ID match) — appendSourceToExistingPin no-ops
+      // unless this canonical URL is genuinely new to the pin.
+      const added = await appendSourceToExistingPin(
+        ai.duplicate.id,
+        sourceEntryFor(ai.canonicalUrl || url, ai.ogData),
+      );
+      await finishDuplicate(ai.duplicate, added);
+      return;
+    }
+
+    // Places the AI found that are ALREADY pinned: attach this share as a
+    // new source on each (old pipeline's "new link added" behavior). Done
+    // before the candidate branches so the mixed case (some new, some
+    // existing) appends too, not just the all-existing case.
+    const existingMatches = Array.isArray(ai.existingMatches) ? ai.existingMatches : [];
+    let appendedToExisting = false;
+    // First pin that actually received the link — terminal duplicate
+    // verdicts point existingPinId at it so the "new link added" push opens
+    // a pin that really has the new source.
+    let appendedPin = null;
+    for (const match of existingMatches) {
+      const added = await appendSourceToExistingPin(
+        match.id,
+        sourceEntryFor(ai.canonicalUrl || url, ai.ogData),
+      );
+      appendedToExisting = appendedToExisting || added;
+      if (added && !appendedPin) appendedPin = match;
+    }
+
+    // Every place in the video resolved to an already-pinned place —
+    // terminal duplicate. Do NOT fall through to the OG fallback: it would
+    // re-run AI + Places for places we already matched, and can mis-resolve
+    // to a different place. Gated on unresolvedCount so a place that merely
+    // FAILED to resolve (no search results, missing details) still gets the
+    // fallback's attempt below.
+    if (
+      ai.candidates.length === 0 &&
+      existingMatches.length > 0 &&
+      (ai.unresolvedCount || 0) === 0
+    ) {
+      await finishDuplicate(appendedPin || existingMatches[0], appendedToExisting);
       return;
     }
 
@@ -890,8 +1039,14 @@ async function runEnrichment(jobId, url, userId, captionText) {
       const result = await writePinTransactional(ai.candidates[0], ai.ogData);
       await recordTripSignalSaveIfNew(ai.candidates[0], result, jobId);
       if (result.alreadyExists) {
-        await updateJob(jobId, { status: 'duplicate', existingPinId: result.pinId, completedAt: ts() });
-        await sendPushForJob(jobId, userId, 'duplicate', { placeName: ai.candidates[0].placeName, pinId: result.pinId });
+        // If the raced txn pin didn't take the source but an earlier
+        // existing match did, report THAT pin — its sources really gained
+        // the link this push announces.
+        if (result.sourceAdded !== true && appendedPin) {
+          await finishDuplicate(appendedPin, true);
+        } else {
+          await finishDuplicate({ id: result.pinId, placeName: ai.candidates[0].placeName }, result.sourceAdded || appendedToExisting);
+        }
       } else {
         await updateJob(jobId, { status: 'complete', pinId: result.pinId, completedAt: ts() });
         await sendPushForJob(jobId, userId, 'complete', { placeName: ai.candidates[0].placeName, pinId: result.pinId });
@@ -911,19 +1066,33 @@ async function runEnrichment(jobId, url, userId, captionText) {
       return;
     }
 
-    // 4. OG-first fallback (single-place inference)
-    const fallback = await runOGFallback({ url, userId, captionText, ogData: ai.ogData });
+    // 4. OG-first fallback (single-place inference). Canonical URL for the
+    // same reason as the AI candidates — the pin it builds must stay
+    // content-ID-matchable.
+    const fallback = await runOGFallback({ url: ai.canonicalUrl || url, userId, captionText, ogData: ai.ogData });
     if (fallback && fallback.duplicate) {
-      await updateJob(jobId, { status: 'duplicate', existingPinId: fallback.duplicate.id, completedAt: ts() });
-      await sendPushForJob(jobId, userId, 'duplicate', { placeName: fallback.duplicate.placeName, pinId: fallback.duplicate.id });
+      const added = await appendSourceToExistingPin(
+        fallback.duplicate.id,
+        sourceEntryFor(ai.canonicalUrl || url, ai.ogData),
+      );
+      // If this pin didn't take the source but an earlier existing match
+      // did, report the pin whose sources really gained the link.
+      if (!added && appendedPin) {
+        await finishDuplicate(appendedPin, true);
+      } else {
+        await finishDuplicate(fallback.duplicate, added || appendedToExisting);
+      }
       return;
     }
     if (fallback && fallback.pin) {
       const result = await writePinTransactional(fallback.pin, ai.ogData);
       await recordTripSignalSaveIfNew(fallback.pin, result, jobId);
       if (result.alreadyExists) {
-        await updateJob(jobId, { status: 'duplicate', existingPinId: result.pinId, completedAt: ts() });
-        await sendPushForJob(jobId, userId, 'duplicate', { placeName: fallback.pin.placeName, pinId: result.pinId });
+        if (result.sourceAdded !== true && appendedPin) {
+          await finishDuplicate(appendedPin, true);
+        } else {
+          await finishDuplicate({ id: result.pinId, placeName: fallback.pin.placeName }, result.sourceAdded || appendedToExisting);
+        }
       } else {
         await updateJob(jobId, { status: 'complete', pinId: result.pinId, completedAt: ts() });
         await sendPushForJob(jobId, userId, 'complete', { placeName: fallback.pin.placeName, pinId: result.pinId });
@@ -931,7 +1100,13 @@ async function runEnrichment(jobId, url, userId, captionText) {
       return;
     }
 
-    // 5. Give up
+    // 5. Give up — unless the share already landed on an existing pin
+    // during the candidate loop. Reporting 'failed' there would tell the
+    // user their link was lost when it's actually attached to their pin.
+    if (existingMatches.length > 0) {
+      await finishDuplicate(appendedPin || existingMatches[0], appendedToExisting);
+      return;
+    }
     await updateJob(jobId, {
       status: 'failed',
       error: 'No places could be extracted from this link',
@@ -973,4 +1148,6 @@ module.exports = {
   recordTripSignalSaveIfNew,
   serverRecordTripSignalSave,
   writePinTransactional,
+  findPinByContentId,
+  appendSourceToExistingPin,
 };
