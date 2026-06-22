@@ -13,6 +13,12 @@ const { runEnrichment } = require('./enrich');
 const { claimEnrichmentJob } = require('./lib/enrichClaim');
 const { router: adminRouter } = require('./lib/admin');
 const { router: listMembershipRouter } = require('./lib/listMembership');
+const {
+  router: marketingRouter,
+  logClick: logMarketingClick,
+  storeButtonsHtml,
+  ogImageMeta,
+} = require('./lib/marketing');
 require('./lib/enrichmentSweeper'); // boots the orphan-job sweeper
 
 const app = express();
@@ -25,6 +31,10 @@ app.use(adminRouter);
 
 // User-auth list-membership endpoints (Phase 4 foreign-pin removal).
 app.use(listMembershipRouter);
+
+// Marketing/growth surface: /go/:campaign tracked redirector, /get landing +
+// waitlist. See lib/marketing.js.
+app.use(marketingRouter);
 
 // Health check
 app.get('/', (req, res) => {
@@ -117,6 +127,7 @@ app.get('/privacy', (req, res) => {
 app.get('/invite/:token', (req, res) => {
   const { token } = req.params;
   const appScheme = `mapd://join/${token}`;
+  logMarketingClick(req, { campaign: req.query.ref || null, type: 'invite' });
 
   res.send(`<!DOCTYPE html>
 <html lang="en">
@@ -125,7 +136,7 @@ app.get('/invite/:token', (req, res) => {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Join a list on Mapd</title>
   <meta property="og:title" content="You've been invited to a list on Mapd">
-  <meta property="og:description" content="Mapd turns your saved Instagram and TikTok posts into pins on a map.">
+  <meta property="og:description" content="Mapd turns your saved Instagram and TikTok posts into pins on a map.">${ogImageMeta()}
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -193,10 +204,7 @@ app.get('/invite/:token', (req, res) => {
   <p class="subtitle">Enter this invite code in the app:</p>
   <div class="code">${token}</div>
 
-  <div class="stores">
-    <a href="#">App Store</a>
-    <a href="#">Google Play</a>
-  </div>
+  ${storeButtonsHtml()}
 
   <p class="footer">Mapd — your places, on your map</p>
 
