@@ -21,27 +21,42 @@ const app = express();
 app.set('trust proxy', 1); // Render sits behind a proxy; req.ip must be the real client
 app.use(express.json());
 
-// Per-user (fallback per-IP) limiter for token-verified API routes.
-// 60 req/min is ~10x a heavy human user; vision gets a tighter budget.
-// Limiters run BEFORE authenticateRequest in the chain, so req.authUid is
-// undefined at limit time for unauthenticated/rejected requests — the key
-// falls back to the client IP, guarded by express-rate-limit's ipKeyGenerator
-// helper (v8+ validates that raw req.ip isn't used directly, since that
-// would let IPv6 clients bypass the per-IP bucket by varying their address
-// within a /64).
+// Per-IP limiter for AI/extract routes. 60 req/min is ~10x a heavy human
+// user; vision gets a tighter budget.
+//
+// These limiters run BEFORE authenticateRequest in the chain — deliberate,
+// so a flood of unauthenticated traffic gets rejected without spending a
+// token-verification round-trip on each request. That means req.authUid is
+// never set yet when the key is computed here, so this is per-IP limiting
+// ONLY, not per-user: two different authenticated users behind the same IP
+// (e.g. NAT, corporate proxy) share one bucket. Per-user keying would
+// require flipping the order to auth-then-limit; we're accepting the
+// per-IP tradeoff for now to keep flood traffic cheap to reject.
+//
+// keyGenerator uses express-rate-limit's ipKeyGenerator helper rather than
+// raw req.ip — v8+ requires it so IPv6 clients can't dodge the bucket by
+// varying their address within a /64.
+//
+// Store is the express-rate-limit default: in-memory. A Render restart
+// resets all buckets, and running a second instance would split traffic
+// across separate in-process buckets instead of sharing one. @upstash/redis
+// is already a dependency here if a shared store is ever needed.
+function rateLimitKeyGenerator(req) {
+  return ipKeyGenerator(req.ip);
+}
 const apiLimiter = rateLimit({
   windowMs: 60 * 1000,
-  max: 60,
+  limit: 60,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => req.authUid || ipKeyGenerator(req.ip),
+  keyGenerator: rateLimitKeyGenerator,
 });
 const visionLimiter = rateLimit({
   windowMs: 60 * 1000,
-  max: 10,
+  limit: 10,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => req.authUid || ipKeyGenerator(req.ip),
+  keyGenerator: rateLimitKeyGenerator,
 });
 
 // Admin endpoints (collaborative-lists migration). Gated by ADMIN_TOKEN env
