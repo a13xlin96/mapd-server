@@ -293,6 +293,30 @@ describe('POST /lists/join', () => {
     expect(ops).toHaveLength(0);
   });
 
+  it('9. returns 409 { error: "list_featured" } when list.isFeatured === true, even with a valid token', async () => {
+    // Under the S2 rules change, featured lists are readable by ALL
+    // authenticated users, which makes their inviteToken world-readable.
+    // Joining a featured list as an editor must stay refused regardless —
+    // featured lists are clone-only.
+    const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'bob' });
+    const { app, ops } = buildApp({
+      verifyIdToken,
+      seed: {
+        'lists/L1': {
+          ownerId: 'alice',
+          inviteToken: 'tok123',
+          collaboratorIds: [],
+          isFeatured: true,
+          name: 'Best of NYC',
+        },
+      },
+    });
+    const res = await postJoin(app, { token: 'tok123' });
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual({ error: 'list_featured' });
+    expect(ops).toHaveLength(0);
+  });
+
   describe('8. input validation', () => {
     it('returns 400 when token is missing', async () => {
       const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'bob' });
