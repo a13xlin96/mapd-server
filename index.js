@@ -1,5 +1,6 @@
 const express = require('express');
-const cors = require('cors');
+const rateLimit = require('express-rate-limit');
+const { ipKeyGenerator } = rateLimit;
 const { anthropic } = require('./lib/anthropic');
 const { firestore, seedFeatureFlagsPromise } = require('./lib/firestore');
 const { getCached, setCache, normalizeUrlForCache } = require('./lib/cache');
@@ -17,8 +18,31 @@ const { authenticateRequest } = require('./lib/auth');
 require('./lib/enrichmentSweeper'); // boots the orphan-job sweeper
 
 const app = express();
-app.use(cors());
+app.set('trust proxy', 1); // Render sits behind a proxy; req.ip must be the real client
 app.use(express.json());
+
+// Per-user (fallback per-IP) limiter for token-verified API routes.
+// 60 req/min is ~10x a heavy human user; vision gets a tighter budget.
+// Limiters run BEFORE authenticateRequest in the chain, so req.authUid is
+// undefined at limit time for unauthenticated/rejected requests — the key
+// falls back to the client IP, guarded by express-rate-limit's ipKeyGenerator
+// helper (v8+ validates that raw req.ip isn't used directly, since that
+// would let IPv6 clients bypass the per-IP bucket by varying their address
+// within a /64).
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.authUid || ipKeyGenerator(req.ip),
+});
+const visionLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.authUid || ipKeyGenerator(req.ip),
+});
 
 // Admin endpoints (collaborative-lists migration). Gated by ADMIN_TOKEN env
 // var — not a Firebase Auth ID token. See lib/admin.js for the workflow.
@@ -218,7 +242,7 @@ app.get('/invite/:token', (req, res) => {
 });
 
 // Extract metadata from a social media link
-app.post('/extract', async (req, res) => {
+app.post('/extract', apiLimiter, authenticateRequest, async (req, res) => {
   const { url } = req.body;
 
   if (!url) {
@@ -295,7 +319,7 @@ app.post('/extract', async (req, res) => {
 });
 
 // AI: Extract ALL places from a social media post (single consolidated call)
-app.post('/ai/extract-places', async (req, res) => {
+app.post('/ai/extract-places', apiLimiter, authenticateRequest, async (req, res) => {
   const {
     title,
     description,
@@ -372,7 +396,7 @@ Return ONLY valid JSON: {"places": [{"name": "Place Name", "city": "City", "addr
 });
 
 // AI Step 2b: Extract place name from caption text when regex fails
-app.post('/ai/extract-place', async (req, res) => {
+app.post('/ai/extract-place', apiLimiter, authenticateRequest, async (req, res) => {
   const { title, description } = req.body;
 
   if (!title && !description) {
@@ -433,7 +457,7 @@ If the post does NOT mention any specific named place (just a generic "best pizz
 });
 
 // AI Step 4b: Verify if a Google Places result matches what the caption describes
-app.post('/ai/verify-place', async (req, res) => {
+app.post('/ai/verify-place', apiLimiter, authenticateRequest, async (req, res) => {
   const { title, description, placeName, placeAddress, placeTypes } = req.body;
 
   if (!description && !title) {
@@ -473,7 +497,7 @@ app.post('/ai/verify-place', async (req, res) => {
 // AI: Infer city/country for each place using ALL siblings in the list as context.
 // Used by the Google Takeout import flow and by the "Re-resolve from link" pin action
 // when the original URL doesn't carry coordinates.
-app.post('/ai/infer-place-regions', async (req, res) => {
+app.post('/ai/infer-place-regions', apiLimiter, authenticateRequest, async (req, res) => {
   const { places, listName, siblingPlaces } = req.body;
 
   if (!Array.isArray(places) || places.length === 0) {
@@ -566,7 +590,7 @@ Return ONLY valid JSON in this exact shape:
 // AI Vision: Extract place names from carousel slide images.
 // Thin wrapper around lib/vision.js so the shared helper can be reused
 // by /enrich without duplicating cache/prompt logic.
-app.post('/ai/vision-extract', async (req, res) => {
+app.post('/ai/vision-extract', apiLimiter, visionLimiter, authenticateRequest, async (req, res) => {
   const { imageUrls, contentId, caption, hashtags, subtitles } = req.body;
   if (!imageUrls || !Array.isArray(imageUrls) || imageUrls.length === 0) {
     return res.status(400).json({ error: 'imageUrls array required' });
@@ -591,7 +615,7 @@ app.post('/ai/vision-extract', async (req, res) => {
 // Only the transaction's winner fires runEnrichment(); losers (concurrent
 // retries / dual-trigger from in-app POST + Cloud Function during rollout)
 // see status:'processing' and return 202 without spawning a second pipeline.
-app.post('/enrich', authenticateRequest, async (req, res) => {
+app.post('/enrich', apiLimiter, authenticateRequest, async (req, res) => {
   const { url, userId, captionText, jobId } = req.body || {};
   console.log(`[/enrich] job=${jobId || '?'} user=${userId || '?'} url=${url || '?'} admin=${req.adminBypass ? 1 : 0}`);
 
