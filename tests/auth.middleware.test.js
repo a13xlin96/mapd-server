@@ -1,3 +1,19 @@
+// Spy on verifyIdToken — name MUST start with `mock` for jest hoisting rules.
+const mockVerifyIdToken = jest.fn();
+
+jest.mock('../lib/firestore', () => {
+  const { getSharedFirestore, makeAdmin } = require('./helpers/fakeFirestore');
+  const baseAdmin = makeAdmin();
+  return {
+    firestore: getSharedFirestore(),
+    admin: {
+      ...baseAdmin,
+      auth: () => ({ verifyIdToken: (...args) => mockVerifyIdToken(...args) }),
+    },
+    seedFeatureFlagsPromise: Promise.resolve(),
+  };
+});
+
 const { authenticateRequest } = require('../lib/auth');
 
 function mockRes() {
@@ -8,6 +24,21 @@ function mockRes() {
 }
 
 describe('authenticateRequest', () => {
+  let originalAdminToken;
+
+  beforeAll(() => {
+    originalAdminToken = process.env.ENRICH_ADMIN_TOKEN;
+  });
+
+  afterAll(() => {
+    if (originalAdminToken === undefined) delete process.env.ENRICH_ADMIN_TOKEN;
+    else process.env.ENRICH_ADMIN_TOKEN = originalAdminToken;
+  });
+
+  beforeEach(() => {
+    mockVerifyIdToken.mockReset();
+  });
+
   test('rejects requests with no Authorization header', async () => {
     const req = { headers: {}, body: {} };
     const res = mockRes();
@@ -18,6 +49,7 @@ describe('authenticateRequest', () => {
   });
 
   test('rejects a malformed Bearer token', async () => {
+    mockVerifyIdToken.mockRejectedValue(new Error('invalid token'));
     const req = { headers: { authorization: 'Bearer not-a-real-token' }, body: {} };
     const res = mockRes();
     const next = jest.fn();

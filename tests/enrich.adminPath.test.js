@@ -52,42 +52,15 @@ afterAll(() => {
 });
 
 // Build a minimal express app that mounts ONLY the middleware + /enrich
-// handler under test. The middleware impl mirrors index.js exactly (this
-// dupe is the cost of not refactoring index.js's listen() out of module-load).
+// handler under test. Uses the real shipped lib/auth.js middleware — the
+// hoisted jest.mock('../lib/firestore') above makes it importable without
+// pulling in index.js's module-load side effects (app.listen(), etc).
 function buildTestApp() {
   const express = require('express');
-  const crypto = require('crypto');
-  const { admin, firestore } = require('../lib/firestore');
+  const { firestore } = require('../lib/firestore');
+  const { authenticateRequest } = require('../lib/auth');
   const { claimEnrichmentJob } = require('../lib/enrichClaim');
   const { runEnrichment } = require('../enrich');
-
-  async function authenticateRequest(req, res, next) {
-    const adminTokenHeader = req.headers['x-admin-token'];
-    if (typeof adminTokenHeader === 'string' && adminTokenHeader.length > 0) {
-      const expected = process.env.ENRICH_ADMIN_TOKEN;
-      if (!expected) return res.status(503).json({ error: 'admin path not configured' });
-      const provided = Buffer.from(adminTokenHeader);
-      const reference = Buffer.from(expected);
-      if (provided.length !== reference.length || !crypto.timingSafeEqual(provided, reference)) {
-        return res.status(401).json({ error: 'invalid admin token' });
-      }
-      const bodyUserId = req.body && typeof req.body.userId === 'string' ? req.body.userId : null;
-      if (!bodyUserId) return res.status(400).json({ error: 'userId required on admin path' });
-      req.authUid = bodyUserId;
-      req.adminBypass = true;
-      return next();
-    }
-    const m = (req.headers.authorization || '').match(/^Bearer (.+)$/);
-    if (!m) return res.status(401).json({ error: 'Missing or invalid Authorization header' });
-    try {
-      const decoded = await admin.auth().verifyIdToken(m[1]);
-      req.authUid = decoded.uid;
-      req.adminBypass = false;
-      return next();
-    } catch (e) {
-      return res.status(401).json({ error: 'Invalid ID token' });
-    }
-  }
 
   const a = express();
   a.use(express.json());

@@ -1,8 +1,7 @@
 const express = require('express');
-const crypto = require('crypto');
 const cors = require('cors');
 const { anthropic } = require('./lib/anthropic');
-const { firestore, admin, seedFeatureFlagsPromise } = require('./lib/firestore');
+const { firestore, seedFeatureFlagsPromise } = require('./lib/firestore');
 const { getCached, setCache, normalizeUrlForCache } = require('./lib/cache');
 const { runYtDlp } = require('./lib/ytdlp');
 const { fetchTikTokPhotoPost, isTikTokPhotoUrl } = require('./lib/tiktokPhoto');
