@@ -58,6 +58,19 @@ describe('route guards', () => {
     expect(limiterIdx).toBeLessThan(routerMountIdx);
   });
 
+  // S5 interest-profile-server-side plan, Task 1: POST /interest-profile/pin-saved
+  // lives in its own router (mounted via app.use, like listMembershipRouter),
+  // so — same as /lists/join — it gets a path-scoped `app.use('/interest-profile',
+  // apiLimiter)` registered ahead of the router mount instead of an inline
+  // apiLimiter arg.
+  test('/interest-profile is rate-limited via a path-scoped apiLimiter mounted before the interestProfileRouter', () => {
+    const limiterIdx = src.search(/app\.use\('\/interest-profile',\s*apiLimiter\)/);
+    const routerMountIdx = src.indexOf('app.use(interestProfileRouter)');
+    expect(limiterIdx).toBeGreaterThan(-1);
+    expect(routerMountIdx).toBeGreaterThan(-1);
+    expect(limiterIdx).toBeLessThan(routerMountIdx);
+  });
+
   test('open CORS is removed', () => {
     expect(src).not.toMatch(/app\.use\(cors\(\)\)/);
   });

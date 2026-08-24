@@ -14,6 +14,7 @@ const { runEnrichment } = require('./enrich');
 const { claimEnrichmentJob } = require('./lib/enrichClaim');
 const { router: adminRouter } = require('./lib/admin');
 const { router: listMembershipRouter } = require('./lib/listMembership');
+const { interestProfileRouter } = require('./lib/interestProfile');
 const { authenticateRequest } = require('./lib/auth');
 require('./lib/enrichmentSweeper'); // boots the orphan-job sweeper
 
@@ -97,6 +98,15 @@ app.use('/lists/:listId/pins', apiLimiter);
 
 // User-auth list-membership endpoints (Phase 4 foreign-pin removal).
 app.use(listMembershipRouter);
+
+// S5 interest-profile-server-side plan, Task 1: POST /interest-profile/pin-saved
+// writes the monetization-critical save-behavior signal server-side, with
+// uid from the verified token (never the body). Path-scoped apiLimiter
+// mounted ahead of the router, mirroring '/lists/join' above — this is the
+// interest-profile router's only route and, like the other AI/extract
+// routes, gets a flood-cheap per-IP limiter ahead of authenticateRequest.
+app.use('/interest-profile', apiLimiter);
+app.use(interestProfileRouter);
 
 // Health check
 app.get('/', (req, res) => {
