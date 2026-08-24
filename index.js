@@ -8,6 +8,7 @@ const { fetchTikTokPhotoPost, isTikTokPhotoUrl } = require('./lib/tiktokPhoto');
 const { fetchInstagramCarouselPost, isInstagramPostUrl } = require('./lib/instagramCarousel');
 const { extractPlacesFromSlides } = require('./lib/vision');
 const { resolveOneRedirect, isShortSocialUrl } = require('./lib/urlResolve');
+const { isAllowedExtractUrl } = require('./lib/urlValidation');
 const { runEnrichment } = require('./enrich');
 const { claimEnrichmentJob } = require('./lib/enrichClaim');
 const { router: adminRouter } = require('./lib/admin');
@@ -222,6 +223,10 @@ app.post('/extract', async (req, res) => {
 
   if (!url) {
     return res.status(400).json({ error: 'URL is required' });
+  }
+
+  if (!isAllowedExtractUrl(url)) {
+    return res.status(400).json({ error: 'unsupported or invalid url' });
   }
 
   // Normalize URL for cache lookups (strip tracking params)
