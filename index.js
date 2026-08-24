@@ -63,6 +63,18 @@ const visionLimiter = rateLimit({
 // var — not a Firebase Auth ID token. See lib/admin.js for the workflow.
 app.use(adminRouter);
 
+// listMembership's router-mounted routes deliberately don't get apiLimiter
+// (they're keyed on a listId+pinId the caller must already know/own).
+// POST /lists/join is the one exception: it's the sole path that checks an
+// invite token, and while tokens are still 8-char Math.random() strings
+// (pre S2-Task-3 crypto-random rollout), an unlimited caller could
+// brute-force valid tokens — with every guess billing a Firestore query.
+// Mounted path-scoped and ahead of the router mount below so only this one
+// route gets the limiter, applied before authenticateRequest like the
+// AI/extract routes (rejects flood traffic without paying a token-verify
+// round-trip per request).
+app.use('/lists/join', apiLimiter);
+
 // User-auth list-membership endpoints (Phase 4 foreign-pin removal).
 app.use(listMembershipRouter);
 

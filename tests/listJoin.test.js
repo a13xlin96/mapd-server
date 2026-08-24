@@ -7,10 +7,16 @@
 //
 // Harness mirrors tests/listMembership.test.js: a hand-rolled firestore
 // mock keyed by `${collection}/${id}` path strings, with `admin` stubbed for
-// verifyIdToken + FieldValue. Unlike the transaction-based remove/overrides
-// endpoints, this route does plain get()/update() calls (no runTransaction),
-// so the mock only needs to support `.where().limit().get()` on `lists` and
-// `.doc().get()` / `.doc().update()` on both `lists` and `users`.
+// verifyIdToken + FieldValue. This deliberately does NOT reuse
+// tests/helpers/fakeFirestore.js — that helper resolves FieldValue
+// sentinels into real merged document state, but these tests need to
+// assert the raw update *payload* itself (e.g. that collaboratorIds was
+// patched with an actual `arrayUnion(uid)` sentinel, not just that the
+// uid ended up in the array), which only a raw-ops-recording mock exposes.
+//
+// The route wraps its read+validate+write in firestore.runTransaction, so
+// the mock's runTransaction records ops from txn.update() the same way
+// listMembership.test.js's does for its transactional routes.
 
 const express = require('express');
 const request = require('supertest');
@@ -19,30 +25,13 @@ function buildFirestoreMock(seed = {}) {
   const store = new Map(Object.entries(seed));
   const ops = [];
 
-  function makeDocRef(collectionName, id) {
-    const path = `${collectionName}/${id}`;
-    return {
-      id,
-      get: async () => {
-        const data = store.get(path);
-        return {
-          exists: data !== undefined,
-          id,
-          data: () => data,
-        };
-      },
-      update: async (patch) => {
-        // Record the raw patch (dotted keys, FieldValue sentinels and all)
-        // for assertions — same convention as listMembership.test.js, which
-        // inspects `ops` rather than re-deriving merged state.
-        ops.push({ type: 'update', path, data: patch });
-      },
-    };
+  function makeRef(collectionName, id) {
+    return { id, _path: `${collectionName}/${id}` };
   }
 
   function collectionFactory(name) {
     return {
-      doc: (id) => makeDocRef(name, id),
+      doc: (id) => makeRef(name, id),
       where: (field, op, value) => {
         if (op !== '==') {
           throw new Error(`firestore mock only supports '==' in where(), got "${op}"`);
@@ -56,7 +45,7 @@ function buildFirestoreMock(seed = {}) {
                 const rest = path.slice(name.length + 1);
                 if (rest.includes('/')) continue; // skip subcollection docs
                 if (data && data[field] === value) {
-                  docs.push({ id: rest, data: () => data, ref: makeDocRef(name, rest) });
+                  docs.push({ id: rest, data: () => data, ref: makeRef(name, rest) });
                 }
                 if (docs.length >= n) break;
               }
@@ -68,8 +57,33 @@ function buildFirestoreMock(seed = {}) {
     };
   }
 
+  async function runTransaction(fn) {
+    const txnOps = [];
+    const txn = {
+      get: async (ref) => {
+        const data = store.get(ref._path);
+        return {
+          exists: data !== undefined,
+          id: ref.id,
+          data: () => data,
+        };
+      },
+      update: (ref, patch) => txnOps.push({ type: 'update', path: ref._path, data: patch }),
+    };
+    const result = await fn(txn);
+    // "Commit": record ops for assertions and shallow-merge the raw patch
+    // into the store (dotted keys and FieldValue sentinels stored as-is —
+    // no test here depends on a second request seeing resolved state).
+    for (const op of txnOps) {
+      ops.push(op);
+      const current = store.get(op.path) || {};
+      store.set(op.path, { ...current, ...op.data });
+    }
+    return result;
+  }
+
   return {
-    firestoreMock: { collection: collectionFactory },
+    firestoreMock: { collection: collectionFactory, runTransaction },
     ops,
     store,
   };
@@ -214,6 +228,27 @@ describe('POST /lists/join', () => {
     });
   });
 
+  it('5c. falls back to firstName "User" and null photo when users/{uid} doc does not exist at all — join still succeeds', async () => {
+    const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'bob' });
+    const { app, ops } = buildApp({
+      verifyIdToken,
+      seed: {
+        'lists/L1': { ownerId: 'alice', inviteToken: 'tok123', collaboratorIds: [], name: 'Trip' },
+        // No 'users/bob' entry at all — profile lookup must fail soft, not
+        // block the join.
+      },
+    });
+    const res = await postJoin(app, { token: 'tok123' });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ joined: true, listId: 'L1', listName: 'Trip' });
+    const update = ops.find((o) => o.type === 'update' && o.path === 'lists/L1');
+    expect(update.data['collaboratorProfiles.bob']).toEqual({
+      uid: 'bob',
+      firstName: 'User',
+      photoURL: null,
+    });
+  });
+
   it('6. with { asViewer: true }: viewerIds also gains authUid (in addition to collaboratorIds)', async () => {
     const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'bob' });
     const { app, ops } = buildApp({
@@ -307,6 +342,95 @@ describe('POST /lists/join', () => {
       });
       const res = await postJoin(app, { token });
       expect(res.status).toBe(200);
+    });
+  });
+
+  describe('delete/revoke race between the indexed query and the transactional re-read', () => {
+    // These simulate the list doc changing in the gap between the
+    // `where('inviteToken', ...)` query (used only to find a candidate
+    // ref) and the transaction's authoritative re-read of that ref. Both
+    // scenarios must produce the same clean 404 a mistyped code would —
+    // never a raw 500 — since from the joining user's perspective a
+    // just-revoked invite link is indistinguishable from an invalid one.
+    function buildRacingApp({ verifyIdToken, seed, mutateAfterQuery }) {
+      const { firestoreMock, ops, store } = buildFirestoreMock(seed);
+      const originalCollection = firestoreMock.collection;
+      firestoreMock.collection = (name) => {
+        const base = originalCollection(name);
+        if (name !== 'lists') return base;
+        return {
+          ...base,
+          where: (field, op, value) => {
+            const q = base.where(field, op, value);
+            return {
+              limit: (n) => {
+                const lim = q.limit(n);
+                return {
+                  get: async () => {
+                    const snap = await lim.get();
+                    // Simulate a write landing in the window between the
+                    // query resolving and the transaction starting.
+                    mutateAfterQuery(store);
+                    return snap;
+                  },
+                };
+              },
+            };
+          },
+        };
+      };
+      let app;
+      jest.isolateModules(() => {
+        jest.doMock('../lib/firestore', () => ({
+          firestore: firestoreMock,
+          admin: {
+            auth: () => ({ verifyIdToken }),
+            firestore: {
+              FieldValue: {
+                serverTimestamp: () => ({ _ts: true }),
+                arrayUnion: (...args) => ({ _arrayUnion: args }),
+              },
+            },
+          },
+        }));
+        const { router } = require('../lib/listMembership');
+        app = express();
+        app.use(express.json());
+        app.use(router);
+      });
+      return { app, ops };
+    }
+
+    it('list deleted between query and transaction -> 404 invalid_token, not 500', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'bob' });
+      const { app, ops } = buildRacingApp({
+        verifyIdToken,
+        seed: {
+          'lists/L1': { ownerId: 'alice', inviteToken: 'tok123', collaboratorIds: [], name: 'Trip' },
+        },
+        mutateAfterQuery: (store) => store.delete('lists/L1'),
+      });
+      const res = await postJoin(app, { token: 'tok123' });
+      expect(res.status).toBe(404);
+      expect(res.body).toEqual({ error: 'invalid_token' });
+      expect(ops).toHaveLength(0);
+    });
+
+    it('inviteToken rotated/cleared between query and transaction -> 404 invalid_token, not 500', async () => {
+      const verifyIdToken = jest.fn().mockResolvedValue({ uid: 'bob' });
+      const { app, ops } = buildRacingApp({
+        verifyIdToken,
+        seed: {
+          'lists/L1': { ownerId: 'alice', inviteToken: 'tok123', collaboratorIds: [], name: 'Trip' },
+        },
+        mutateAfterQuery: (store) => {
+          store.set('lists/L1', { ...store.get('lists/L1'), inviteToken: 'rotated-by-owner' });
+        },
+      });
+      const res = await postJoin(app, { token: 'tok123' });
+      expect(res.status).toBe(404);
+      expect(res.body).toEqual({ error: 'invalid_token' });
+      expect(ops).toHaveLength(0);
     });
   });
 });
