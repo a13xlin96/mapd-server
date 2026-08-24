@@ -45,6 +45,19 @@ describe('route guards', () => {
     expect(limiterIdx).toBeLessThan(routerMountIdx);
   });
 
+  // S3 pins-privacy-lockdown Task 2: GET /lists/:listId/pins gets its own
+  // path-scoped limiter, mounted before the router the same way
+  // /lists/join's is, rather than folding into a single
+  // `app.use('/lists', apiLimiter)` that would also start limiting the
+  // deliberately-unlimited remove/overrides routes on the same router.
+  test('/lists/:listId/pins is rate-limited via a path-scoped apiLimiter mounted before the listMembership router', () => {
+    const limiterIdx = src.search(/app\.use\('\/lists\/:listId\/pins',\s*apiLimiter\)/);
+    const routerMountIdx = src.indexOf('app.use(listMembershipRouter)');
+    expect(limiterIdx).toBeGreaterThan(-1);
+    expect(routerMountIdx).toBeGreaterThan(-1);
+    expect(limiterIdx).toBeLessThan(routerMountIdx);
+  });
+
   test('open CORS is removed', () => {
     expect(src).not.toMatch(/app\.use\(cors\(\)\)/);
   });

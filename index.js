@@ -75,6 +75,26 @@ app.use(adminRouter);
 // round-trip per request).
 app.use('/lists/join', apiLimiter);
 
+// S3 pins-privacy-lockdown plan, Task 2: GET /lists/:listId/pins is the
+// server-side replacement for the client's `where('listIds','array-
+// contains', listId)` query over foreign pins (shared-list fallback +
+// featured-list cloning), which the soon-to-tighten Firestore rules will
+// deny. Unlike the other listMembership routes it's readable with just a
+// listId the caller may not otherwise have any relationship to yet (e.g.
+// any signed-in user can hit it for a featured list), so — like
+// /lists/join — it gets its own path-scoped limiter rather than staying
+// unlimited.
+//
+// Mounted as its own `app.use` (not folded into a single `app.use('/lists',
+// apiLimiter)` covering the whole router) so the other listMembership
+// routes — /lists/:listId/members/:pinId/remove and .../overrides — keep
+// their deliberately-unlimited status: those are keyed on a listId+pinId
+// pair the caller must already know/own, per the comment below. Verified
+// the two path patterns don't overlap (`/lists/join` vs
+// `/lists/:listId/pins`), so this can't double-apply the limiter to a
+// single request.
+app.use('/lists/:listId/pins', apiLimiter);
+
 // User-auth list-membership endpoints (Phase 4 foreign-pin removal).
 app.use(listMembershipRouter);
 
