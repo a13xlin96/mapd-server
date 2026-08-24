@@ -48,6 +48,7 @@ const { assertSaveReason } = require('./lib/saveReason');
 const { distanceKm } = require('./lib/geo');
 const { aiExtractPlaces, aiExtractPlace, aiVerifyPlace } = require('./enrich/ai');
 const { sendPushForJob } = require('./lib/push');
+const { recordPinSaved } = require('./lib/interestProfile');
 
 const ts = () => (admin && admin.firestore && admin.firestore.FieldValue.serverTimestamp());
 
@@ -981,6 +982,15 @@ async function runEnrichment(jobId, url, userId, captionText) {
         if (result.alreadyExists) {
           await finishDuplicate({ id: result.pinId, placeName: pin.placeName }, result.sourceAdded);
         } else {
+          // Interest-profile update for the NEW pin this request just wrote.
+          // Fire-and-forget (S5 interest-profile-server-side plan, Task 2):
+          // this job runs through the /enrich cloud-function-driven pipeline,
+          // where the client's own updateInterestProfile call (enrichmentService.ts
+          // processUrl) never fires — that function only runs on the client's
+          // local-fallback pipeline, which the standard server path always
+          // skips via an early `continue`. This is the only writer for this
+          // pin save; no double-count risk against the client call.
+          recordPinSaved(userId, { category: pin.category, city: pin.city, country: pin.country }).catch(() => {});
           await updateJob(jobId, { status: 'complete', pinId: result.pinId, completedAt: ts() });
           await sendPushForJob(jobId, userId, 'complete', { placeName: pin.placeName, pinId: result.pinId });
         }
@@ -1048,6 +1058,14 @@ async function runEnrichment(jobId, url, userId, captionText) {
           await finishDuplicate({ id: result.pinId, placeName: ai.candidates[0].placeName }, result.sourceAdded || appendedToExisting);
         }
       } else {
+        // Same server-only interest-profile write as the Google Maps
+        // branch above — the client-side updateInterestProfile call never
+        // fires for this job.
+        recordPinSaved(userId, {
+          category: ai.candidates[0].category,
+          city: ai.candidates[0].city,
+          country: ai.candidates[0].country,
+        }).catch(() => {});
         await updateJob(jobId, { status: 'complete', pinId: result.pinId, completedAt: ts() });
         await sendPushForJob(jobId, userId, 'complete', { placeName: ai.candidates[0].placeName, pinId: result.pinId });
       }
@@ -1094,6 +1112,12 @@ async function runEnrichment(jobId, url, userId, captionText) {
           await finishDuplicate({ id: result.pinId, placeName: fallback.pin.placeName }, result.sourceAdded || appendedToExisting);
         }
       } else {
+        // Same server-only interest-profile write as the two branches above.
+        recordPinSaved(userId, {
+          category: fallback.pin.category,
+          city: fallback.pin.city,
+          country: fallback.pin.country,
+        }).catch(() => {});
         await updateJob(jobId, { status: 'complete', pinId: result.pinId, completedAt: ts() });
         await sendPushForJob(jobId, userId, 'complete', { placeName: fallback.pin.placeName, pinId: result.pinId });
       }
