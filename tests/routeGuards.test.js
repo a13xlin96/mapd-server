@@ -58,6 +58,18 @@ describe('route guards', () => {
     expect(limiterIdx).toBeLessThan(routerMountIdx);
   });
 
+  // visitedBy-chips restoration: GET /lists/:listId/visits gets the same
+  // path-scoped-limiter treatment as /lists/:listId/pins, for the same
+  // reason (readable with just a listId the caller may not otherwise
+  // have a relationship to).
+  test('/lists/:listId/visits is rate-limited via a path-scoped apiLimiter mounted before the listMembership router', () => {
+    const limiterIdx = src.search(/app\.use\('\/lists\/:listId\/visits',\s*apiLimiter\)/);
+    const routerMountIdx = src.indexOf('app.use(listMembershipRouter)');
+    expect(limiterIdx).toBeGreaterThan(-1);
+    expect(routerMountIdx).toBeGreaterThan(-1);
+    expect(limiterIdx).toBeLessThan(routerMountIdx);
+  });
+
   // S5 interest-profile-server-side plan, Task 1: POST /interest-profile/pin-saved
   // lives in its own router (mounted via app.use, like listMembershipRouter),
   // so — same as /lists/join — it gets a path-scoped `app.use('/interest-profile',

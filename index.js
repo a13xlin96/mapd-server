@@ -96,6 +96,18 @@ app.use('/lists/join', apiLimiter);
 // single request.
 app.use('/lists/:listId/pins', apiLimiter);
 
+// visitedBy-chips restoration: GET /lists/:listId/visits is the
+// server-side replacement for the client's `collectionGroup('visits')
+// .where('userId','in', otherUids)` query (see lib/listMembership.js for
+// the full rationale, including why it deliberately does NOT extend
+// featured-list access the way /pins does). Same reasoning as /pins for
+// getting its own path-scoped limiter here rather than folding into a
+// single `app.use('/lists', apiLimiter)`: it's readable with just a
+// listId the caller may not otherwise have a relationship to, unlike the
+// listId+pinId-keyed remove/overrides routes on the same router that
+// stay deliberately unlimited.
+app.use('/lists/:listId/visits', apiLimiter);
+
 // User-auth list-membership endpoints (Phase 4 foreign-pin removal).
 app.use(listMembershipRouter);
 
