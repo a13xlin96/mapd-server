@@ -231,7 +231,14 @@ describe('GET /lists/:listId/visits', () => {
         // there must not leak into this list's response.
         'pins/P2': { userId: 'bob', listIds: ['L2'] },
         'pins/P1/visits/bob': {
-          userId: 'bob', visited: true, visitedAt: '2026-02-01', notes: 'great brunch spot',
+          userId: 'bob',
+          visited: true,
+          wouldGoBack: false,
+          visitedAt: '2026-02-01',
+          updatedAt: '2026-02-02',
+          // decoys: personal content that must be stripped, not activity state
+          visitNote: 'great brunch spot',
+          verdictReason: 'overrated',
         },
         'pins/P2/visits/bob': { userId: 'bob', visited: true, visitedAt: '2026-03-01' },
       },
@@ -239,10 +246,15 @@ describe('GET /lists/:listId/visits', () => {
     const res = await getVisits(app, 'L1');
     expect(res.status).toBe(200);
     expect(res.body.visits).toEqual([
-      { pinId: 'P1', userId: 'bob', visitedAt: '2026-02-01' },
+      {
+        pinId: 'P1', userId: 'bob', visited: true, wouldGoBack: false, visitedAt: '2026-02-01', updatedAt: '2026-02-02',
+      },
     ]);
-    // field minimization: no stray fields (e.g. the seeded `notes`) leak through
-    expect(Object.keys(res.body.visits[0]).sort()).toEqual(['pinId', 'userId', 'visitedAt']);
+    // field minimization: activity-state fields come through, but the
+    // seeded `visitNote`/`verdictReason` personal-content decoys do not.
+    expect(Object.keys(res.body.visits[0]).sort()).toEqual(
+      ['pinId', 'updatedAt', 'userId', 'visited', 'visitedAt', 'wouldGoBack'].sort(),
+    );
 
     // pins query used a field mask (select) rather than fetching full docs
     const pinsQuery = queries.find((q) => q.collection === 'pins');
@@ -258,13 +270,17 @@ describe('GET /lists/:listId/visits', () => {
       seed: {
         'lists/L1': { ownerId: 'alice', collaboratorIds: ['bob'], name: 'Trip' },
         'pins/P1': { userId: 'alice', listIds: ['L1'] },
-        'pins/P1/visits/alice': { userId: 'alice', visited: true, visitedAt: '2026-01-05' },
+        'pins/P1/visits/alice': {
+          userId: 'alice', visited: true, wouldGoBack: true, visitedAt: '2026-01-05', updatedAt: '2026-01-06',
+        },
       },
     });
     const res = await getVisits(app, 'L1');
     expect(res.status).toBe(200);
     expect(res.body.visits).toEqual([
-      { pinId: 'P1', userId: 'alice', visitedAt: '2026-01-05' },
+      {
+        pinId: 'P1', userId: 'alice', visited: true, wouldGoBack: true, visitedAt: '2026-01-05', updatedAt: '2026-01-06',
+      },
     ]);
   });
 
