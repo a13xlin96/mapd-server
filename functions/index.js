@@ -33,8 +33,16 @@ setGlobalOptions({ region: 'us-central1', maxInstances: 10 });
 //    transactional CAS that only writes 'failed' if the doc's current status
 //    is still 'pending'. Prevents clobbering state that a concurrent actor
 //    (legacy direct-POST claim, sweeper) may have advanced.
-//  - 4xx from /enrich is terminal (mark failed, return null); 5xx and
-//    network errors throw to trigger Firebase exponential backoff.
+//  - 4xx from /enrich is terminal (mark failed, return null) EXCEPT 429:
+//    all Cloud Function dispatches egress from GCP's shared IP pool, so a
+//    burst of jobs across many users' devices can land in the same
+//    per-IP rate-limit bucket on the server and get 429'd. That's not this
+//    job's fault, so 429 is treated like 5xx — thrown to trigger Firebase's
+//    exponential backoff — rather than terminal. Safe because /enrich's
+//    transactional claim is idempotent, so re-dispatch on retry is a no-op
+//    if another attempt already won the claim.
+//  - Other 4xx is terminal (mark failed); network errors and 5xx throw to
+//    trigger Firebase exponential backoff.
 //  - /enrich is fire-and-forget: it returns 202 immediately after the
 //    transactional claim (~100ms warm), then runs runEnrichment async.
 //    So the 90s HTTP timeout only covers TCP+TLS+claim, not enrichment.
@@ -114,6 +122,16 @@ function createEnrichOnPendingJobHandler({
     if (resp.status === 200 || resp.status === 202) {
       log.log(`[enrichFn] ok job=${jobId} status=${resp.status}`);
       return null;
+    }
+
+    if (resp.status === 429) {
+      // Rate-limited by the server's per-IP limiter — not this job's fault
+      // (Cloud Function dispatches share GCP's egress IP pool, so a burst
+      // across many users' jobs can exhaust one shared bucket). Retryable:
+      // throw so Firebase retries with exponential backoff instead of
+      // permanently failing someone else's legitimate job.
+      log.warn(`[enrichFn] 429 rate limited job=${jobId}, will retry`);
+      throw new Error('/enrich returned 429');
     }
 
     if (resp.status >= 400 && resp.status < 500) {

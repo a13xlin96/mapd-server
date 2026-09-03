@@ -1,30 +1,124 @@
 const express = require('express');
-const crypto = require('crypto');
-const cors = require('cors');
+const rateLimit = require('express-rate-limit');
+const { ipKeyGenerator } = rateLimit;
 const { anthropic } = require('./lib/anthropic');
-const { firestore, admin, seedFeatureFlagsPromise } = require('./lib/firestore');
+const { firestore, seedFeatureFlagsPromise } = require('./lib/firestore');
 const { getCached, setCache, normalizeUrlForCache } = require('./lib/cache');
 const { runYtDlp } = require('./lib/ytdlp');
 const { fetchTikTokPhotoPost, isTikTokPhotoUrl } = require('./lib/tiktokPhoto');
 const { fetchInstagramCarouselPost, isInstagramPostUrl } = require('./lib/instagramCarousel');
 const { extractPlacesFromSlides } = require('./lib/vision');
 const { resolveOneRedirect, isShortSocialUrl } = require('./lib/urlResolve');
+const { isAllowedExtractUrl } = require('./lib/urlValidation');
 const { runEnrichment } = require('./enrich');
 const { claimEnrichmentJob } = require('./lib/enrichClaim');
 const { router: adminRouter } = require('./lib/admin');
 const { router: listMembershipRouter } = require('./lib/listMembership');
+const { interestProfileRouter } = require('./lib/interestProfile');
+const { authenticateRequest } = require('./lib/auth');
 require('./lib/enrichmentSweeper'); // boots the orphan-job sweeper
 
 const app = express();
-app.use(cors());
+app.set('trust proxy', 1); // Render sits behind a proxy; req.ip must be the real client
 app.use(express.json());
+
+// Per-IP limiter for AI/extract routes. 60 req/min is ~10x a heavy human
+// user; vision gets a tighter budget.
+//
+// These limiters run BEFORE authenticateRequest in the chain — deliberate,
+// so a flood of unauthenticated traffic gets rejected without spending a
+// token-verification round-trip on each request. That means req.authUid is
+// never set yet when the key is computed here, so this is per-IP limiting
+// ONLY, not per-user: two different authenticated users behind the same IP
+// (e.g. NAT, corporate proxy) share one bucket. Per-user keying would
+// require flipping the order to auth-then-limit; we're accepting the
+// per-IP tradeoff for now to keep flood traffic cheap to reject.
+//
+// keyGenerator uses express-rate-limit's ipKeyGenerator helper rather than
+// raw req.ip — v8+ requires it so IPv6 clients can't dodge the bucket by
+// varying their address within a /64.
+//
+// Store is the express-rate-limit default: in-memory. A Render restart
+// resets all buckets, and running a second instance would split traffic
+// across separate in-process buckets instead of sharing one. @upstash/redis
+// is already a dependency here if a shared store is ever needed.
+function rateLimitKeyGenerator(req) {
+  return ipKeyGenerator(req.ip);
+}
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: rateLimitKeyGenerator,
+});
+const visionLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: rateLimitKeyGenerator,
+});
 
 // Admin endpoints (collaborative-lists migration). Gated by ADMIN_TOKEN env
 // var — not a Firebase Auth ID token. See lib/admin.js for the workflow.
 app.use(adminRouter);
 
+// listMembership's router-mounted routes deliberately don't get apiLimiter
+// (they're keyed on a listId+pinId the caller must already know/own).
+// POST /lists/join is the one exception: it's the sole path that checks an
+// invite token, and while tokens are still 8-char Math.random() strings
+// (pre S2-Task-3 crypto-random rollout), an unlimited caller could
+// brute-force valid tokens — with every guess billing a Firestore query.
+// Mounted path-scoped and ahead of the router mount below so only this one
+// route gets the limiter, applied before authenticateRequest like the
+// AI/extract routes (rejects flood traffic without paying a token-verify
+// round-trip per request).
+app.use('/lists/join', apiLimiter);
+
+// S3 pins-privacy-lockdown plan, Task 2: GET /lists/:listId/pins is the
+// server-side replacement for the client's `where('listIds','array-
+// contains', listId)` query over foreign pins (shared-list fallback +
+// featured-list cloning), which the soon-to-tighten Firestore rules will
+// deny. Unlike the other listMembership routes it's readable with just a
+// listId the caller may not otherwise have any relationship to yet (e.g.
+// any signed-in user can hit it for a featured list), so — like
+// /lists/join — it gets its own path-scoped limiter rather than staying
+// unlimited.
+//
+// Mounted as its own `app.use` (not folded into a single `app.use('/lists',
+// apiLimiter)` covering the whole router) so the other listMembership
+// routes — /lists/:listId/members/:pinId/remove and .../overrides — keep
+// their deliberately-unlimited status: those are keyed on a listId+pinId
+// pair the caller must already know/own, per the comment below. Verified
+// the two path patterns don't overlap (`/lists/join` vs
+// `/lists/:listId/pins`), so this can't double-apply the limiter to a
+// single request.
+app.use('/lists/:listId/pins', apiLimiter);
+
+// visitedBy-chips restoration: GET /lists/:listId/visits is the
+// server-side replacement for the client's `collectionGroup('visits')
+// .where('userId','in', otherUids)` query (see lib/listMembership.js for
+// the full rationale, including why it deliberately does NOT extend
+// featured-list access the way /pins does). Same reasoning as /pins for
+// getting its own path-scoped limiter here rather than folding into a
+// single `app.use('/lists', apiLimiter)`: it's readable with just a
+// listId the caller may not otherwise have a relationship to, unlike the
+// listId+pinId-keyed remove/overrides routes on the same router that
+// stay deliberately unlimited.
+app.use('/lists/:listId/visits', apiLimiter);
+
 // User-auth list-membership endpoints (Phase 4 foreign-pin removal).
 app.use(listMembershipRouter);
+
+// S5 interest-profile-server-side plan, Task 1: POST /interest-profile/pin-saved
+// writes the monetization-critical save-behavior signal server-side, with
+// uid from the verified token (never the body). Path-scoped apiLimiter
+// mounted ahead of the router, mirroring '/lists/join' above — this is the
+// interest-profile router's only route and, like the other AI/extract
+// routes, gets a flood-cheap per-IP limiter ahead of authenticateRequest.
+app.use('/interest-profile', apiLimiter);
+app.use(interestProfileRouter);
 
 // Health check
 app.get('/', (req, res) => {
@@ -217,11 +311,15 @@ app.get('/invite/:token', (req, res) => {
 });
 
 // Extract metadata from a social media link
-app.post('/extract', async (req, res) => {
+app.post('/extract', apiLimiter, authenticateRequest, async (req, res) => {
   const { url } = req.body;
 
   if (!url) {
     return res.status(400).json({ error: 'URL is required' });
+  }
+
+  if (!isAllowedExtractUrl(url)) {
+    return res.status(400).json({ error: 'unsupported or invalid url' });
   }
 
   // Normalize URL for cache lookups (strip tracking params)
@@ -290,7 +388,7 @@ app.post('/extract', async (req, res) => {
 });
 
 // AI: Extract ALL places from a social media post (single consolidated call)
-app.post('/ai/extract-places', async (req, res) => {
+app.post('/ai/extract-places', apiLimiter, authenticateRequest, async (req, res) => {
   const {
     title,
     description,
@@ -367,7 +465,7 @@ Return ONLY valid JSON: {"places": [{"name": "Place Name", "city": "City", "addr
 });
 
 // AI Step 2b: Extract place name from caption text when regex fails
-app.post('/ai/extract-place', async (req, res) => {
+app.post('/ai/extract-place', apiLimiter, authenticateRequest, async (req, res) => {
   const { title, description } = req.body;
 
   if (!title && !description) {
@@ -428,7 +526,7 @@ If the post does NOT mention any specific named place (just a generic "best pizz
 });
 
 // AI Step 4b: Verify if a Google Places result matches what the caption describes
-app.post('/ai/verify-place', async (req, res) => {
+app.post('/ai/verify-place', apiLimiter, authenticateRequest, async (req, res) => {
   const { title, description, placeName, placeAddress, placeTypes } = req.body;
 
   if (!description && !title) {
@@ -468,7 +566,7 @@ app.post('/ai/verify-place', async (req, res) => {
 // AI: Infer city/country for each place using ALL siblings in the list as context.
 // Used by the Google Takeout import flow and by the "Re-resolve from link" pin action
 // when the original URL doesn't carry coordinates.
-app.post('/ai/infer-place-regions', async (req, res) => {
+app.post('/ai/infer-place-regions', apiLimiter, authenticateRequest, async (req, res) => {
   const { places, listName, siblingPlaces } = req.body;
 
   if (!Array.isArray(places) || places.length === 0) {
@@ -561,7 +659,7 @@ Return ONLY valid JSON in this exact shape:
 // AI Vision: Extract place names from carousel slide images.
 // Thin wrapper around lib/vision.js so the shared helper can be reused
 // by /enrich without duplicating cache/prompt logic.
-app.post('/ai/vision-extract', async (req, res) => {
+app.post('/ai/vision-extract', apiLimiter, visionLimiter, authenticateRequest, async (req, res) => {
   const { imageUrls, contentId, caption, hashtags, subtitles } = req.body;
   if (!imageUrls || !Array.isArray(imageUrls) || imageUrls.length === 0) {
     return res.status(400).json({ error: 'imageUrls array required' });
@@ -570,55 +668,8 @@ app.post('/ai/vision-extract', async (req, res) => {
   res.json(result);
 });
 
-// Authenticate /enrich requests. Two paths:
-//   1. User path: Bearer Firebase ID token (clients). Server verifies the
-//      token and trusts decoded.uid; the userId in the request body must
-//      match (enforced downstream).
-//   2. Admin path: X-Admin-Token header containing the ENRICH_ADMIN_TOKEN
-//      env var. Used by the Firebase Cloud Function that triggers on
-//      `enrichmentJobs/{jobId}` doc-creates. Identity is sourced from
-//      req.body.userId, but the /enrich handler also requires the doc to
-//      pre-exist with a matching userId+url (see the transactional claim
-//      below) — that constraint shrinks impersonation blast-radius if the
-//      admin token ever leaks.
-async function authenticateRequest(req, res, next) {
-  const adminTokenHeader = req.headers['x-admin-token'];
-  if (typeof adminTokenHeader === 'string' && adminTokenHeader.length > 0) {
-    const expected = process.env.ENRICH_ADMIN_TOKEN;
-    if (!expected) {
-      // Fail closed: never accept the admin header unless the env var is set.
-      return res.status(503).json({ error: 'admin path not configured' });
-    }
-    const provided = Buffer.from(adminTokenHeader);
-    const reference = Buffer.from(expected);
-    if (provided.length !== reference.length ||
-        !crypto.timingSafeEqual(provided, reference)) {
-      return res.status(401).json({ error: 'invalid admin token' });
-    }
-    const bodyUserId = req.body && typeof req.body.userId === 'string' ? req.body.userId : null;
-    if (!bodyUserId) {
-      return res.status(400).json({ error: 'userId required on admin path' });
-    }
-    req.authUid = bodyUserId;
-    req.adminBypass = true;
-    return next();
-  }
-
-  const authHeader = req.headers.authorization || '';
-  const match = authHeader.match(/^Bearer (.+)$/);
-  if (!match) {
-    return res.status(401).json({ error: 'Missing or invalid Authorization header' });
-  }
-  try {
-    const decoded = await admin.auth().verifyIdToken(match[1]);
-    req.authUid = decoded.uid;
-    req.adminBypass = false;
-    return next();
-  } catch (err) {
-    console.warn('Auth verify failed:', err.message);
-    return res.status(401).json({ error: 'Invalid ID token' });
-  }
-}
+// Authenticate /enrich requests. See lib/auth.js for the shared
+// authenticateRequest middleware (Bearer verify + admin-token path).
 
 // Server-side enrichment. Two callers:
 //   1. Direct: phone POSTs with Bearer ID token (legacy + fallback path).
@@ -633,7 +684,7 @@ async function authenticateRequest(req, res, next) {
 // Only the transaction's winner fires runEnrichment(); losers (concurrent
 // retries / dual-trigger from in-app POST + Cloud Function during rollout)
 // see status:'processing' and return 202 without spawning a second pipeline.
-app.post('/enrich', authenticateRequest, async (req, res) => {
+app.post('/enrich', apiLimiter, authenticateRequest, async (req, res) => {
   const { url, userId, captionText, jobId } = req.body || {};
   console.log(`[/enrich] job=${jobId || '?'} user=${userId || '?'} url=${url || '?'} admin=${req.adminBypass ? 1 : 0}`);
 
