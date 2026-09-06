@@ -1,3 +1,4 @@
+const { persistThumbnail } = require('./lib/thumbnails');
 const express = require('express');
 const rateLimit = require('express-rate-limit');
 const { ipKeyGenerator } = rateLimit;
@@ -310,6 +311,17 @@ app.get('/invite/:token', (req, res) => {
 </html>`);
 });
 
+// Manual-link images are cached per caller; only server extraction can populate
+// the shared cache, so an arbitrary client image cannot poison another user's cover.
+app.post('/thumbnails/persist', apiLimiter, authenticateRequest, async (req, res) => {
+  const { imageUrl, sourceUrl } = req.body || {};
+  if (typeof imageUrl !== 'string' || imageUrl.length > 8192 || typeof sourceUrl !== 'string' || !isAllowedExtractUrl(sourceUrl)) {
+    return res.status(400).json({ error: 'invalid_thumbnail_request' });
+  }
+  const image = await persistThumbnail(imageUrl, sourceUrl, req.authUid);
+  return res.json({ image });
+});
+
 // Extract metadata from a social media link
 app.post('/extract', apiLimiter, authenticateRequest, async (req, res) => {
   const { url } = req.body;
@@ -329,7 +341,7 @@ app.post('/extract', apiLimiter, authenticateRequest, async (req, res) => {
   const cached = await getCached(normalizedUrl);
   if (cached) {
     console.log('Cache hit:', normalizedUrl.slice(0, 60));
-    return res.json(cached);
+    return res.json({ ...cached, thumbnail_url: await persistThumbnail(cached.thumbnail_url, cached.webpage_url || url) });
   }
 
   // For short URLs, resolve canonical once. Lets us:
@@ -345,7 +357,7 @@ app.post('/extract', apiLimiter, authenticateRequest, async (req, res) => {
         const cachedCanonical = await getCached(normalizedCanonical);
         if (cachedCanonical) {
           console.log('Cache hit (canonical):', normalizedCanonical.slice(0, 60));
-          return res.json(cachedCanonical);
+          return res.json({ ...cachedCanonical, thumbnail_url: await persistThumbnail(cachedCanonical.thumbnail_url, cachedCanonical.webpage_url || canonicalUrl) });
         }
       }
     } catch {
@@ -371,6 +383,7 @@ app.post('/extract', apiLimiter, authenticateRequest, async (req, res) => {
     } else {
       data = await runYtDlp(url);
     }
+    data.thumbnail_url = await persistThumbnail(data.thumbnail_url, data.webpage_url || canonicalUrl);
     console.log('Extracted:', data.title?.slice(0, 60));
     // Cache by normalized URL and normalized canonical URL
     await setCache(normalizedUrl, data);

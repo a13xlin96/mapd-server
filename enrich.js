@@ -1,3 +1,4 @@
+const { persistThumbnail } = require('./lib/thumbnails');
 const { admin, firestore } = require('./lib/firestore');
 const { runYtDlp } = require('./lib/ytdlp');
 const { fetchTikTokPhotoPost, isTikTokPhotoUrl } = require('./lib/tiktokPhoto');
@@ -742,6 +743,7 @@ async function runAIPipeline({ jobId, url, userId, captionText }) {
 
   // Content-ID dedup (after extract, when webpage_url is canonical)
   const canonicalUrl = (extracted && extracted.webpage_url) || resolvedUrl;
+  ogData.image = await persistThumbnail(ogData.image, canonicalUrl);
   const contentId = extractContentId(canonicalUrl);
   if (contentId) {
     const dup = await findPinByContentId(userId, contentId);
