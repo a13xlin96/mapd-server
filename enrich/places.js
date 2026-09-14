@@ -1,3 +1,5 @@
+const {withProvider} = require('../lib/providerRuntime');
+const {EngineError,asEngineError} = require('../lib/engineError');
 const axios = require('axios');
 const { getCached, setCache } = require('../lib/cache');
 
@@ -12,8 +14,8 @@ function mapNewToLegacy(place) {
     formatted_address: place.formattedAddress || '',
     geometry: {
       location: {
-        lat: (place.location && place.location.latitude) || 0,
-        lng: (place.location && place.location.longitude) || 0,
+        lat: place.location?.latitude ?? null,
+        lng: place.location?.longitude ?? null,
       },
     },
     types: place.types || [],
@@ -33,8 +35,7 @@ function mapAddressComponents(components) {
 async function searchGooglePlaces(query, locationBias, locationRestriction) {
   const apiKey = process.env.GOOGLE_PLACES_API_KEY;
   if (!apiKey) {
-    console.error('GOOGLE_PLACES_API_KEY not set');
-    return [];
+    throw new EngineError('dependency_error',{stage:'places_search',provider:'google'});
   }
 
   const cacheKey = locationRestriction
@@ -48,7 +49,7 @@ async function searchGooglePlaces(query, locationBias, locationRestriction) {
   if (cached) return cached;
 
   try {
-    const body = { textQuery: query };
+    const body = { textQuery: query, pageSize:5 };
     if (locationRestriction) {
       body.locationRestriction = {
         rectangle: {
@@ -65,7 +66,7 @@ async function searchGooglePlaces(query, locationBias, locationRestriction) {
       };
     }
 
-    const response = await axios.post(
+    const response = await withProvider('google',()=>axios.post(
       `${PLACES_API_BASE}/places:searchText`,
       body,
       {
@@ -75,16 +76,16 @@ async function searchGooglePlaces(query, locationBias, locationRestriction) {
           'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.location,places.types',
         },
         timeout: 10000,
+        maxContentLength: 1024*1024,
       }
-    );
+    ),4);
 
     const places = (response.data && response.data.places) || [];
     const results = places.map(mapNewToLegacy);
     await setCache(normalizedKey, results, SEARCH_CACHE_TTL_SECONDS);
     return results;
   } catch (error) {
-    console.error('Google Places search error:', error.message);
-    return [];
+    throw asEngineError(error,{stage:'places_search',provider:'google'});
   }
 }
 
@@ -200,7 +201,7 @@ async function getPlaceDetails(placeId) {
       'parkingOptions',
     ].join(',');
 
-    const response = await axios.get(
+    const response = await withProvider('google',()=>axios.get(
       `${PLACES_API_BASE}/places/${placeId}`,
       {
         headers: {
@@ -208,8 +209,9 @@ async function getPlaceDetails(placeId) {
           'X-Goog-FieldMask': fieldMask,
         },
         timeout: 10000,
+        maxContentLength: 1024*1024,
       }
-    );
+    ),4);
 
     const r = response.data;
     const displayName = r.displayName;
@@ -222,8 +224,8 @@ async function getPlaceDetails(placeId) {
       address_components: r.addressComponents ? mapAddressComponents(r.addressComponents) : null,
       geometry: {
         location: {
-          lat: (location && location.latitude) || 0,
-          lng: (location && location.longitude) || 0,
+          lat: location?.latitude ?? null,
+          lng: location?.longitude ?? null,
         },
       },
       types: r.types || [],

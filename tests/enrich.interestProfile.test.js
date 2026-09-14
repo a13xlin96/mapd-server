@@ -115,7 +115,7 @@ test('NEW pin from the single-candidate AI path calls recordPinSaved with the pi
 
   runYtDlp.mockResolvedValue({
     title: 'a ramen video',
-    description: 'so good',
+    description: 'Ramen Spot in Austin',
     webpage_url: CANONICAL,
     thumbnail_url: 'https://p16.tiktokcdn.com/expiring.jpg',
     hashtags: [],
@@ -169,7 +169,7 @@ test('duplicate (already-pinned place) does NOT call recordPinSaved — no doubl
 
   runYtDlp.mockResolvedValue({
     title: 'another ramen video',
-    description: 'still good',
+    description: 'Ramen Spot in Austin',
     webpage_url: CANONICAL,
     thumbnail_url: '',
     hashtags: [],
@@ -192,7 +192,7 @@ test('a recordPinSaved rejection never fails the job (fire-and-forget)', async (
 
   runYtDlp.mockResolvedValue({
     title: 'a ramen video',
-    description: 'so good',
+    description: 'Ramen Spot in Austin',
     webpage_url: CANONICAL,
     thumbnail_url: '',
     hashtags: [],

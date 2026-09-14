@@ -4,15 +4,13 @@ const rateLimit = require('express-rate-limit');
 const { ipKeyGenerator } = rateLimit;
 const { anthropic } = require('./lib/anthropic');
 const { firestore, seedFeatureFlagsPromise } = require('./lib/firestore');
-const { getCached, setCache, normalizeUrlForCache } = require('./lib/cache');
-const { runYtDlp } = require('./lib/ytdlp');
-const { fetchTikTokPhotoPost, isTikTokPhotoUrl } = require('./lib/tiktokPhoto');
-const { fetchInstagramCarouselPost, isInstagramPostUrl } = require('./lib/instagramCarousel');
+const { getCached, setCache } = require('./lib/cache');
 const { extractPlacesFromSlides } = require('./lib/vision');
-const { resolveOneRedirect, isShortSocialUrl } = require('./lib/urlResolve');
 const { isAllowedExtractUrl } = require('./lib/urlValidation');
-const { runEnrichment } = require('./enrich');
-const { claimEnrichmentJob } = require('./lib/enrichClaim');
+const { runEnrichment,saveSelectedPlaces } = require('./enrich');
+const {admitEnrichmentJob} = require('./lib/enrichAdmission');
+const {createWorker} = require('./lib/enrichmentWorker');
+const worker = createWorker({db:firestore,runEnrichment,push:require('./lib/push').sendPushForJob});
 const { router: adminRouter } = require('./lib/admin');
 const { router: listMembershipRouter } = require('./lib/listMembership');
 const { interestProfileRouter } = require('./lib/interestProfile');
@@ -334,246 +332,30 @@ app.post('/extract', apiLimiter, authenticateRequest, async (req, res) => {
     return res.status(400).json({ error: 'unsupported or invalid url' });
   }
 
-  // Normalize URL for cache lookups (strip tracking params)
-  const normalizedUrl = normalizeUrlForCache(url);
-
-  // Check cache — try normalized URL first
-  const cached = await getCached(normalizedUrl);
-  if (cached) {
-    console.log('Cache hit:', normalizedUrl.slice(0, 60));
-    return res.json({ ...cached, thumbnail_url: await persistThumbnail(cached.thumbnail_url, cached.webpage_url || url) });
-  }
-
-  // For short URLs, resolve canonical once. Lets us:
-  //   (a) route TikTok photo URLs to the custom extractor (yt-dlp can't handle /photo/)
-  //   (b) check cache by the canonical form for cross-share dedup
-  let canonicalUrl = url;
-  if (isShortSocialUrl(url)) {
-    try {
-      const resolved = await resolveOneRedirect(url);
-      if (resolved !== url) {
-        canonicalUrl = resolved;
-        const normalizedCanonical = normalizeUrlForCache(resolved);
-        const cachedCanonical = await getCached(normalizedCanonical);
-        if (cachedCanonical) {
-          console.log('Cache hit (canonical):', normalizedCanonical.slice(0, 60));
-          return res.json({ ...cachedCanonical, thumbnail_url: await persistThumbnail(cachedCanonical.thumbnail_url, cachedCanonical.webpage_url || canonicalUrl) });
-        }
-      }
-    } catch {
-      // Resolve failed — continue with yt-dlp
-    }
-  }
-
-  console.log('Extracting:', url);
-
   try {
-    let data;
-    if (isTikTokPhotoUrl(canonicalUrl)) {
-      console.log('Using custom TikTok photo extractor for', canonicalUrl.slice(0, 80));
-      data = await fetchTikTokPhotoPost(canonicalUrl);
-    } else if (isInstagramPostUrl(canonicalUrl)) {
-      console.log('Using custom Instagram embed extractor for', canonicalUrl.slice(0, 80));
-      try {
-        data = await fetchInstagramCarouselPost(canonicalUrl);
-      } catch (igErr) {
-        console.warn('IG embed extract failed, falling back to yt-dlp:', igErr.message);
-        data = await runYtDlp(url);
-      }
-    } else {
-      data = await runYtDlp(url);
-    }
-    data.thumbnail_url = await persistThumbnail(data.thumbnail_url, data.webpage_url || canonicalUrl);
-    console.log('Extracted:', data.title?.slice(0, 60));
-    // Cache by normalized URL and normalized canonical URL
-    await setCache(normalizedUrl, data);
-    if (data.webpage_url) {
-      const normalizedCanonical = normalizeUrlForCache(data.webpage_url);
-      if (normalizedCanonical !== normalizedUrl) {
-        await setCache(normalizedCanonical, data);
-      }
-    }
-    res.json(data);
+    const data = await require('./lib/extraction').extractPublicPost(url);
+    res.json({...data, thumbnail_url:await persistThumbnail(data.thumbnail_url,data.webpage_url || url)});
   } catch (error) {
-    console.error('Extraction failed:', error.message);
-    res.status(422).json({ error: error.message, code: error.code || 'UNKNOWN' });
+    const failure = require('./lib/engineError').failureOf(error);
+    res.status(422).json({error:failure.message,code:failure.code,failure});
   }
 });
 
-// AI: Extract ALL places from a social media post (single consolidated call)
+// Worker and compatibility endpoints share validation and versioned AI logic.
+const engineAI = require('./enrich/ai');
+const {withProvider} = require('./lib/providerRuntime');
+const {failureOf} = require('./lib/engineError');
 app.post('/ai/extract-places', apiLimiter, authenticateRequest, async (req, res) => {
-  const {
-    title,
-    description,
-    hashtags,
-    uploader,
-    subtitles,
-    mentionedAccounts,
-    collaborators,
-  } = req.body;
-
-  if (!title && !description && !subtitles) {
-    return res.status(400).json({ error: 'title, description, or subtitles required' });
-  }
-
-  // Cache by caption + subtitle + mentions content (mentions change the answer)
-  const mentionsKey = Array.isArray(mentionedAccounts) ? mentionedAccounts.slice(0, 5).join(',') : '';
-  const cacheKey = `ai:places:${(title || '').slice(0, 50)}:${(description || '').slice(0, 50)}:${(subtitles || '').slice(0, 30)}:${mentionsKey.slice(0, 50)}`;
-  const cached = await getCached(cacheKey);
-  if (cached) return res.json(cached);
-
-  try {
-    const mentionLines = [];
-    if (Array.isArray(mentionedAccounts) && mentionedAccounts.length) {
-      mentionLines.push(
-        `Mentioned accounts (may or may not be venues): ${mentionedAccounts.slice(0, 5).map((h) => '@' + h).join(' ')}`,
-      );
-    }
-    if (Array.isArray(collaborators) && collaborators.length) {
-      mentionLines.push(
-        `Collaborators / co-authors: ${collaborators.slice(0, 3).map((h) => '@' + h).join(' ')}`,
-      );
-    }
-
-    const context = [
-      title ? `Title: ${title}` : '',
-      description ? `Caption: ${(description || '').slice(0, 1200)}` : '',
-      uploader ? `Uploader: ${uploader}` : '',
-      subtitles ? `Video transcript/subtitles: ${(subtitles || '').slice(0, 3000)}` : '',
-      hashtags?.length ? `Hashtags: ${hashtags.join(', ')}` : '',
-      ...mentionLines,
-    ].filter(Boolean).join('\n');
-
-    const message = await anthropic.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 1500,
-      messages: [{
-        role: 'user',
-        content: `Extract ALL specific place names (restaurants, bars, cafes, shops, attractions, hotels) from this social media post.
-
-Rules:
-- Only extract NAMED businesses or attractions (not generic descriptions like "best pizza spot")
-- Include the city/neighborhood if mentioned or inferrable from context
-- If a full address is given, include it
-- If there are multiple places, return all of them
-- If NO specific named place is found, return an empty list
-- For each place, record which signal it came from: "caption", "hashtag", "transcript", or "handle" (a venue-looking @mention or collaborator). When uncertain about a handle being a venue, OMIT it — do not guess.
-
-${context}
-
-Return ONLY valid JSON: {"places": [{"name": "Place Name", "city": "City", "address": "full address if given, otherwise empty string", "source": "caption" | "hashtag" | "transcript" | "handle"}], "count": N}`,
-      }],
-    });
-
-    let text = message.content[0]?.type === 'text' ? message.content[0].text.trim() : '';
-    text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
-
-    const parsed = JSON.parse(text);
-    await setCache(cacheKey, parsed);
-    res.json(parsed);
-  } catch (error) {
-    console.error('AI extract-places failed:', error.message);
-    res.json({ places: [], count: 0 });
-  }
+  try { res.json(await engineAI.aiExtractPlaces(req.body, {scope:`user:${req.authUid}`})); }
+  catch (e) { const failure = failureOf(e); res.status(502).json({error:failure.message,code:failure.code,failure}); }
 });
-
-// AI Step 2b: Extract place name from caption text when regex fails
 app.post('/ai/extract-place', apiLimiter, authenticateRequest, async (req, res) => {
-  const { title, description } = req.body;
-
-  if (!title && !description) {
-    return res.status(400).json({ error: 'title or description required' });
-  }
-
-  // Cache by caption content
-  const cacheKey = `ai:extract:${(title || '').slice(0, 50)}:${(description || '').slice(0, 50)}`;
-  const cached = await getCached(cacheKey);
-  if (cached) return res.json(cached);
-
-  try {
-    // Truncate to keep token usage low
-    const caption = `${title || ''}\n${(description || '').slice(0, 800)}`.trim();
-
-    const message = await anthropic.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 100,
-      messages: [{
-        role: 'user',
-        content: `You are extracting the specific place name from a social media post about a real-world location (restaurant, bar, cafe, shop, attraction, hotel, etc.).
-
-Look for:
-- Named businesses ("at Ichiran Ramen", "the Sandwich Board", "visited Bavel")
-- Places after prepositions ("at", "in", "visited", "tried", "went to")
-- Places before locations ("Cafe Luna in Brooklyn", "Weng Yao Chicken, Jiaoxi")
-
-Caption:
-${caption}
-
-Return ONLY valid JSON: {"name": "place name", "city": "city or neighborhood", "country": "country"}
-If the post does NOT mention any specific named place (just a generic "best pizza" with no name), return: null`,
-      }],
-    });
-
-    let text = message.content[0]?.type === 'text' ? message.content[0].text.trim() : '';
-
-    // Strip markdown code fences if present (```json ... ```)
-    text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
-
-    if (!text || text === 'null') {
-      return res.json({ place: null });
-    }
-
-    const parsed = JSON.parse(text);
-    if (parsed?.name) {
-      const result = { place: parsed };
-      await setCache(cacheKey, result);
-      return res.json(result);
-    }
-    const result = { place: null };
-    await setCache(cacheKey, result);
-    res.json(result);
-  } catch (error) {
-    console.error('AI extract-place failed:', error.message);
-    res.json({ place: null });
-  }
+  try { res.json(await engineAI.aiExtractSingle(req.body, {scope:`user:${req.authUid}`})); }
+  catch (e) { const failure = failureOf(e); res.status(502).json({error:failure.message,code:failure.code,failure}); }
 });
-
-// AI Step 4b: Verify if a Google Places result matches what the caption describes
 app.post('/ai/verify-place', apiLimiter, authenticateRequest, async (req, res) => {
-  const { title, description, placeName, placeAddress, placeTypes } = req.body;
-
-  if (!description && !title) {
-    return res.status(400).json({ error: 'title or description required' });
-  }
-
-  try {
-    const caption = `${title || ''}\n${(description || '').slice(0, 600)}`.trim();
-
-    const message = await anthropic.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 120,
-      messages: [{
-        role: 'user',
-        content: `A social media post mentions a place. We searched Google Places and got a result. Does the result match what the post is actually about?\n\nCaption:\n${caption}\n\nGoogle Places result:\n- Name: ${placeName}\n- Address: ${placeAddress}\n- Types: ${(placeTypes || []).join(', ')}\n\nReturn ONLY valid JSON: {"match": true/false, "betterQuery": "refined search query if not a match, or null"}`,
-      }],
-    });
-
-    let text2 = message.content[0]?.type === 'text' ? message.content[0].text.trim() : '';
-    text2 = text2.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
-
-    if (!text2) {
-      return res.json({ match: true, betterQuery: null });
-    }
-
-    const parsed = JSON.parse(text2);
-    res.json({
-      match: parsed?.match ?? true,
-      betterQuery: parsed?.betterQuery || null,
-    });
-  } catch (error) {
-    console.error('AI verify-place failed:', error.message);
-    res.json({ match: true, betterQuery: null });
-  }
+  const {placeName,placeAddress,placeTypes} = req.body;
+  res.json(await engineAI.aiVerifyPlace(req.body,placeName,placeAddress,placeTypes));
 });
 
 // AI: Infer city/country for each place using ALL siblings in the list as context.
@@ -594,11 +376,15 @@ app.post('/ai/infer-place-regions', apiLimiter, authenticateRequest, async (req,
     : [];
   const cleanListName = String(listName || '').trim();
 
+  if (cleanPlaces.length > 40 || cleanSiblings.length > 100 || JSON.stringify({cleanPlaces,cleanSiblings,cleanListName}).length > 24000) {
+    return res.status(400).json({error:'input_too_large'});
+  }
+
   if (cleanPlaces.length === 0) {
     return res.status(400).json({ error: 'no valid place names' });
   }
 
-  const cacheKey = `ai:infer-regions:${cleanListName}:${JSON.stringify(cleanPlaces)}:${JSON.stringify(cleanSiblings)}`;
+  const cacheKey = engineAI.cacheKey('infer-regions', {cleanListName,cleanPlaces,cleanSiblings}, `user:${req.authUid}`);
   const cached = await getCached(cacheKey);
   if (cached) return res.json(cached);
 
@@ -633,17 +419,15 @@ ${placesBlock}
 Return ONLY valid JSON in this exact shape:
 {"results":[{"name":"<exact input name>","city":"<city or null>","country":"<country or null>","confidence":"high|medium|low"}]}`;
 
-    const message = await anthropic.messages.create({
+    const message = await withProvider('anthropic',() => anthropic.messages.create({
       model: 'claude-haiku-4-5-20251001',
-      max_tokens: 800,
+      max_tokens: 2400,
       messages: [{ role: 'user', content: prompt }],
-    });
+    },{timeout:30000,maxRetries:0}),4);
 
-    let text = message.content[0]?.type === 'text' ? message.content[0].text.trim() : '';
-    text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
-
-    const parsed = JSON.parse(text);
-    const results = Array.isArray(parsed?.results) ? parsed.results : [];
+    const parsed = engineAI.parseResponse(message);
+    if (!Array.isArray(parsed?.results) || parsed.results.some(r=>!r || typeof r.name!=='string' || !['city','country'].every(k=>r[k]==null || typeof r[k]==='string'))) throw new Error('Invalid region inference');
+    const results = parsed.results;
 
     // Normalize: ensure every input place has a corresponding result.
     const byName = new Map(results.map((r) => [String(r?.name || '').trim(), r]));
@@ -663,9 +447,8 @@ Return ONLY valid JSON in this exact shape:
     res.json(response);
   } catch (error) {
     console.error('AI infer-place-regions failed:', error.message);
-    res.json({
-      results: cleanPlaces.map((p) => ({ name: p.name, city: null, country: null, confidence: 'low' })),
-    });
+    const failure=failureOf(error,{stage:'ai',provider:'anthropic'});
+    res.status(502).json({failure,error:failure.message,results: cleanPlaces.map((p) => ({ name: p.name, city: null, country: null, confidence: 'low' }))});
   }
 });
 
@@ -677,28 +460,27 @@ app.post('/ai/vision-extract', apiLimiter, visionLimiter, authenticateRequest, a
   if (!imageUrls || !Array.isArray(imageUrls) || imageUrls.length === 0) {
     return res.status(400).json({ error: 'imageUrls array required' });
   }
-  const result = await extractPlacesFromSlides({ imageUrls, contentId, caption, hashtags, subtitles });
-  res.json(result);
+  try {
+    const result = await extractPlacesFromSlides({ imageUrls, contentId, caption, hashtags, subtitles },{scope:`user:${req.authUid}`});
+    res.json(result);
+  } catch(error) {const failure=failureOf(error);res.status(502).json({error:failure.message,code:failure.code,failure});}
 });
 
 // Authenticate /enrich requests. See lib/auth.js for the shared
 // authenticateRequest middleware (Bearer verify + admin-token path).
 
-// Server-side enrichment. Two callers:
-//   1. Direct: phone POSTs with Bearer ID token (legacy + fallback path).
-//      No pre-existing doc in this case — the handler creates the job doc
-//      from scratch with status:'processing'.
-//   2. Cloud Function: triggers on Firestore enrichmentJobs/{jobId} creates
-//      where status:'pending' (client wrote it). Uses X-Admin-Token. The
-//      pending doc already exists with userId+url; handler verifies they
-//      match the body, then claims it (pending → processing).
-//
-// Both paths share a Firestore transaction that atomically claims the job.
-// Only the transaction's winner fires runEnrichment(); losers (concurrent
-// retries / dual-trigger from in-app POST + Cloud Function during rollout)
-// see status:'processing' and return 202 without spawning a second pipeline.
+// The phone and Cloud Function both durably admit a pending job. The worker
+// claims it later, so a process exit between HTTP response and execution cannot
+// lose accepted work. Redelivery never restarts a processing or terminal job.
+app.post('/enrich/selection', apiLimiter, authenticateRequest, async (req,res)=>{
+  const {jobId,selectedPlaceIds}=req.body || {};
+  if(typeof jobId!=='string' || !/^[A-Za-z0-9_-]{1,200}$/.test(jobId)) return res.status(400).json({error:'invalid_job'});
+  try {res.json(await saveSelectedPlaces(jobId,req.authUid,selectedPlaceIds));}
+  catch(error) {const failure=failureOf(error);res.status(failure.code==='access_blocked'?403:502).json({failure,error:failure.message});}
+});
+
 app.post('/enrich', apiLimiter, authenticateRequest, async (req, res) => {
-  const { url, userId, captionText, jobId } = req.body || {};
+  const { url, userId, captionText, jobId, retryOf } = req.body || {};
   console.log(`[/enrich] job=${jobId || '?'} user=${userId || '?'} url=${url || '?'} admin=${req.adminBypass ? 1 : 0}`);
 
   if (!url || !userId || !jobId) {
@@ -713,27 +495,20 @@ app.post('/enrich', apiLimiter, authenticateRequest, async (req, res) => {
 
   let result;
   try {
-    result = await claimEnrichmentJob(firestore, {
+    result = await admitEnrichmentJob(firestore, {
       jobId,
       userId,
       url,
       captionText,
       adminBypass: !!req.adminBypass,
+      retryOf,
     });
   } catch (err) {
     console.error('/enrich claim failed:', err);
     return res.status(500).json({ error: err.message || 'Internal error' });
   }
 
-  if (result.shouldEnrich) {
-    // Fire-and-forget: response returns immediately; pipeline runs in background.
-    // Use result.enrichArgs (stored doc fields when pre-existing) — NEVER trust
-    // the request body for fields that drive enrichment, per Codex P2 fix.
-    const args = result.enrichArgs;
-    runEnrichment(jobId, args.url, args.userId, args.captionText).catch((err) => {
-      console.error(`runEnrichment unhandled error for ${jobId}:`, err);
-    });
-  }
+  worker.nudge();
 
   return res.status(result.code).json(result.body);
 });
@@ -748,17 +523,21 @@ const PORT = process.env.PORT || 3000;
 // fail-closed 409 trip-wire.
 const SEED_BOOT_TIMEOUT_MS = 5000;
 function bootListen() {
+  worker.start();
   app.listen(PORT, () => {
     console.log(`Mapd link extractor running on port ${PORT}`);
   });
 }
-const seedTimeout = new Promise((resolve) => setTimeout(() => {
-  resolve({ action: 'timed-out' });
-}, SEED_BOOT_TIMEOUT_MS));
-Promise.race([seedFeatureFlagsPromise, seedTimeout])
-  .then((result) => {
-    if (result && result.action === 'timed-out') {
-      console.warn(`featureFlags seed did not complete within ${SEED_BOOT_TIMEOUT_MS}ms; listening anyway`);
-    }
-  })
-  .finally(bootListen);
+if (require.main === module) {
+  let seedTimer;
+  const seedTimeout = new Promise(resolve => {
+    seedTimer = setTimeout(() => resolve({action:'timed-out'}),SEED_BOOT_TIMEOUT_MS);
+  });
+  Promise.race([seedFeatureFlagsPromise,seedTimeout])
+    .then(result => {
+      if (result?.action === 'timed-out') console.warn(`featureFlags seed did not complete within ${SEED_BOOT_TIMEOUT_MS}ms; listening anyway`);
+    })
+    .finally(() => {clearTimeout(seedTimer);bootListen();});
+}
+// Importing the actual routes for tests must not bind a port or start workers.
+module.exports = {app,bootListen};
