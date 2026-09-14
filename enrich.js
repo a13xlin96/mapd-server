@@ -1,3 +1,9 @@
+const {classifyContentProvider,isYouTubeVideoUrl}=require('./lib/contentProvider');
+const {executionFeatures}=require('./lib/engineRuntimeConfig');
+const telemetry=require('./lib/engineTelemetry');
+const metrics=require('./lib/engineMetrics');
+const {createContentIndex}=require('./lib/contentIndex');
+const useContentIndex=()=>jobContext.current()?.features?.versions?.contentIndexReader==='content-index-v1';
 const {randomUUID} = require('crypto');
 const {withLease} = require('./lib/providerRuntime');
 const jobContext = require('./lib/jobContext');
@@ -125,6 +131,11 @@ async function findPinByUrl(userId, url) {
 
 async function findPinByContentId(userId, contentId) {
   if (!firestore || !contentId) return null;
+  if(useContentIndex()) {
+    const found=await createContentIndex({db:firestore}).lookup({uid:userId,contentId});
+    metrics.current()?.operation('lookupReads',found.reads.account+found.reads.rows+found.reads.pins);
+    if(found.indexReady || found.pins.length || process.env.ENGINE_ALLOW_LEGACY_CONTENT_SCAN!=='true') return found.pins[0] || null;
+  }
   const snap = await firestore.collection('pins')
     .where('userId', '==', userId)
     .get();
@@ -536,6 +547,11 @@ async function buildPinFromDetails({ url, userId, ogData, details, topResult, ca
 // Mirrors the client's addSourceToPin dedupe (pinsStore.ts) and the legacy
 // pipeline's URL-upgrade step (enrichmentTask.ts). Pure: returns the update
 // to write (possibly empty) and whether a source would be appended.
+function writeContentRows(txn,pinId,pin) {
+  const {identities,indexRows}=require('./functions/lib/contentIdentity');
+  for(const row of indexRows(pin.userId,pinId,identities(pin))) txn.set(firestore.collection('pinContentIndex').doc(row.id),row);
+}
+
 function computeSourceAppend(data, source) {
   const newContentId = extractContentId(source.url);
   const newNormalized = normalizeUrl(source.url);
@@ -563,8 +579,8 @@ function computeSourceAppend(data, source) {
 // Append a share to a pin found OUTSIDE writePinTransactional (content-ID
 // dedup, AI candidate-loop skip, OG-fallback duplicate). Own transaction so
 // a concurrent enrichment appending to the same pin can't clobber sources[].
-// Returns whether a new source landed; failures degrade to false — the job
-// still finishes as 'duplicate', we just don't claim "new link added".
+// False means the source was already present. A failed write must remain an
+// unresolved action; it cannot be acknowledged as a completed duplicate.
 async function appendSourceToExistingPin(pinId, source) {
   if (!firestore || !pinId) return false;
   const entry = { ...source, addedAt: new Date() };
@@ -573,17 +589,24 @@ async function appendSourceToExistingPin(pinId, source) {
       await jobContext.assertActive(txn);
       const ref = firestore.collection('pins').doc(pinId);
       const snap = await txn.get(ref);
-      if (!snap.exists) return false;
+      if (!snap.exists || (jobContext.current()?.userId && snap.data().userId!==jobContext.current().userId)) {
+        throw new EngineError('no_verified_match', { stage: 'save' });
+      }
       const { update, sourceAdded } = computeSourceAppend(snap.data() || {}, entry);
       if (Object.keys(update).length > 0) {
         txn.update(ref, { ...update, updatedAt: ts() });
       }
+      writeContentRows(txn,pinId,{...snap.data(),...update});
       return sourceAdded;
     });
   } catch (err) {
-    if (err.code==='attempt_stopped' || err.code==='dependency_timeout') throw err;
-    console.warn(`appendSourceToExistingPin failed for ${pinId}:`, err && err.message);
-    return false;
+    const error = asEngineError(err, {stage:'save'}), context = jobContext.current();
+    if (context?.outcomes) context.outcomes = context.outcomes.map(outcome => {
+      if (outcome.pinId !== pinId || outcome.status !== 'existing') return outcome;
+      const { pinId: _unconfirmedId, ...evidence } = outcome;
+      return { ...evidence, status:'unresolved', failure:failureOf(error) };
+    });
+    throw error;
   }
 }
 
@@ -613,9 +636,10 @@ async function writePinTransactional(pin, _ogData) {
     if (Object.keys(update).length > 0) {
       txn.update(docSnap.ref, { ...update, updatedAt: ts() });
     }
+    writeContentRows(txn,docSnap.id,{...docSnap.data(),...update});
     return sourceAdded;
   };
-  return await firestore.runTransaction(async (txn) => {
+  return telemetry.stage('save', () => firestore.runTransaction(async (txn) => {
     await jobContext.assertActive(txn);
     if (pin.placeId) {
       const placeSnap = await txn.get(
@@ -629,7 +653,7 @@ async function writePinTransactional(pin, _ogData) {
         return { pinId: placeSnap.docs[0].id, alreadyExists: true, sourceAdded };
       }
     }
-    if (!jobContext.current()?.retry?.resumePlaces && !jobContext.current()?.allowMultiplePlaces) {
+    if (!jobContext.current()?.retry?.resumePlaces && !jobContext.current()?.allowMultiplePlaces && !useContentIndex()) {
     const rawUrlSnap = await txn.get(
       firestore.collection('pins')
         .where('userId', '==', pin.userId)
@@ -655,8 +679,9 @@ async function writePinTransactional(pin, _ogData) {
     }
     const ref = firestore.collection('pins').doc();
     txn.set(ref, { ...pin, sources: [source], createdAt: ts(), updatedAt: ts() });
+    writeContentRows(txn,ref.id,{...pin,sources:[source]});
     return { pinId: ref.id, alreadyExists: false };
-  });
+  }));
 }
 
 /** Google Maps URL: parse → Places search → single pin. */
@@ -700,18 +725,26 @@ async function handleGoogleMapsUrl(url, userId) {
 /** AI-first pipeline: extract, dedup, AI places, Places API, return candidates. */
 async function runAIPipeline({ jobId, url, userId, captionText }) {
   const retry = jobContext.current()?.retry || {};
-  const isSocial = url.includes('instagram.com') || url.includes('tiktok.com');
+  const provider=classifyContentProvider(url);
+  const isSocial=['instagram','tiktok'].includes(provider) || (jobContext.current()?.features?.versions?.languageRouting==='multilingual-v1' && isYouTubeVideoUrl(url));
 
   let extracted = null, sourceError = null;
   let resolvedUrl = url;
   if (isSocial && !retry.resumePlaces) {
-    try {extracted = await extractPublicPost(url); resolvedUrl = extracted.webpage_url || url;}
+    try {extracted = await telemetry.stage('extraction',()=>extractPublicPost(url)); resolvedUrl = extracted.webpage_url || url;}
     catch (error) {sourceError = asEngineError(error,{stage:'source',provider:extractDomain(url)}); await recordStageFailure(jobId,{stage:'source',kind:sourceError.code,message:sourceError.message});}
+  }
+  if (extracted?.subtitle_failures?.length) {
+    const diagnostic = extracted.subtitle_failures.find(f => ['access_blocked','rate_limited','dependency_timeout'].includes(f.code)) || extracted.subtitle_failures[0];
+    sourceError = new EngineError(['access_blocked','rate_limited','dependency_timeout','source_unavailable','input_too_large','invalid_response'].includes(diagnostic.code) ? diagnostic.code : 'source_unavailable',
+      { stage: 'subtitles', provider: provider || 'source', retryAfterSeconds: diagnostic.retryAfterSeconds });
+    await recordStageFailure(jobId,{stage:'subtitles',kind:sourceError.code,message:sourceError.message});
+    metrics.current()?.recordStage('source',null,{access_blocked:'blocked',rate_limited:'rate_limited',dependency_timeout:'timeout'}[sourceError.code] || 'failed');
   }
   let ogData = {title:'',description:'',image:'',url,siteName:extractDomain(url)};
   if (extracted) ogData = {...ogData,title:extracted.title || '',description:extracted.description || '',image:extracted.thumbnail_url || ''};
   else if (!isSocial && !retry.resumePlaces) {
-    try {ogData = await fetchOGMetadata(url);}
+    try {ogData = await telemetry.stage('metadata',()=>fetchOGMetadata(url));}
     catch(error) {sourceError = asEngineError(error,{stage:'metadata',provider:'source'});}
   }
   if (retry.resumePlaces) ogData = {...ogData,...retry.ogData};
@@ -728,7 +761,9 @@ async function runAIPipeline({ jobId, url, userId, captionText }) {
   const contentId = extractContentId(canonicalUrl);
   if (contentId && !retry.resumePlaces) {
     const dup = await findPinByContentId(userId, contentId);
-    if (dup) return { duplicate: dup, candidates: [], canonicalUrl, ogData };
+    if (dup && !useContentIndex()) return { duplicate: dup, candidates: [], canonicalUrl, ogData };
+    // An index membership proves only that a source was attached. It cannot
+    // complete a multi-place post; cached AI and per-place dedup resolve the rest.
   }
 
   // Parse @mentions from the caption and feed them into the AI prompt so
@@ -737,6 +772,9 @@ async function runAIPipeline({ jobId, url, userId, captionText }) {
   const mentionedAccounts = parseMentionedAccounts(ogData.description || '');
   ogData.accountTags = extracted?.accountTags || [];
   ogData.subtitles = extracted?.subtitles || '';
+  ogData.subtitleTracks=(extracted?.subtitle_tracks || []).map(({language,provenance})=>({language,provenance}));
+  metrics.current()?.language(extracted?.subtitle_tracks?.[0]?.language?.split('-')[0] || 'unknown');
+  metrics.current()?.evidence({title:!!ogData.title,caption:!!ogData.description,subtitles:!!ogData.subtitles,mentions:!!mentionedAccounts.length,hashtags:!!extracted?.hashtags?.length});
   ogData.hashtags = extracted?.hashtags || [];
 
   // AI extract places (multi) — text signals only
@@ -748,6 +786,7 @@ async function runAIPipeline({ jobId, url, userId, captionText }) {
     hashtags: extracted && extracted.hashtags,
     uploader: extracted && extracted.uploader,
     subtitles: extracted && extracted.subtitles,
+    subtitleTracks: ogData.subtitleTracks,
     mentionedAccounts,
     shareText,
     accountTags: extracted?.accountTags || [],
@@ -987,7 +1026,7 @@ async function runEnrichmentInner(jobId, url, userId, captionText) {
     const context = jobContext.current();
     await jobContext.assertActive();
     context.retry = await getRetryContext(firestore,jobId,userId,url);
-    const existingByUrl = context.retry.resumePlaces ? null : await findPinByUrl(userId, url);
+    const existingByUrl = context.retry.resumePlaces || useContentIndex() ? null : await findPinByUrl(userId, url);
     if (existingByUrl) {
       await finishDuplicate(existingByUrl, false);
       return;
@@ -1002,14 +1041,8 @@ async function runEnrichmentInner(jobId, url, userId, captionText) {
         if (result.alreadyExists) {
           await finishDuplicate({ id: result.pinId, placeName: pin.placeName }, result.sourceAdded);
         } else {
-          // Interest-profile update for the NEW pin this request just wrote.
-          // Fire-and-forget (S5 interest-profile-server-side plan, Task 2):
-          // this job runs through the /enrich cloud-function-driven pipeline,
-          // where the client's own updateInterestProfile call (enrichmentService.ts
-          // processUrl) never fires — that function only runs on the client's
-          // local-fallback pipeline, which the standard server path always
-          // skips via an early `continue`. This is the only writer for this
-          // pin save; no double-count risk against the client call.
+          // Compatibility acknowledgement only. The committed pin trigger
+          // owns canonical history and counters across every save path.
           recordPinSaved(userId, { category: pin.category, city: pin.city, country: pin.country }).catch(() => {});
           await updateJob(jobId, { status: 'complete', pinId: result.pinId, completedAt: ts() });
           await sendPushForJob(jobId, userId, 'complete', { placeName: pin.placeName, pinId: result.pinId });
@@ -1041,11 +1074,21 @@ async function runEnrichmentInner(jobId, url, userId, captionText) {
     // verdicts point existingPinId at it so the "new link added" push opens
     // a pin that really has the new source.
     let appendedPin = null;
-    for (const match of existingMatches) {
-      const added = await appendSourceToExistingPin(
-        match.id,
-        sourceEntryFor(ai.canonicalUrl || url, ai.ogData),
-      );
+    for (let index=0; index<existingMatches.length; index++) {
+      const match=existingMatches[index];
+      let added;
+      try { added = await appendSourceToExistingPin(match.id, sourceEntryFor(ai.canonicalUrl || url, ai.ogData)); }
+      catch (error) {
+        // Later matching pins have not received this source yet. A stopped
+        // loop must not convert those unattempted attachments into saves.
+        const unattempted=new Set(existingMatches.slice(index+1).map(pin=>pin.id));
+        context.outcomes=(context.outcomes || []).map(outcome=>{
+          if(!unattempted.has(outcome.pinId) || outcome.status!=='existing') return outcome;
+          const {pinId:_unconfirmedId,...evidence}=outcome;
+          return {...evidence,status:'unresolved',failure:failureOf(new EngineError('dependency_error',{stage:'save'}))};
+        });
+        throw error;
+      }
       appendedToExisting = appendedToExisting || added;
       if (added && !appendedPin) appendedPin = match;
     }
@@ -1080,9 +1123,7 @@ async function runEnrichmentInner(jobId, url, userId, captionText) {
           await finishDuplicate({ id: result.pinId, placeName: ai.candidates[0].placeName }, result.sourceAdded || appendedToExisting);
         }
       } else {
-        // Same server-only interest-profile write as the Google Maps
-        // branch above — the client-side updateInterestProfile call never
-        // fires for this job.
+        // Compatibility no-op; committed pin events own the profile.
         recordPinSaved(userId, {
           category: ai.candidates[0].category,
           city: ai.candidates[0].city,
@@ -1138,7 +1179,7 @@ async function runEnrichmentInner(jobId, url, userId, captionText) {
           await finishDuplicate({ id: result.pinId, placeName: fallback.pin.placeName }, result.sourceAdded || appendedToExisting);
         }
       } else {
-        // Same server-only interest-profile write as the two branches above.
+        // Compatibility no-op; committed pin events own the profile.
         recordPinSaved(userId, {
           category: fallback.pin.category,
           city: fallback.pin.city,
@@ -1233,7 +1274,17 @@ async function saveSelectedPlaces(jobId,userId,selectedIds) {
 }
 
 async function runEnrichment(jobId,url,userId,captionText,options={}) {
-  return jobContext.run({jobId,userId,...options},()=>runEnrichmentInner(jobId,url,userId,captionText));
+  let features;
+  try { features = executionFeatures(options.features); }
+  catch (error) {
+    await telemetry.failAttempt(firestore,jobId,userId,options,error,'not_started');
+    throw error;
+  }
+  return jobContext.run({jobId,userId,...options,features},async()=>{
+    telemetry.start(classifyContentProvider(url) || (isGoogleMapsUrl(url)?'google_maps':'web'),options.queueMs);
+    try { return await runEnrichmentInner(jobId,url,userId,captionText); }
+    finally { await telemetry.persist(firestore).catch(()=>console.warn('Private engine metrics could not be stored')); }
+  });
 }
 
 module.exports = {

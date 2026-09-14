@@ -25,6 +25,9 @@ test('unique burst is bounded per user and excess requests become durable failur
   const jobs=await db.collection('enrichmentJobs').get();
   expect(jobs.docs.filter(d=>d.data().status==='pending')).toHaveLength(5);
   expect(jobs.docs.filter(d=>d.data().failure?.code==='queue_full')).toHaveLength(7);
+  const reports=await db.collection('engineMetrics').get();
+  expect(reports.docs).toHaveLength(7);
+  for(const report of reports.docs) expect(report.data()).toMatchObject({terminalReason:'queue_full',processingMs:null,processingMissingReason:'not_started',queueMs:null});
 });
 test('expired queued work fails without any provider execution',async()=>{
   await admitEnrichmentJob(db,input('old'));

@@ -1,0 +1,12 @@
+.git
+**/node_modules
+.env
+.env.*
+**/.env
+**/.env.*
+**/*service-account*.json
+**/*credentials*.json
+artifacts
+coverage
+**/*-debug.log
+.DS_Store

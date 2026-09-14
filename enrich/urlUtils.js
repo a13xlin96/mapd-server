@@ -9,6 +9,8 @@ function extractDomain(url) {
 }
 
 function determineSourceApp(url) {
+  const provider = require('../lib/contentProvider').classifyContentProvider(url);
+  if (provider) return provider;
   const domain = extractDomain(url).toLowerCase();
   const knownApps = {
     tiktok: 'tiktok',
@@ -26,22 +28,7 @@ function determineSourceApp(url) {
   return knownApps[domain] || 'other';
 }
 
-function extractContentId(url) {
-  try {
-    const tiktokMatch = url.match(/tiktok\.com.*\/(?:video|photo)\/(\d+)/);
-    if (tiktokMatch) return `tiktok:${tiktokMatch[1]}`;
-
-    const instaMatch = url.match(/instagram\.com\/(?:p|reel|tv)\/([A-Za-z0-9_-]+)/);
-    if (instaMatch) return `instagram:${instaMatch[1]}`;
-
-    const ytMatch = url.match(/(?:youtube\.com\/.*[?&]v=|youtu\.be\/|youtube\.com\/shorts\/)([A-Za-z0-9_-]+)/);
-    if (ytMatch) return `youtube:${ytMatch[1]}`;
-
-    return null;
-  } catch {
-    return null;
-  }
-}
+const { contentIdFor: extractContentId } = require('../functions/lib/contentIdentity');
 
 function normalizeUrl(url) {
   try {

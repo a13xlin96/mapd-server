@@ -10,7 +10,7 @@ const { isAllowedExtractUrl } = require('./lib/urlValidation');
 const { runEnrichment,saveSelectedPlaces } = require('./enrich');
 const {admitEnrichmentJob} = require('./lib/enrichAdmission');
 const {createWorker} = require('./lib/enrichmentWorker');
-const worker = createWorker({db:firestore,runEnrichment,push:require('./lib/push').sendPushForJob});
+const worker = createWorker({policy:require('./lib/engineRuntimeConfig').queuePolicy(),db:firestore,runEnrichment,push:require('./lib/push').sendPushForJob});
 const { router: adminRouter } = require('./lib/admin');
 const { router: listMembershipRouter } = require('./lib/listMembership');
 const { interestProfileRouter } = require('./lib/interestProfile');
@@ -62,6 +62,14 @@ const visionLimiter = rateLimit({
 // Admin endpoints (collaborative-lists migration). Gated by ADMIN_TOKEN env
 // var — not a Firebase Auth ID token. See lib/admin.js for the workflow.
 app.use(adminRouter);
+
+// Returns only the caller assigned versions; never internal UID lists/config.
+app.get('/engine/features',apiLimiter,authenticateRequest,(req,res)=>{
+  const {getEngineFeatures}=require('./lib/engineRuntimeConfig');
+  const features=getEngineFeatures().selectForVerifiedUid(req.authUid);
+  res.json({features,workerQueuePolicy:worker.policy,queuePolicyScope:'fleet',
+    queueFleetContract:'engineControl/queueRollout'});
+});
 
 // listMembership's router-mounted routes deliberately don't get apiLimiter
 // (they're keyed on a listId+pinId the caller must already know/own).
@@ -121,7 +129,8 @@ app.use(interestProfileRouter);
 
 // Health check
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', service: 'mapd-link-extractor' });
+  res.json({ status: 'ok', service: 'mapd-link-extractor', workerQueuePolicy: worker.policy,
+    queueFleetContract: 'engineControl/queueRollout' });
 });
 
 // Privacy Policy

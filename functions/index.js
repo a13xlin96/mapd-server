@@ -5,7 +5,7 @@
 //
 // See plan: ~/.claude/plans/run-codex-adversarial-review-on-every-refactored-nest.md
 
-const { onDocumentCreated } = require('firebase-functions/v2/firestore');
+const { onDocumentCreated, onDocumentWritten, onDocumentDeleted } = require('firebase-functions/v2/firestore');
 const { defineSecret } = require('firebase-functions/params');
 const { setGlobalOptions } = require('firebase-functions/v2');
 const admin = require('firebase-admin');
@@ -167,3 +167,14 @@ exports.enrichOnPendingJob = onDocumentCreated(
 
 // Test surface.
 exports._internal = { createEnrichOnPendingJobHandler };
+
+// Shadow projections cover all committed save paths, including old clients.
+// Capture remains disabled until accountingControls/current is initialized.
+const { createPinAccounting } = require('./lib/pinAccounting');
+const accounting = createPinAccounting({ db: admin.firestore(), admin });
+exports.accountingPinWritten = onDocumentWritten(
+  { document: 'pins/{pinId}', timeoutSeconds: 120, retry: true }, accounting.onPinWritten);
+exports.accountingVisitWritten = onDocumentWritten(
+  { document: 'pins/{pinId}/visits/{userId}', timeoutSeconds: 120, retry: true }, accounting.onVisitWritten);
+exports.accountingUserDeleted = onDocumentDeleted(
+  { document: 'users/{userId}', timeoutSeconds: 120, retry: true }, accounting.onUserDeleted);

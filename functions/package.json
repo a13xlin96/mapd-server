@@ -8,8 +8,12 @@
     "node": "20"
   },
   "scripts": {
-    "test": "jest --passWithNoTests",
-    "deploy": "firebase deploy --only functions:enrichOnPendingJob"
+    "test": "jest --roots tests",
+    "deploy": "firebase deploy --config ../firebase.json --only functions:enrichOnPendingJob",
+    "deploy:enrichment": "firebase deploy --config ../firebase.json --only functions:enrichOnPendingJob",
+    "deploy:accounting": "firebase deploy --config ../firebase.json --only functions:accountingPinWritten,functions:accountingVisitWritten,functions:accountingUserDeleted",
+    "accounting:repair": "node ../scripts/accounting-repair.js",
+    "test:ci": "npm test -- --ci --runInBand"
   },
   "dependencies": {
     "axios": "^1.7.9",

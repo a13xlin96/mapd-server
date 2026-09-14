@@ -78,7 +78,7 @@ async function searchGooglePlaces(query, locationBias, locationRestriction) {
         timeout: 10000,
         maxContentLength: 1024*1024,
       }
-    ),4);
+    ),4,{stage:'matching',rateKey:'places_search'});
 
     const places = (response.data && response.data.places) || [];
     const results = places.map(mapNewToLegacy);
@@ -211,7 +211,7 @@ async function getPlaceDetails(placeId) {
         timeout: 10000,
         maxContentLength: 1024*1024,
       }
-    ),4);
+    ),4,{stage:'details',rateKey:'places_details'});
 
     const r = response.data;
     const displayName = r.displayName;

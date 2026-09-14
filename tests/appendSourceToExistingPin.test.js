@@ -98,9 +98,8 @@ describe('appendSourceToExistingPin', () => {
     expect(fs.read('pins', 'pin1').url).toBe(VIDEO_B);
   });
 
-  test('returns false without throwing when the pin is gone', async () => {
-    const added = await appendSourceToExistingPin('missing_pin', NEW_SOURCE);
-    expect(added).toBe(false);
+  test('a disappeared pin is a failed match, not an unchanged successful source', async () => {
+    await expect(appendSourceToExistingPin('missing_pin', NEW_SOURCE)).rejects.toMatchObject({code:'no_verified_match',stage:'save'});
   });
 
   test('does NOT rewrite a non-social pin.url (Google Maps origin)', async () => {

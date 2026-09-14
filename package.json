@@ -4,7 +4,15 @@
   "private": true,
   "scripts": {
     "start": "node index.js",
-    "test": "jest --passWithNoTests"
+    "test": "jest --roots tests",
+    "test:ci": "npm test -- --ci --runInBand",
+    "test:features": "npm test -- --runInBand --runTestsByPath tests/engineFeatures.test.js tests/releaseManifest.test.js",
+    "test:contracts": "npm test -- --ci --runInBand --runTestsByPath tests/engine.http.test.js tests/engine.selection.test.js",
+    "evaluate:engine": "node -e \"if (!require('./tests/engine/fixtures.json').length) throw new Error('No regression fixtures')\" && node scripts/evaluate-engine.js --strict",
+    "test:load": "node scripts/test-engine-load.js",
+    "test:accounting:emulator": "node --test tests/emulator/accounting.integration.js",
+    "test:worker:emulator": "node scripts/test-worker-emulator.js",
+    "release:manifest": "node scripts/release-manifest.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",

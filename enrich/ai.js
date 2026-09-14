@@ -20,6 +20,7 @@ function normalizeInput(input) {
   for (const field of ['hashtags','mentionedAccounts','collaborators','accountTags']) {
     out[field] = Array.isArray(input[field]) ? input[field].slice(0,30) : [];
   }
+  out.subtitleTracks=(Array.isArray(input.subtitleTracks)?input.subtitleTracks:[]).slice(0,2).map(track=>({language:String(track?.language || '').slice(0,64),provenance:{original:track?.provenance?.original===true,manual:track?.provenance?.manual===true,automatic:track?.provenance?.automatic===true,translation:track?.provenance?.translation===true}}));
   // Never silently trim the tail containing addresses. An explicit bounded
   // failure is recoverable; a silently missing restaurant is not.
   if (JSON.stringify(out).length > 24000) throw new EngineError('input_too_large', {stage:'input'});
