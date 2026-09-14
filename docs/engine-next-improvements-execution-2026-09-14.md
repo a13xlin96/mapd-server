@@ -41,9 +41,17 @@ Independent Codex CLI subagents implemented bounded packages and separately revi
 
 Local integration checks passed: server 941 tests across 71 suites; separate Functions package 13 tests; app typecheck and 756 tests across 60 suites; Firestore rules 213 tests across 7 suites. Real Firestore SDK accounting/migration checks passed. Two actual fair-worker processes completed 70 jobs with a peak of four globally and one per account, including eligible users beyond the first 50 rows. All 32 synthetic processing regressions passed. Android JavaScript/assets export and the production Node entry smoke passed. These checks use stubbed extraction and synthetic credentials, not paid providers.
 
-Server independent re-review approved fleet/configuration/terminal metrics, accounting repair, baseline separation, subtitle failure handling and the stale-match fix. An additional regression now ensures that a failed source write cannot mark later, unattempted attachments as saved. Final app review closure and remote CI results are recorded separately when available.
+Server independent re-review approved fleet/configuration/terminal metrics, accounting repair, baseline separation, subtitle failure handling and the stale-match fix. An additional regression ensures that a failed source write cannot mark later, unattempted attachments as saved. Final independent app re-review approved owner-scoped selection recovery, original source metadata preservation and shared-list listener recovery; its remaining rules caveat was subsequently covered by the successful 213-test emulator run. These approvals are scoped code reviews, not physical-device or production validation.
 
 No live Instagram/TikTok scraping, provider billing, production credentials, deployment, backfill, or new installable Android preview has been performed at this checkpoint. There is no local Android SDK/device or Docker runtime available for physical lifecycle/container validation. CI contains the clean Docker build and entry-point smoke gate; a local JavaScript export is not a substitute.
+
+## Review branches and hosted checks
+
+- App implementation: `92c98c1`, branch `feat/engine-next-improvements`, checkout `/Users/alexlin/workspace/mapd-next`. [Draft PR #13](https://github.com/a13xlin96/mapd/pull/13) includes the prior unmerged onboarding, thumbnail, share and retry fixes. [GitHub run 34867448029](https://github.com/a13xlin96/mapd/actions/runs/34867448029) passed all three jobs: checks, rules and Android export.
+- Server implementation: `7377d1a`, same branch name, checkout `/Users/alexlin/workspace/mapd-server-next`. It includes the prior unmerged thumbnail and extraction changes. Publication to the public server repository was blocked by automatic approval review pending explicit user approval to upload this code/history. Server hosted/container CI has therefore not run.
+- The Expo Android preview upload/build was separately blocked by automatic approval review pending explicit user approval for this branch upload and potential build credits. No installable APK has been produced for these changes.
+- Local provenance archives and a manifest identify the tested Android JavaScript/assets export and server source archive. They are not an APK or container image, and do not establish deployment.
+- Both original checkouts remain intact. No merge, production deployment, data migration or behavioral-history deletion was performed.
 
 ## Operator sequence after code review
 
