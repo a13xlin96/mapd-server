@@ -8,6 +8,7 @@ const SENTINEL = Symbol('FakeFieldValue');
 class FakeTimestamp {
   constructor(ms) { this.ms = ms; }
   toMillis() { return this.ms; }
+  toDate() { return new Date(this.ms); }
   static fromMillis(ms) { return new FakeTimestamp(ms); }
   static now() { return new FakeTimestamp(Date.now()); }
 }
@@ -74,6 +75,7 @@ function compareNumeric(v, op, value) {
 
 function valuesMatch(v, op, value) {
   if (op === '==') return v === value;
+  if (op === 'array-contains') return Array.isArray(v) && v.includes(value);
   return compareNumeric(v, op, value);
 }
 
@@ -85,6 +87,13 @@ class FakeDocRef {
   }
   async set(data, options = {}) { return this._setSync(data, options); }
   async update(data) { return this._setSync(data, { merge: true }); }
+  async delete() { return this._deleteSync(); }
+  _deleteSync() {
+    const failure = this.store.shouldFailWrite(this.collection, this.id);
+    if (failure) throw failure;
+    this.store.collections.get(this.collection)?.delete(this.id);
+    this.store.docTimes.delete(`${this.collection}/${this.id}`);
+  }
   _setSync(data, options = {}) {
     const failure = this.store.shouldFailWrite(this.collection, this.id);
     if (failure) throw failure;
@@ -92,6 +101,9 @@ class FakeDocRef {
       this.store.collections.set(this.collection, new Map());
     }
     const map = this.store.collections.get(this.collection);
+    const key = `${this.collection}/${this.id}`;
+    const previousTime = this.store.docTimes.get(key);
+    this.store.docTimes.set(key, { create: previousTime?.create ?? this.store.now(), update: this.store.now() });
     const current = options.merge ? map.get(this.id) : undefined;
     map.set(this.id, applyMergeOps(current, data, this.store.now()));
   }
@@ -103,11 +115,14 @@ class FakeDocRef {
 }
 
 function makeDocSnap(store, collection, id, data) {
+  const times = store.docTimes.get(`${collection}/${id}`);
   return {
     id,
     exists: data !== undefined,
     data: () => data,
     ref: new FakeDocRef(store, collection, id),
+    createTime: times ? FakeTimestamp.fromMillis(times.create) : undefined,
+    updateTime: times ? FakeTimestamp.fromMillis(times.update) : undefined,
   };
 }
 
@@ -187,6 +202,7 @@ class FakeCollection {
 class FakeFirestore {
   constructor() {
     this.collections = new Map();
+    this.docTimes = new Map();
     this.nowFn = () => Date.now();
     this._txnReadHook = null;
     this._writeFailure = null;
@@ -195,6 +211,7 @@ class FakeFirestore {
   }
   reset() {
     this.collections = new Map();
+    this.docTimes = new Map();
     this.nowFn = () => Date.now();
     this._txnReadHook = null;
     this._writeFailure = null;
@@ -222,6 +239,7 @@ class FakeFirestore {
   seed(collection, id, data) {
     if (!this.collections.has(collection)) this.collections.set(collection, new Map());
     this.collections.get(collection).set(id, { ...data });
+    this.docTimes.set(`${collection}/${id}`, { create: this.now(), update: this.now() });
   }
   read(collection, id) {
     const map = this.collections.get(collection);
@@ -236,16 +254,25 @@ class FakeFirestore {
     let release;
     this._txnQueue = new Promise((r) => { release = r; });
     await prev;
+    const backup = new Map([...this.collections].map(([name, docs]) => [name, new Map(docs)]));
+    const timesBackup = new Map(this.docTimes);
     try {
+      let written = false;
       const txn = {
         get: async (ref) => {
+          if (written && this.strictReadOrder) throw new Error('Firestore transactions require all reads before writes');
           if (this._txnReadHook) await this._txnReadHook(ref);
           return ref.get();
         },
-        set: (ref, data, options) => ref._setSync(data, options || {}),
-        update: (ref, data) => ref._setSync(data, { merge: true }),
+        set: (ref, data, options) => { written = true; ref._setSync(data, options || {}); },
+        update: (ref, data) => { written = true; ref._setSync(data, { merge: true }); },
+        delete: (ref) => { written = true; ref._deleteSync(); },
       };
       return await fn(txn);
+    } catch (error) {
+      this.collections = backup;
+      this.docTimes = timesBackup;
+      throw error;
     } finally {
       release();
     }

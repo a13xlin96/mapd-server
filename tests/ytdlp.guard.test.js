@@ -23,6 +23,13 @@ beforeEach(() => {
 });
 
 describe('runYtDlp security wiring', () => {
+  test.each(['https://evil.youtube.com/watch?v=abc', 'https://evil.instagram.com/p/abc/',
+    'https://notinstagram.com/p/abc/', 'https://tiktok.com.evil.test/@u/video/123',
+    'https://evil.tiktok.com/@u/video/123'])('rejects noncanonical social host %s before spawning', async url => {
+    await expect(runYtDlp(url)).rejects.toMatchObject({ code: 'INVALID_URL' });
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
   test('rejects a non-allowlisted URL with INVALID_URL without spawning yt-dlp', async () => {
     await expect(runYtDlp('https://evil.example.com/x')).rejects.toMatchObject({
       code: 'INVALID_URL',

@@ -1,3 +1,5 @@
+// Each test supplies a different synthetic post for the same URL; isolate its cache.
+jest.mock('../lib/cache',()=>({...jest.requireActual('../lib/cache'),getCached:jest.fn(async()=>null),setCache:jest.fn(async()=>{})}));
 // End-to-end runEnrichment coverage for the "unique video about an
 // already-pinned place" bug: the server used to mark the job 'duplicate'
 // and drop the new link entirely. New contract:
@@ -55,6 +57,7 @@ jest.mock('../enrich/ai', () => ({
 jest.mock('../enrich/places', () => ({
   searchGooglePlaces: jest.fn(),
   getPlaceDetails: jest.fn(),
+  getCachedPlaceDetails: jest.fn(),
   findPlaceFromUrl: jest.fn().mockResolvedValue(null),
 }));
 jest.mock('../lib/push', () => ({
@@ -67,7 +70,7 @@ jest.mock('../lib/push', () => ({
 const { getSharedFirestore, FakeTimestamp } = require('./helpers/fakeFirestore');
 const { runYtDlp } = require('../lib/ytdlp');
 const { aiExtractPlaces, aiExtractPlace } = require('../enrich/ai');
-const { searchGooglePlaces, getPlaceDetails } = require('../enrich/places');
+const { searchGooglePlaces, getPlaceDetails, getCachedPlaceDetails } = require('../enrich/places');
 const { sendPushForJob } = require('../lib/push');
 const { runEnrichment } = require('../enrich');
 
@@ -119,6 +122,7 @@ beforeEach(() => {
   fs.reset();
   jest.clearAllMocks();
   getPlaceDetails.mockResolvedValue(null);
+  getCachedPlaceDetails.mockReset().mockResolvedValue(null);
 });
 
 describe('runEnrichment — place already pinned, NEW video', () => {
@@ -129,7 +133,7 @@ describe('runEnrichment — place already pinned, NEW video', () => {
     // yt-dlp resolves the short share URL to video B's canonical URL.
     runYtDlp.mockResolvedValue({
       title: 'another ramen video',
-      description: 'best ramen in nyc',
+      description: 'Ramen Spot in NYC',
       webpage_url: VIDEO_B,
       thumbnail_url: 'https://img.example/b.jpg',
       hashtags: [],
@@ -195,7 +199,7 @@ describe('runEnrichment — place already pinned, NEW video', () => {
 
     runYtDlp.mockResolvedValue({
       title: 'ramen and tacos tour',
-      description: 'two spots you need',
+      description: 'Ramen Spot and Taco Stand in New York',
       webpage_url: VIDEO_B,
       thumbnail_url: '',
       hashtags: [],
@@ -230,7 +234,7 @@ describe('runEnrichment — place already pinned, NEW video', () => {
     expect(['complete', 'needs_selection']).toContain(job.status);
   });
 
-  test('existing match + UNRESOLVED place: OG fallback still runs, and a dead fallback keeps the duplicate verdict with sourceAdded', async () => {
+  test('existing match + unresolved place retains a partial result and its source link', async () => {
     // Codex P3: candidates.length === 0 can also mean "Places couldn't
     // resolve a name", not "everything already pinned". The OG fallback must
     // still get its shot at the unresolved place; but if it comes up empty,
@@ -241,7 +245,7 @@ describe('runEnrichment — place already pinned, NEW video', () => {
 
     runYtDlp.mockResolvedValue({
       title: 'ramen and a mystery spot',
-      description: 'two places',
+      description: 'Ramen Spot in New York and Mystery Cafe in Nowhere',
       webpage_url: VIDEO_B,
       thumbnail_url: '',
       hashtags: [],
@@ -262,12 +266,14 @@ describe('runEnrichment — place already pinned, NEW video', () => {
 
     await runEnrichment('job4', SHORT_B, USER, '');
 
-    // The fallback was attempted for the unresolved place...
-    expect(aiExtractPlace).toHaveBeenCalled();
+    // The parsed empty result is reused; fallback does not spend on another AI call.
+    expect(aiExtractPlace).not.toHaveBeenCalled();
 
-    // ...but the job still reports the salvaged share, not failure.
+    // The source was saved, but the unresolved place must stay actionable.
     const job = fs.read('enrichmentJobs', 'job4');
-    expect(job.status).toBe('duplicate');
+    expect(job.status).toBe('failed');
+    expect(job.failure.code).toBe('partial_save');
+    expect(job.progress).toEqual({saved:1,total:2});
     expect(job.sourceAdded).toBe(true);
     expect(fs.read('pins', 'pin_ramen').sources).toHaveLength(2);
 
@@ -289,7 +295,7 @@ describe('runEnrichment — place already pinned, NEW video', () => {
 
     runYtDlp.mockResolvedValue({
       title: 'ramen and tacos tour',
-      description: 'two spots',
+      description: 'Ramen Spot and Taco Stand in New York',
       webpage_url: VIDEO_B,
       thumbnail_url: '',
       hashtags: [],
@@ -304,10 +310,10 @@ describe('runEnrichment — place already pinned, NEW video', () => {
     });
     searchGooglePlaces.mockImplementation(async (query) =>
       query.includes('Ramen') ? [RAMEN_PLACE] : [TACO_PLACE]);
-    // Simulate the concurrent save: by the time details are fetched (after
+    // Simulate the concurrent save: by the time the detail cache is checked (after
     // the loop's findPinByPlaceId check), the taco pin exists with this
     // exact share already as its url.
-    getPlaceDetails.mockImplementation(async () => {
+    getCachedPlaceDetails.mockImplementation(async () => {
       if (!fs.read('pins', 'pin_taco')) {
         fs.seed('pins', 'pin_taco', {
           userId: USER,
@@ -340,4 +346,41 @@ describe('runEnrichment — place already pinned, NEW video', () => {
       expect.objectContaining({ pinId: 'pin_ramen', sourceAdded: true }),
     );
   });
+});
+
+
+test('explicit partial retry bypasses whole-link dedup but keeps place-ID dedup',async()=>{
+  seedJob('partial');
+  runYtDlp.mockResolvedValue({title:'Ramen and tacos',description:'Ramen Spot and Taco Stand in New York',webpage_url:VIDEO_B});
+  aiExtractPlaces.mockResolvedValue({places:[{name:'Ramen Spot',city:'New York'},{name:'Taco Stand',city:'New York'}]});
+  searchGooglePlaces.mockImplementation(async q=>q.includes('Ramen')?[RAMEN_PLACE]:[]);
+  await runEnrichment('partial',SHORT_B,USER,'');
+  const parent=fs.read('enrichmentJobs','partial');
+  expect(parent.failure.code).toBe('partial_save');expect(parent.progress).toEqual({saved:1,total:2});
+  fs.seed('enrichmentJobs','retry',{status:'processing',userId:USER,url:SHORT_B,retryOf:'partial'});
+  aiExtractPlaces.mockClear();runYtDlp.mockClear();
+  searchGooglePlaces.mockResolvedValue([TACO_PLACE]);
+  await runEnrichment('retry',SHORT_B,USER,'');
+  expect(aiExtractPlaces).not.toHaveBeenCalled();expect(runYtDlp).not.toHaveBeenCalled();
+  const child=fs.read('enrichmentJobs','retry');
+  expect(child.status).toBe('complete');expect(child.progress).toEqual({saved:2,total:2});
+  expect(child.pinId).not.toBe(parent.pinId);
+});
+test('another account cannot resume a private parent job',async()=>{
+  fs.seed('enrichmentJobs','private-parent',{userId:'other',url:VIDEO_B,status:'failed',outcomes:[{name:'Secret Cafe',status:'unresolved'}]});
+  fs.seed('enrichmentJobs','attacker',{userId:USER,url:VIDEO_B,status:'processing',retryOf:'private-parent'});
+  aiExtractPlaces.mockClear();
+  await runEnrichment('attacker',VIDEO_B,USER,'');
+  expect(fs.read('enrichmentJobs','attacker').failure.code).toBe('access_blocked');
+  expect(aiExtractPlaces).not.toHaveBeenCalled();
+});
+
+test('an uncertain tag match on an already saved place still requires selection before source attachment',async()=>{
+  seedJob('tag-existing');seedRamenPin();
+  runYtDlp.mockResolvedValue({title:'Dinner',description:'Dinner @ramenspot in New York',webpage_url:VIDEO_B});
+  aiExtractPlaces.mockResolvedValue({places:[{name:'Ramen Spot',city:'New York',source:'handle',handle:'ramenspot'}]});
+  searchGooglePlaces.mockResolvedValue([RAMEN_PLACE]);
+  await runEnrichment('tag-existing',SHORT_B,USER,'');
+  expect(fs.read('enrichmentJobs','tag-existing').status).toBe('needs_selection');
+  expect(fs.read('pins','pin_ramen').sources).toHaveLength(1);
 });

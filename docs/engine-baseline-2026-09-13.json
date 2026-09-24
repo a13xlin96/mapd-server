@@ -1,0 +1,199 @@
+{
+  "scope": "synthetic component regression benchmark; not measured live accuracy",
+  "total": 32,
+  "passed": 12,
+  "cases": [
+    {
+      "id": "double-quote",
+      "kind": "metadata",
+      "split": "development",
+      "passed": true
+    },
+    {
+      "id": "apostrophe",
+      "kind": "metadata",
+      "split": "development",
+      "passed": false
+    },
+    {
+      "id": "reverse-attributes",
+      "kind": "metadata",
+      "split": "development",
+      "passed": true
+    },
+    {
+      "id": "single-quote",
+      "kind": "metadata",
+      "split": "holdout",
+      "passed": false
+    },
+    {
+      "id": "entities",
+      "kind": "metadata",
+      "split": "development",
+      "passed": true
+    },
+    {
+      "id": "case-insensitive",
+      "kind": "metadata",
+      "split": "development",
+      "passed": true
+    },
+    {
+      "id": "unquoted-name",
+      "kind": "metadata",
+      "split": "development",
+      "passed": false
+    },
+    {
+      "id": "line-break",
+      "kind": "metadata",
+      "split": "holdout",
+      "passed": true
+    },
+    {
+      "id": "non-latin",
+      "kind": "metadata",
+      "split": "development",
+      "passed": true
+    },
+    {
+      "id": "empty-valid",
+      "kind": "metadata",
+      "split": "development",
+      "passed": true
+    },
+    {
+      "id": "venue-handle",
+      "kind": "mentions",
+      "split": "development",
+      "passed": true
+    },
+    {
+      "id": "official-handle",
+      "kind": "mentions",
+      "split": "holdout",
+      "passed": false
+    },
+    {
+      "id": "suffix-handle",
+      "kind": "mentions",
+      "split": "development",
+      "passed": false
+    },
+    {
+      "id": "case-dedup",
+      "kind": "mentions",
+      "split": "development",
+      "passed": true
+    },
+    {
+      "id": "six-mentions",
+      "kind": "mentions",
+      "split": "development",
+      "passed": false
+    },
+    {
+      "id": "email-not-handle",
+      "kind": "mentions",
+      "split": "holdout",
+      "passed": false
+    },
+    {
+      "id": "short-handle",
+      "kind": "mentions",
+      "split": "development",
+      "passed": false
+    },
+    {
+      "id": "trailing-punctuation",
+      "kind": "mentions",
+      "split": "development",
+      "passed": false
+    },
+    {
+      "id": "caption-tail",
+      "kind": "cache",
+      "split": "development",
+      "passed": false
+    },
+    {
+      "id": "hashtag-context",
+      "kind": "cache",
+      "split": "holdout",
+      "passed": false
+    },
+    {
+      "id": "uploader-context",
+      "kind": "cache",
+      "split": "development",
+      "passed": false
+    },
+    {
+      "id": "transcript-tail",
+      "kind": "cache",
+      "split": "development",
+      "passed": false
+    },
+    {
+      "id": "truncated",
+      "kind": "validation",
+      "split": "development",
+      "passed": false
+    },
+    {
+      "id": "invalid-json",
+      "kind": "validation",
+      "split": "holdout",
+      "passed": false
+    },
+    {
+      "id": "wrong-shape",
+      "kind": "validation",
+      "split": "development",
+      "passed": false
+    },
+    {
+      "id": "invalid-item",
+      "kind": "validation",
+      "split": "development",
+      "passed": false
+    },
+    {
+      "id": "refusal",
+      "kind": "validation",
+      "split": "development",
+      "passed": false
+    },
+    {
+      "id": "caption-only-name",
+      "kind": "matching",
+      "split": "holdout",
+      "passed": false
+    },
+    {
+      "id": "wrong-city",
+      "kind": "matching",
+      "split": "development",
+      "passed": true
+    },
+    {
+      "id": "no-evidence",
+      "kind": "matching",
+      "split": "development",
+      "passed": true
+    },
+    {
+      "id": "address-confirmed",
+      "kind": "matching",
+      "split": "development",
+      "passed": true
+    },
+    {
+      "id": "non-latin-match",
+      "kind": "matching",
+      "split": "holdout",
+      "passed": false
+    }
+  ]
+}

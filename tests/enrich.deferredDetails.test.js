@@ -1,0 +1,44 @@
+jest.mock('../lib/firestore',()=>{const {getSharedFirestore,makeAdmin}=require('./helpers/fakeFirestore');return {firestore:getSharedFirestore(),admin:makeAdmin()};});
+jest.mock('../lib/push',()=>({sendPushForJob:jest.fn()}));
+jest.mock('../lib/thumbnails',()=>({persistThumbnail:jest.fn(async()=> '')}));
+jest.mock('../enrich/ai',()=>({aiExtractPlaces:jest.fn(),aiExtractPlace:jest.fn(),aiVerifyPlace:jest.fn()}));
+jest.mock('../lib/extraction',()=>({extractPublicPost:jest.fn()}));
+jest.mock('../enrich/places',()=>({searchGooglePlaces:jest.fn(),getPlaceDetails:jest.fn(),getCachedPlaceDetails:jest.fn(async()=>null)}));
+const {firestore:db,admin}=require('../lib/firestore');
+const {runEnrichment,saveSelectedPlaces}=require('../enrich');
+const {createPinDetails}=require('../lib/pinDetails');
+const ai=require('../enrich/ai'),places=require('../enrich/places'),source=require('../lib/extraction');
+const url='https://www.instagram.com/reel/ManyPlaces/';
+beforeEach(()=>{
+  db.reset();db.setNow(()=>100000);jest.clearAllMocks();db.seed('users','u',{});
+  db.seed('enrichmentJobs','job',{userId:'u',url,status:'processing'});
+  const names=Array.from({length:10},(_,i)=>`Cafe ${i}`);
+  source.extractPublicPost.mockResolvedValue({title:'10 cafes in Kyoto',description:names.join(', ')+', Kyoto, Japan',webpage_url:url});
+  ai.aiExtractPlaces.mockResolvedValue({places:names.map(name=>({name,city:'Kyoto',country:'Japan',source:'caption'}))});
+  places.searchGooglePlaces.mockImplementation(async query=>[{place_id:query.split(' ').slice(0,2).join('-'),name:query.split(' ').slice(0,2).join(' '),formatted_address:'Kyoto, Japan',geometry:{location:{lat:35,lng:135}},types:['cafe']}]);
+  places.getPlaceDetails.mockImplementation(async id=>({name:id,types:['cafe'],rating:4.5}));
+});
+afterEach(()=>db.setNow(()=>Date.now()));
+test.each([0,3,10])('ten choices, %s selected: details only run for committed pins',async n=>{
+  await runEnrichment('job',url,'u','');
+  const job=db.read('enrichmentJobs','job');
+  expect(job.status).toBe('needs_selection');expect(job.candidates).toHaveLength(10);
+  expect(places.getPlaceDetails).not.toHaveBeenCalled();
+  expect((await db.collection('pinDetailTasks').get()).size).toBe(0);
+  await saveSelectedPlaces('job','u',job.candidates.slice(0,n).map(c=>c.placeId));
+  expect(places.getPlaceDetails).not.toHaveBeenCalled();
+  const tasks=await db.collection('pinDetailTasks').get();expect(tasks.size).toBe(n);
+  const worker=createPinDetails({db,admin,fetchDetails:places.getPlaceDetails,now:()=>100000});
+  for(const task of tasks.docs)await worker.process(task.id);
+  expect(places.getPlaceDetails).toHaveBeenCalledTimes(n);
+  expect((await db.collection('pins').get()).size).toBe(n);
+});
+test('warm rich detail cache builds full candidates without a later paid request',async()=>{
+  places.getCachedPlaceDetails.mockResolvedValueOnce({name:'Cafe 0',types:['cafe'],rating:4.8});
+  await runEnrichment('job',url,'u','');
+  const candidate=db.read('enrichmentJobs','job').candidates[0];
+  expect(candidate).toMatchObject({rating:4.8,detailsState:'complete',businessStatus:null});
+  await saveSelectedPlaces('job','u',[candidate.placeId]);
+  expect((await db.collection('pinDetailTasks').get()).size).toBe(0);
+  expect(places.getPlaceDetails).not.toHaveBeenCalled();
+});

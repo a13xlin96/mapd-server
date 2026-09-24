@@ -14,7 +14,7 @@ const src = fs.readFileSync(path.join(__dirname, '..', 'index.js'), 'utf8');
 
 describe('route guards', () => {
   test.each([
-    '/extract', '/ai/extract-places', '/ai/extract-place',
+    '/thumbnails/persist', '/extract', '/ai/extract-places', '/ai/extract-place',
     '/ai/verify-place', '/ai/infer-place-regions', '/enrich',
   ])('%s is registered with apiLimiter + authenticateRequest', (route) => {
     const re = new RegExp(

@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 1,
+  "scope": "local-implementation-verification",
+  "paidCalls": false,
+  "deployed": false,
+  "mobileBuildSubmitted": false,
+  "mediaEnabledByDefault": false,
+  "baselineServer": "dd145e7",
+  "baselineApp": "9b1d485",
+  "checks": [
+    {
+      "log": "/private/tmp/mapd-media-20260921/server-verified.log",
+      "sha256": "1db891fab10fafe671b4403bb2829be5e172658cd50e8ffdfcfc2226a7b4deb3",
+      "summary": [
+        "Test Suites: 3 skipped, 113 passed, 113 of 116 total",
+        "Tests:       34 skipped, 1638 passed, 1672 total"
+      ]
+    },
+    {
+      "log": "/private/tmp/mapd-media-20260921/app-verified.log",
+      "sha256": "a74df46cd5303f9284dc3618b5dabd9979d295a970e78784a93a923f8e470664",
+      "summary": [
+        "Test Suites: 80 passed, 80 total",
+        "Tests:       1173 passed, 1173 total"
+      ]
+    },
+    {
+      "log": "/private/tmp/mapd-media-20260921/app-final-typecheck.log",
+      "sha256": "7a0e1fde381c9a7fcc66a909514d617ae2a286cef4e830c01de61164c9f77560",
+      "summary": []
+    },
+    {
+      "log": "/private/tmp/mapd-media-20260921/rules-integrated.log",
+      "sha256": "5a1f05eb82af19d0ce5dfce1c8e49dba0a083638af1af6c7885db48402844f96",
+      "summary": [
+        "Test Suites: 8 passed, 8 total",
+        "Tests:       242 passed, 242 total"
+      ]
+    },
+    {
+      "log": "/private/tmp/mapd-media-20260921/functions-final.log",
+      "sha256": "9820e476df5db774e506f0a700f851c60d293279c5873f4369a0de0771feb44b",
+      "summary": [
+        "Test Suites: 1 passed, 1 total",
+        "Tests:       13 passed, 13 total"
+      ]
+    },
+    {
+      "log": "/private/tmp/mapd-media-20260921/load-final.log",
+      "sha256": "a2a0b60ba2a73b617e738063d4d921b942252cdd63d8123f65494a324d4fbbad",
+      "summary": [
+        "{\"scope\":\"two processes, simulated Redis, stubbed provider\",\"requests\":10,\"peakProviderConcurrency\":1,\"elapsedMs\":2012}"
+      ]
+    },
+    {
+      "log": "/private/tmp/mapd-media-20260921/offline-regression-final.log",
+      "sha256": "7ba9a8ac6228128b9158b4ee336adb3fa6237b506c3b83969a72dab577a25916",
+      "summary": []
+    },
+    {
+      "log": "/private/tmp/mapd-media-20260921/tools/smoke.log",
+      "sha256": "f3a0f28c4a3534db1214b0290f0ed56db16cbd13173f1715343c4ea40fd41f19",
+      "summary": [
+        "{\"ok\":true,\"durationMs\":3000,\"chunks\":1,\"scannedFrames\":22,\"selectedTimestampsMs\":[0,1200],\"highDetail\":{\"case\":\"high-detail-eight-frame-batch\",\"sourceFrameMinBytes\":4932459,\"selectedFrames\":8,\"maxFrameBytes\":1364161,\"batchBytes\":10911656,\"width\":708,\"height\":708},\"adversarial\":[{\"case\":\"explicit-video-stream\",\"validatedStream\":0,\"ignoredStreamDimensions\":[5000,1000],\"encodedDimensions\":[320,180]},{\"case\":\"audio-pts-gap\",\"rejected\":true,\"subtitleReuseAlsoRejected\":true},{\"case\":\"100-subtitle-gaps\",\"subtitleCues\":100,\"audioChunks\":1,\"decodedIntervals\":[[0,15000]]},{\"case\":\"recoverable-video-corruption\",\"permissiveExit\":0,\"strictRejected\":true}]}"
+      ]
+    }
+  ],
+  "limitations": [
+    "No authorized real-media corpus or live model validation",
+    "No production image/hardware benchmark; local FFmpeg 7.1.5 smoke only",
+    "No physical-device end-to-end QA",
+    "Existing server test skips retained"
+  ]
+}

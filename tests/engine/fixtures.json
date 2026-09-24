@@ -1,0 +1,261 @@
+[
+  {
+    "id": "double-quote",
+    "kind": "metadata",
+    "split": "development",
+    "html": "<meta property=\"og:description\" content=\"Tai Sushi Kyoto\">",
+    "expected": "Tai Sushi Kyoto"
+  },
+  {
+    "id": "apostrophe",
+    "kind": "metadata",
+    "split": "development",
+    "html": "<meta property=\"og:description\" content=\"Don't miss Tai Sushi in Kyoto\">",
+    "expected": "Don't miss Tai Sushi in Kyoto"
+  },
+  {
+    "id": "reverse-attributes",
+    "kind": "metadata",
+    "split": "development",
+    "html": "<meta content=\"Tai Sushi Kyoto\" property=\"og:description\">",
+    "expected": "Tai Sushi Kyoto"
+  },
+  {
+    "id": "single-quote",
+    "kind": "metadata",
+    "split": "holdout",
+    "html": "<meta property='og:description' content='Tai Sushi \"Kyoto\"'>",
+    "expected": "Tai Sushi \"Kyoto\""
+  },
+  {
+    "id": "entities",
+    "kind": "metadata",
+    "split": "development",
+    "html": "<meta property=\"og:description\" content=\"Cafe &amp; Bar\">",
+    "expected": "Cafe & Bar"
+  },
+  {
+    "id": "case-insensitive",
+    "kind": "metadata",
+    "split": "development",
+    "html": "<META CONTENT=\"Kyoto\" PROPERTY=\"og:description\">",
+    "expected": "Kyoto"
+  },
+  {
+    "id": "unquoted-name",
+    "kind": "metadata",
+    "split": "development",
+    "html": "<meta property=og:description content=\"Kyoto\">",
+    "expected": "Kyoto"
+  },
+  {
+    "id": "line-break",
+    "kind": "metadata",
+    "split": "holdout",
+    "html": "<meta\nproperty=\"og:description\"\ncontent=\"Tai Sushi\nKyoto\">",
+    "expected": "Tai Sushi\nKyoto"
+  },
+  {
+    "id": "non-latin",
+    "kind": "metadata",
+    "split": "development",
+    "html": "<meta property=\"og:description\" content=\"京都の寿司\">",
+    "expected": "京都の寿司"
+  },
+  {
+    "id": "empty-valid",
+    "kind": "metadata",
+    "split": "development",
+    "html": "<html><title>Example</title></html>",
+    "expected": ""
+  },
+  {
+    "id": "venue-handle",
+    "kind": "mentions",
+    "split": "development",
+    "text": "Dinner at @taisushi.kyoto",
+    "expected": [
+      "taisushi.kyoto"
+    ]
+  },
+  {
+    "id": "official-handle",
+    "kind": "mentions",
+    "split": "holdout",
+    "text": "Dinner at @ramenofficial",
+    "expected": [
+      "ramenofficial"
+    ]
+  },
+  {
+    "id": "suffix-handle",
+    "kind": "mentions",
+    "split": "development",
+    "text": "Dinner at @cafebun",
+    "expected": [
+      "cafebun"
+    ]
+  },
+  {
+    "id": "case-dedup",
+    "kind": "mentions",
+    "split": "development",
+    "text": "@TaiSushi @taisushi",
+    "expected": [
+      "taisushi"
+    ]
+  },
+  {
+    "id": "six-mentions",
+    "kind": "mentions",
+    "split": "development",
+    "text": "@alice @bob @chris @daisy @ellen @taisushi",
+    "expected": [
+      "alice",
+      "bob",
+      "chris",
+      "daisy",
+      "ellen",
+      "taisushi"
+    ]
+  },
+  {
+    "id": "email-not-handle",
+    "kind": "mentions",
+    "split": "holdout",
+    "text": "Contact hello@example.com then @taisushi",
+    "expected": [
+      "taisushi"
+    ]
+  },
+  {
+    "id": "short-handle",
+    "kind": "mentions",
+    "split": "development",
+    "text": "Dinner at @ab",
+    "expected": [
+      "ab"
+    ]
+  },
+  {
+    "id": "trailing-punctuation",
+    "kind": "mentions",
+    "split": "development",
+    "text": "Dinner at @taisushi.",
+    "expected": [
+      "taisushi"
+    ]
+  },
+  {
+    "id": "caption-tail",
+    "kind": "cache",
+    "split": "development",
+    "signal": "caption-tail",
+    "input": "Visit Tai Sushi in Kyoto",
+    "expected": true
+  },
+  {
+    "id": "hashtag-context",
+    "kind": "cache",
+    "split": "holdout",
+    "signal": "hashtag-context",
+    "input": "tai_sushi_kyoto",
+    "expected": true
+  },
+  {
+    "id": "uploader-context",
+    "kind": "cache",
+    "split": "development",
+    "signal": "uploader-context",
+    "input": "taisushi.kyoto",
+    "expected": true
+  },
+  {
+    "id": "transcript-tail",
+    "kind": "cache",
+    "split": "development",
+    "signal": "transcript-tail",
+    "input": "Tai Sushi in Kyoto",
+    "expected": true
+  },
+  {
+    "id": "truncated",
+    "kind": "validation",
+    "split": "development",
+    "text": "{\"places\":[{\"name\":\"Tai Sushi\"",
+    "stop": "max_tokens"
+  },
+  {
+    "id": "invalid-json",
+    "kind": "validation",
+    "split": "holdout",
+    "text": "not JSON",
+    "stop": "end_turn"
+  },
+  {
+    "id": "wrong-shape",
+    "kind": "validation",
+    "split": "development",
+    "text": "{\"places\":\"Tai Sushi\"}",
+    "stop": "end_turn"
+  },
+  {
+    "id": "invalid-item",
+    "kind": "validation",
+    "split": "development",
+    "text": "{\"places\":[{\"name\":12}]}",
+    "stop": "end_turn"
+  },
+  {
+    "id": "refusal",
+    "kind": "validation",
+    "split": "development",
+    "text": "{\"places\":[]}",
+    "stop": "refusal"
+  },
+  {
+    "id": "caption-only-name",
+    "kind": "matching",
+    "split": "holdout",
+    "caption": "Tai Sushi, Kyoto",
+    "title": "",
+    "address": "388 Komeyacho, Kyoto, Japan",
+    "expected": true
+  },
+  {
+    "id": "wrong-city",
+    "kind": "matching",
+    "split": "development",
+    "caption": "Tai Sushi in Kyoto",
+    "title": "Tai Sushi",
+    "address": "Miami, Florida, USA",
+    "expected": false
+  },
+  {
+    "id": "no-evidence",
+    "kind": "matching",
+    "split": "development",
+    "caption": "Love this place",
+    "title": "A fun day",
+    "address": "Kyoto, Japan",
+    "expected": false
+  },
+  {
+    "id": "address-confirmed",
+    "kind": "matching",
+    "split": "development",
+    "caption": "Tai Sushi at 388 Komeyacho, Kyoto",
+    "title": "Tai Sushi",
+    "address": "388 Komeyacho, Kyoto, Japan",
+    "expected": true
+  },
+  {
+    "id": "non-latin-match",
+    "kind": "matching",
+    "split": "holdout",
+    "caption": "京都の寿司店",
+    "title": "京都の寿司店",
+    "address": "京都市, Japan",
+    "expected": true
+  }
+]

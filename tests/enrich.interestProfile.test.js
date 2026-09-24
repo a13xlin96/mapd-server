@@ -27,6 +27,10 @@ jest.mock('../lib/firestore', () => {
 const mockRecordPinSaved = jest.fn().mockResolvedValue(undefined);
 jest.mock('../lib/interestProfile', () => ({ recordPinSaved: mockRecordPinSaved }));
 
+jest.mock('../lib/thumbnails', () => ({
+  persistThumbnail: jest.fn(async raw => raw ? 'https://firebasestorage.googleapis.com/hosted-thumb' : ''),
+}));
+
 jest.mock('../lib/ytdlp', () => ({ runYtDlp: jest.fn() }));
 jest.mock('../lib/tiktokPhoto', () => ({
   fetchTikTokPhotoPost: jest.fn(),
@@ -111,9 +115,9 @@ test('NEW pin from the single-candidate AI path calls recordPinSaved with the pi
 
   runYtDlp.mockResolvedValue({
     title: 'a ramen video',
-    description: 'so good',
+    description: 'Ramen Spot in Austin',
     webpage_url: CANONICAL,
-    thumbnail_url: '',
+    thumbnail_url: 'https://p16.tiktokcdn.com/expiring.jpg',
     hashtags: [],
     uploader: 'foodie',
     subtitles: '',
@@ -130,6 +134,12 @@ test('NEW pin from the single-candidate AI path calls recordPinSaved with the pi
 
   const job = fs.read('enrichmentJobs', 'job_new');
   expect(job.status).toBe('complete');
+  const pin = fs.read('pins', job.pinId);
+  expect(pin.ogImage).toBe('https://firebasestorage.googleapis.com/hosted-thumb');
+  expect(pin.sources[0].ogImage).toBe(pin.ogImage);
+  expect(require('../lib/thumbnails').persistThumbnail).toHaveBeenCalledWith(
+    'https://p16.tiktokcdn.com/expiring.jpg', CANONICAL,
+  );
 
   expect(mockRecordPinSaved).toHaveBeenCalledTimes(1);
   const [uid, payload] = mockRecordPinSaved.mock.calls[0];
@@ -159,7 +169,7 @@ test('duplicate (already-pinned place) does NOT call recordPinSaved — no doubl
 
   runYtDlp.mockResolvedValue({
     title: 'another ramen video',
-    description: 'still good',
+    description: 'Ramen Spot in Austin',
     webpage_url: CANONICAL,
     thumbnail_url: '',
     hashtags: [],
@@ -182,7 +192,7 @@ test('a recordPinSaved rejection never fails the job (fire-and-forget)', async (
 
   runYtDlp.mockResolvedValue({
     title: 'a ramen video',
-    description: 'so good',
+    description: 'Ramen Spot in Austin',
     webpage_url: CANONICAL,
     thumbnail_url: '',
     hashtags: [],

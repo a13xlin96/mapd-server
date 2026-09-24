@@ -70,6 +70,12 @@ describe('enrichmentSweeper.sweep', () => {
     expect(after.status).toBe('failed');
     expect(after.failureReason).toBe('timeout');
     expect(after.failureSource).toBe('sweeper');
+    const report=fs.read('engineMetrics','stale');
+    expect(report).toMatchObject({outcome:'timeout',processingMs:null,processingMissingReason:'not_observed',queueMs:null,estimatedCost:{complete:false,totalUsd:null,reasons:['unobserved_processing']}});
+    expect(require('../lib/engineMetrics').summarizeMetrics([report]).overall.cost.totalUsd).toBeNull();
+    await sweep();
+    expect(fs.read('engineMetrics','stale').reportId).toBe(report.reportId);
+    expect(mockSendPush).toHaveBeenCalledTimes(1);
     expect(mockSendPush).toHaveBeenCalledWith('stale', 'u1', 'failed');
   });
 

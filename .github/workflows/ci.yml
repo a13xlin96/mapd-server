@@ -1,0 +1,160 @@
+name: Server CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: server-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CI: 'true'
+  NODE_ENV: test
+  # Synthetic SDK constructor value; no provider requests are allowed.
+  ANTHROPIC_API_KEY: ci-not-a-real-key
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - name: Root tests, compatibility contracts, offline regression and local load
+        # No egress, including accidental unmocked providers; loopback supports
+        # Supertest and the two-process simulated Redis service.
+        run: |
+          mkdir -p artifacts
+          sudo --preserve-env=PATH,CI,NODE_ENV,ANTHROPIC_API_KEY unshare --net bash -euc '
+            ip link set lo up
+            npm run test:ci
+            npm run test:contracts
+            npm run evaluate:engine -- --output artifacts/engine-regression.json
+            npm run test:load
+          '
+      - uses: actions/upload-artifact@v4
+        with:
+          name: server-regression-${{ github.sha }}
+          path: artifacts/engine-regression.json
+          if-no-files-found: error
+
+  functions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: functions
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: functions/package-lock.json
+      # Functions are a separate deployment package; root dependencies cannot
+      # mask missing Functions dependencies in this clean job.
+      - run: npm ci
+      - name: Functions tests without external network
+        run: |
+          sudo --preserve-env=PATH,CI,NODE_ENV unshare --net bash -euc '
+            ip link set lo up
+            npm run test:ci
+          '
+
+  accounting-and-worker-emulator:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - run: npm ci
+      - name: Prepare pinned test CLI and emulator before isolating network
+        run: |
+          npm install --prefix /tmp/mapd-test-cli --no-audit --no-fund firebase-tools@15.16.0
+          /tmp/mapd-test-cli/node_modules/.bin/firebase setup:emulators:firestore
+      - name: Real local transactions and two-process fair queue; stubbed providers
+        run: |
+          sudo --preserve-env=PATH,CI,JAVA_HOME unshare --net bash -euc '
+            ip link set lo up
+            exec runuser -u runner -- env PATH="$PATH" JAVA_HOME="$JAVA_HOME" CI=true \
+              /tmp/mapd-test-cli/node_modules/.bin/firebase emulators:exec \
+              --config tests/emulator/firebase.json --only firestore --project demo-mapd-accounting \
+              "npm run test:accounting:emulator && npm run test:worker:emulator"
+          '
+
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build production image from clean checkout
+        run: docker build --tag mapd-server:ci .
+      - name: Smoke actual entry point with no network or production credentials
+        run: |
+          docker run -d --name mapd-smoke --network none \
+            -e NODE_ENV=production -e ANTHROPIC_API_KEY=ci-not-a-real-key \
+            mapd-server:ci
+          trap 'docker logs mapd-smoke; docker rm -f mapd-smoke' EXIT
+          docker exec -i mapd-smoke node <<'NODE'
+          const assert = require('node:assert/strict');
+          (async () => {
+            let ready = false;
+            for (let i = 0; i < 30; i++) {
+              try {
+                const response = await fetch('http://127.0.0.1:3000/', {signal: AbortSignal.timeout(1000)});
+                assert.equal(response.status, 200);
+                ready = true;
+                break;
+              } catch { await new Promise(resolve => setTimeout(resolve, 1000)); }
+            }
+            assert.ok(ready, 'Server did not become ready');
+            for (const route of ['/enrich', '/enrich/selection', '/extract']) {
+              const response = await fetch(`http://127.0.0.1:3000${route}`, {
+                method: 'POST', headers: {'content-type': 'application/json'}, body: '{}',
+                signal: AbortSignal.timeout(2000),
+              });
+              assert.equal(response.status, 401, `${route} must require authentication`);
+            }
+          })().catch(error => { console.error(error); process.exitCode = 1; });
+          NODE
+      - name: Archive tested image and provenance for release manifest
+        env:
+          SOURCE_REVISION: ${{ github.sha }}
+        run: |
+          mkdir -p artifacts
+          docker save mapd-server:ci | gzip > artifacts/server-image.tar.gz
+          docker image inspect mapd-server:ci --format '{{.Id}}' > artifacts/server-image-id.txt
+          printf '%s\n' "$SOURCE_REVISION" > artifacts/server-revision.txt
+          sha256sum artifacts/server-image.tar.gz > artifacts/server-image.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: server-image-${{ github.sha }}
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 7
