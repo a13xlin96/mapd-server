@@ -57,6 +57,7 @@ jest.mock('../enrich/ai', () => ({
 jest.mock('../enrich/places', () => ({
   searchGooglePlaces: jest.fn(),
   getPlaceDetails: jest.fn(),
+  getCachedPlaceDetails: jest.fn(),
   findPlaceFromUrl: jest.fn().mockResolvedValue(null),
 }));
 jest.mock('../lib/push', () => ({
@@ -69,7 +70,7 @@ jest.mock('../lib/push', () => ({
 const { getSharedFirestore, FakeTimestamp } = require('./helpers/fakeFirestore');
 const { runYtDlp } = require('../lib/ytdlp');
 const { aiExtractPlaces, aiExtractPlace } = require('../enrich/ai');
-const { searchGooglePlaces, getPlaceDetails } = require('../enrich/places');
+const { searchGooglePlaces, getPlaceDetails, getCachedPlaceDetails } = require('../enrich/places');
 const { sendPushForJob } = require('../lib/push');
 const { runEnrichment } = require('../enrich');
 
@@ -121,6 +122,7 @@ beforeEach(() => {
   fs.reset();
   jest.clearAllMocks();
   getPlaceDetails.mockResolvedValue(null);
+  getCachedPlaceDetails.mockReset().mockResolvedValue(null);
 });
 
 describe('runEnrichment — place already pinned, NEW video', () => {
@@ -308,10 +310,10 @@ describe('runEnrichment — place already pinned, NEW video', () => {
     });
     searchGooglePlaces.mockImplementation(async (query) =>
       query.includes('Ramen') ? [RAMEN_PLACE] : [TACO_PLACE]);
-    // Simulate the concurrent save: by the time details are fetched (after
+    // Simulate the concurrent save: by the time the detail cache is checked (after
     // the loop's findPinByPlaceId check), the taco pin exists with this
     // exact share already as its url.
-    getPlaceDetails.mockImplementation(async () => {
+    getCachedPlaceDetails.mockImplementation(async () => {
       if (!fs.read('pins', 'pin_taco')) {
         fs.seed('pins', 'pin_taco', {
           userId: USER,

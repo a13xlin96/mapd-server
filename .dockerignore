@@ -10,3 +10,4 @@ artifacts
 coverage
 **/*-debug.log
 .DS_Store
+.engine-spend-outbox

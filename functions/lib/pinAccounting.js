@@ -1,4 +1,5 @@
 const { hash, validId, identities, indexRows } = require('./contentIdentity');
+const { createPinMetadataAccounting } = require('./pinMetadataAccounting');
 const SCHEMA = 2;
 const millis = value => typeof value?.toMillis === 'function' ? value.toMillis()
   : value instanceof Date ? value.getTime() : typeof value === 'number' ? value : NaN;
@@ -60,6 +61,7 @@ const receiptIdFor = item => hash(`${item.uid}\0${item.pinId}\0${item.generation
 function createPinAccounting({ db, admin, now = Date.now }) {
   const stamp = () => admin.firestore.FieldValue.serverTimestamp();
   const timestamp = ms => admin.firestore.Timestamp.fromMillis(ms);
+  const metadata = createPinMetadataAccounting({ db, admin });
 
   async function reconcile({ uid, pinId, change = null, eventId = null, eventTime = null, committedEvent = null }) {
     if (!validId(uid) || !validId(pinId)) throw new Error('invalid_accounting_identity');
@@ -106,37 +108,44 @@ function createPinAccounting({ db, admin, now = Date.now }) {
       const tripRef = signal?.exists && signal.data().userId === uid
         ? db.collection(`users/${uid}/tripSaveStats`).doc(hash(signalId)) : null;
       const tripStats = tripRef ? dataOf(await txn.get(tripRef)) || {} : null;
+      const newer = freshSave && eventMs > (profile.lastPinSavedAtMs ?? -1);
+      const latestSave = newer ? { lastPinId: pinId, lastPinGeneration: eventGeneration,
+        lastPinSavedAtMs: eventMs, lastPinCategory: freshSave.category,
+        lastPinCity: freshSave.city, lastPinCountry: freshSave.country } : {};
+      const projection = await metadata.prepare({ txn, uid, pinId, pin, generation,
+        accountGeneration: generationOf(user), priorContribution: prior, profile: { ...profile, ...latestSave } });
 
       if (changed) {
         const nextIds = new Set(rows.map(row => row.id));
         for (const id of prior?.indexRowIds || []) if (!nextIds.has(id)) txn.delete(db.collection('pinContentIndex').doc(id));
         for (const row of rows) txn.set(db.collection('pinContentIndex').doc(row.id), row);
         txn.set(refs.contribution, { userId: uid, pinId, schemaVersion: SCHEMA, exists, visited, generation,
-          digest, indexRowIds: [...nextIds], updatedAt: stamp() });
+          digest, indexRowIds: [...nextIds], metadataGeneration: exists ? generation : null, updatedAt: stamp() });
         txn.set(refs.stats, { schemaVersion: SCHEMA, status: stats.status || 'building',
           currentPins: counter(stats.currentPins, Number(exists) - Number(prior?.exists === true)),
           currentVisitedOwnedPins: counter(stats.currentVisitedOwnedPins, Number(visited) - Number(prior?.visited === true)),
           revision: (stats.revision || 0) + 1, updatedAt: stamp() }, { merge: true });
       }
+      if (!changed && projection.changed) txn.set(refs.contribution,
+        { metadataGeneration: exists ? generation : null }, { merge: true });
+      projection.apply();
       if (receiptRef && !receipt.exists) {
         const eventRefs = facts.map((fact, i) => ({ ref: db.collection(`users/${uid}/saveEvents`).doc(hash(`${receiptRef.id}\0${i}`)), fact }));
         txn.set(receiptRef, { userId: uid, pinId, generation: eventGeneration, eventTime: timestamp(eventMs),
           effectCount: facts.length, schemaVersion: SCHEMA, recordedAt: stamp() });
         for (const { ref, fact } of eventRefs) txn.set(ref, { ...fact, userId: uid, pinId, schemaVersion: SCHEMA, recordedAt: stamp() });
       }
-      if (freshSave || sourceAdds) {
-        const newer = freshSave && eventMs > (profile.lastPinSavedAtMs ?? -1);
+      if (freshSave || sourceAdds || Object.keys(projection.profilePatch).length) {
         txn.set(refs.profile, { schemaVersion: SCHEMA, historyCoverageStart: timestamp(cutover),
           verifiedPinSaves: counter(profile.verifiedPinSaves, freshSave ? 1 : 0),
           sourceAdditions: counter(profile.sourceAdditions, sourceAdds), updatedAt: stamp(),
-          ...(newer ? { lastPinSavedAtMs: eventMs, lastPinCategory: freshSave.category,
-            lastPinCity: freshSave.city, lastPinCountry: freshSave.country } : {}) }, { merge: true });
+          ...latestSave, ...projection.profilePatch }, { merge: true });
       }
       if (tripRef) txn.set(tripRef, { schemaVersion: SCHEMA, tripSignalId: signalId,
         verifiedPinSaves: counter(tripStats.verifiedPinSaves, 1),
         categories: [...new Set([...(tripStats.categories || []), freshSave.category])],
         lastSaveAtMs: Math.max(tripStats.lastSaveAtMs || 0, eventMs), updatedAt: stamp() }, { merge: true });
-      return { status: 'reconciled', changed, effects: facts.length };
+      return { status: 'reconciled', changed, metadataChanged: projection.changed, effects: facts.length };
     });
   }
 
@@ -146,7 +155,10 @@ function createPinAccounting({ db, admin, now = Date.now }) {
     const uid = (after || before)?.userId;
     if (!validId(uid) || !validId(event.params?.pinId)) return { status: 'invalid_event' };
     if (before && after && before.userId !== after.userId) throw new Error('pin_owner_changed');
-    return capture(committedMutation({ uid, pinId: event.params.pinId, change, eventId: event.id, eventTime: event.time }));
+    const result = await capture(committedMutation({ uid, pinId: event.params.pinId, change, eventId: event.id, eventTime: event.time }));
+    // Even a previously acknowledged event may arrive after another metadata
+    // write. Reconcile the DB's latest state without replaying historical facts.
+    return result.status === 'complete' ? reconcile({ uid, pinId: event.params.pinId }) : result;
   }
 
   async function capture(mutation) {

@@ -54,8 +54,10 @@ test('one metadata subprocess, original Japanese then available English translat
   expect(result.title).toBe('京都'); // UTF-8 can span subprocess chunks.
   expect(result.subtitles).toBe('京都の喫茶店 珈琲 ☕ Kyoto Café');
   expect(result.subtitle_tracks).toEqual([
-    { language: 'ja-orig', text: '京都の喫茶店 珈琲 ☕', provenance: { original: true, automatic: true, manual: false, translation: false } },
-    { language: 'en', text: 'Kyoto Café', provenance: { original: false, automatic: true, manual: false, translation: true } },
+    { language: 'ja-orig', text: '京都の喫茶店 珈琲 ☕', provenance: { original: true, automatic: true, manual: false, translation: false },
+      segments:[{startMs:1000,endMs:3000,text:'京都の喫茶店 珈琲 ☕',timing:'native'}] },
+    { language: 'en', text: 'Kyoto Café', provenance: { original: false, automatic: true, manual: false, translation: true },
+      segments:[{startMs:1000,endMs:3000,text:'Kyoto Café',timing:'native'}] },
   ]);
   expect(axios.get).toHaveBeenCalledTimes(2);
   expect(axios.get.mock.calls.map(call => call[0])).toEqual([
@@ -89,7 +91,8 @@ test('an original marker identifies manual source language without locale or geo
     automatic_captions: { 'es-orig': [track('es')] } });
   const result = await jobContext.run({ locale: 'en-US', homeCountry: 'US', homeCity: 'Boston' }, () => runYtDlp(url));
   expect(result.subtitle_tracks).toEqual([{ language: 'es', text: 'Café José',
-    provenance: { original: true, manual: true, automatic: false, translation: false } }]);
+    provenance: { original: true, manual: true, automatic: false, translation: false },
+    segments:[{startMs:1000,endMs:3000,text:'Café José',timing:'native'}] }]);
   expect(result.description).toBe('Café José — Centro / Norte @casa');
   expect(result.location).toBeNull();
 });

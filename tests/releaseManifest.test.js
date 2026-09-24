@@ -42,7 +42,7 @@ test('records both revisions, rules/index revisions and hashes; dirty trees are 
   const serverRepo = path.join(root, 'server');
   const files = {
     [appRepo]: ['package.json', 'package-lock.json', 'firestore.rules', 'firestore.indexes.json'],
-    [serverRepo]: ['package.json', 'package-lock.json', 'functions/package.json', 'functions/package-lock.json', 'lib/engineVersion.js', 'lib/engineFeatures.js', 'Dockerfile'],
+    [serverRepo]: ['package.json', 'package-lock.json', 'functions/package.json', 'functions/package-lock.json', 'lib/engineVersion.js', 'lib/engineFeatures.js', 'lib/media/mediaConfig.js', 'lib/media/providers/openaiTranscription.js', 'Dockerfile'],
   };
   for (const [repo, names] of Object.entries(files)) {
     fs.mkdirSync(repo, { recursive: true });
@@ -64,6 +64,7 @@ test('records both revisions, rules/index revisions and hashes; dirty trees are 
     expect(manifest.purpose).toBe('release-candidate');
     expect(manifest.repositories.app.revision).toBe('a'.repeat(40));
     expect(manifest.repositories.server.revision).toBe('a'.repeat(40));
+    expect(manifest.repositories.server.files['lib/media/mediaConfig.js'].sha256).toMatch(/^[a-f0-9]{64}$/);
     expect(manifest.rules.revision).toBe('a'.repeat(40));
     expect(manifest.indexes.sha256).toMatch(/^[a-f0-9]{64}$/);
     expect(manifest.artifacts.map(entry => entry.component)).toEqual(['app', 'server']);

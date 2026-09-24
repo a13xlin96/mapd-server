@@ -2,10 +2,20 @@ const {withProvider} = require('../lib/providerRuntime');
 const {EngineError,asEngineError} = require('../lib/engineError');
 const axios = require('axios');
 const { getCached, setCache } = require('../lib/cache');
+const {runSharedAiOperation,SERVER_PUBLIC_SCOPE}=require('../lib/sharedAiOperation');
+const context=require('../lib/jobContext');
 
 const PLACES_API_BASE = 'https://places.googleapis.com/v1';
 const SEARCH_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 days
 const DETAILS_CACHE_TTL_SECONDS = 30 * 24 * 60 * 60; // 30 days
+
+function validPlaceDetails(value) {
+  const location = value?.geometry?.location;
+  return !!value && typeof value.name === 'string' && value.name.trim().length > 0
+    && Number.isFinite(location?.lat) && Math.abs(location.lat) <= 90
+    && Number.isFinite(location?.lng) && Math.abs(location.lng) <= 180
+    && (value.types == null || (Array.isArray(value.types) && value.types.every(type => typeof type === 'string')));
+}
 
 function mapNewToLegacy(place) {
   return {
@@ -66,7 +76,7 @@ async function searchGooglePlaces(query, locationBias, locationRestriction) {
       };
     }
 
-    const response = await withProvider('google',()=>axios.post(
+    const response = await withProvider('google',({signal,deadline})=>axios.post(
       `${PLACES_API_BASE}/places:searchText`,
       body,
       {
@@ -75,10 +85,11 @@ async function searchGooglePlaces(query, locationBias, locationRestriction) {
           'X-Goog-Api-Key': apiKey,
           'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.location,places.types',
         },
-        timeout: 10000,
+        signal,
+        timeout: Math.max(1,Math.min(10000,(deadline || Infinity)-Date.now())),
         maxContentLength: 1024*1024,
       }
-    ),4,{stage:'matching',rateKey:'places_search'});
+    ),4,{stage:'matching',rateKey:'places_search',descriptor:{model:'text-search-pro'}});
 
     const places = (response.data && response.data.places) || [];
     const results = places.map(mapNewToLegacy);
@@ -116,9 +127,16 @@ async function findPlaceFromUrl(googleMapsUrl) {
   return null;
 }
 
-async function getPlaceDetails(placeId) {
+async function getCachedPlaceDetails(placeId) {
+  if (typeof placeId !== 'string' || !placeId.trim()) return null;
+  const cached = await getCached(`places:details:v3:${placeId}`);
+  return validPlaceDetails(cached) ? cached : null;
+}
+
+async function getPlaceDetails(placeId, options = {}) {
   const apiKey = process.env.GOOGLE_PLACES_API_KEY;
   if (!apiKey) {
+    if (options.strict) throw new EngineError('dependency_error',{stage:'details',provider:'google'});
     console.error('GOOGLE_PLACES_API_KEY not set');
     return null;
   }
@@ -134,10 +152,19 @@ async function getPlaceDetails(placeId) {
   //       currentOpeningHours, allowsDogs, restroom, menuForChildren,
   //       liveMusic, servesCoffee, servesDessert
   const cacheKey = `places:details:v3:${placeId}`;
-  const cached = await getCached(cacheKey);
+  const cached = await getCachedPlaceDetails(placeId);
   if (cached) return cached;
 
   try {
+    // The durable pin task authorizes joining independently. Shared execution
+    // then has its own lifetime; cancelling one pin cannot cancel other saves.
+    await context.current()?.beforeProviderDispatch?.();
+    return await runSharedAiOperation({kind:'place-details',stage:'details',provider:'google',input:{placeId},model:'places-enterprise-atmosphere',
+      promptVersion:'none',schemaVersion:3,optionsVersion:'full-mask-v3',scope:SERVER_PUBLIC_SCOPE,
+      bypassCache:options.refresh === true,ttlSeconds:86400,timeoutMs:30000,
+      validate:validPlaceDetails}, async () => {
+    const fresh=await getCachedPlaceDetails(placeId);
+    if(fresh) return fresh;
     // Field mask. Every Place Details call is billed at the highest SKU
     // touched here; we're on Place Details Enterprise + Atmosphere
     // (~$0.025/call) because of the dineIn / takeout / serves* / etc.
@@ -201,17 +228,18 @@ async function getPlaceDetails(placeId) {
       'parkingOptions',
     ].join(',');
 
-    const response = await withProvider('google',()=>axios.get(
+    const response = await withProvider('google',({signal,deadline})=>axios.get(
       `${PLACES_API_BASE}/places/${placeId}`,
       {
         headers: {
           'X-Goog-Api-Key': apiKey,
           'X-Goog-FieldMask': fieldMask,
         },
-        timeout: 10000,
+        signal,
+        timeout: Math.max(1,Math.min(10000,(deadline || Infinity)-Date.now())),
         maxContentLength: 1024*1024,
       }
-    ),4,{stage:'details',rateKey:'places_details'});
+    ),4,{stage:'details',rateKey:'places_details',descriptor:{model:'places-enterprise-atmosphere'}});
 
     const r = response.data;
     const displayName = r.displayName;
@@ -377,12 +405,17 @@ async function getPlaceDetails(placeId) {
       utc_offset_minutes: typeof r.utcOffsetMinutes === 'number' ? r.utcOffsetMinutes : null,
     };
 
+    // The legacy cache is also consumed outside shared execution. Validate
+    // before writing so rejected HTTP successes cannot complete a later retry.
+    if (!validPlaceDetails(details)) throw new EngineError('invalid_response',{stage:'details',provider:'google'});
     await setCache(cacheKey, details, DETAILS_CACHE_TTL_SECONDS);
     return details;
+    });
   } catch (error) {
+    if (options.strict) throw asEngineError(error,{stage:'details',provider:'google'});
     console.error('Google Places details error:', error.message);
     return null;
   }
 }
 
-module.exports = { searchGooglePlaces, getPlaceDetails, findPlaceFromUrl };
+module.exports = { searchGooglePlaces, getPlaceDetails, getCachedPlaceDetails, findPlaceFromUrl };

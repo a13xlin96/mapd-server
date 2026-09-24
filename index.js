@@ -2,14 +2,22 @@ const { persistThumbnail } = require('./lib/thumbnails');
 const express = require('express');
 const rateLimit = require('express-rate-limit');
 const { ipKeyGenerator } = rateLimit;
-const { anthropic } = require('./lib/anthropic');
-const { firestore, seedFeatureFlagsPromise } = require('./lib/firestore');
-const { getCached, setCache } = require('./lib/cache');
+const { admin, firestore, seedFeatureFlagsPromise } = require('./lib/firestore');
 const { extractPlacesFromSlides } = require('./lib/vision');
 const { isAllowedExtractUrl } = require('./lib/urlValidation');
 const { runEnrichment,saveSelectedPlaces } = require('./enrich');
 const {admitEnrichmentJob} = require('./lib/enrichAdmission');
 const {createWorker} = require('./lib/enrichmentWorker');
+const {createPinDetailsWorker}=require('./lib/pinDetailsWorker');
+const {createEngineBudgetWorker}=require('./lib/engineBudgetWorker');
+const detailsWorker=createPinDetailsWorker({db:firestore,admin,fetchDetails:require('./enrich/places').getPlaceDetails});
+const budgetWorker=createEngineBudgetWorker({db:firestore});
+const jobContext=require('./lib/jobContext');
+const {privateAiOptions}=require('./lib/aiRetry');
+const {randomUUID}=require('crypto');
+function providerRequestContext(req, _res, next) {
+  return jobContext.run({userId:req.authUid,attemptId:`http:${randomUUID()}`,deadline:Date.now()+120000},next);
+}
 const worker = createWorker({policy:require('./lib/engineRuntimeConfig').queuePolicy(),db:firestore,runEnrichment,push:require('./lib/push').sendPushForJob});
 const { router: adminRouter } = require('./lib/admin');
 const { router: listMembershipRouter } = require('./lib/listMembership');
@@ -61,7 +69,8 @@ const visionLimiter = rateLimit({
 
 // Admin endpoints (collaborative-lists migration). Gated by ADMIN_TOKEN env
 // var — not a Firebase Auth ID token. See lib/admin.js for the workflow.
-app.use(adminRouter);
+app.use((req,res,next)=>jobContext.run({serviceIdentity:'admin-maintenance',attemptId:`admin:${randomUUID()}`},
+  ()=>adminRouter(req,res,next)));
 
 // Returns only the caller assigned versions; never internal UID lists/config.
 app.get('/engine/features',apiLimiter,authenticateRequest,(req,res)=>{
@@ -320,7 +329,7 @@ app.get('/invite/:token', (req, res) => {
 
 // Manual-link images are cached per caller; only server extraction can populate
 // the shared cache, so an arbitrary client image cannot poison another user's cover.
-app.post('/thumbnails/persist', apiLimiter, authenticateRequest, async (req, res) => {
+app.post('/thumbnails/persist', apiLimiter, authenticateRequest, providerRequestContext, async (req, res) => {
   const { imageUrl, sourceUrl } = req.body || {};
   if (typeof imageUrl !== 'string' || imageUrl.length > 8192 || typeof sourceUrl !== 'string' || !isAllowedExtractUrl(sourceUrl)) {
     return res.status(400).json({ error: 'invalid_thumbnail_request' });
@@ -330,7 +339,7 @@ app.post('/thumbnails/persist', apiLimiter, authenticateRequest, async (req, res
 });
 
 // Extract metadata from a social media link
-app.post('/extract', apiLimiter, authenticateRequest, async (req, res) => {
+app.post('/extract', apiLimiter, authenticateRequest, providerRequestContext, async (req, res) => {
   const { url } = req.body;
 
   if (!url) {
@@ -352,25 +361,29 @@ app.post('/extract', apiLimiter, authenticateRequest, async (req, res) => {
 
 // Worker and compatibility endpoints share validation and versioned AI logic.
 const engineAI = require('./enrich/ai');
-const {withProvider} = require('./lib/providerRuntime');
 const {failureOf} = require('./lib/engineError');
-app.post('/ai/extract-places', apiLimiter, authenticateRequest, async (req, res) => {
-  try { res.json(await engineAI.aiExtractPlaces(req.body, {scope:`user:${req.authUid}`})); }
+app.post('/ai/extract-places', apiLimiter, authenticateRequest, providerRequestContext, async (req, res) => {
+  try { res.json(await engineAI.aiExtractPlaces(req.body, privateAiOptions(req))); }
   catch (e) { const failure = failureOf(e); res.status(502).json({error:failure.message,code:failure.code,failure}); }
 });
-app.post('/ai/extract-place', apiLimiter, authenticateRequest, async (req, res) => {
-  try { res.json(await engineAI.aiExtractSingle(req.body, {scope:`user:${req.authUid}`})); }
+app.post('/ai/extract-place', apiLimiter, authenticateRequest, providerRequestContext, async (req, res) => {
+  try { res.json(await engineAI.aiExtractSingle(req.body, privateAiOptions(req))); }
   catch (e) { const failure = failureOf(e); res.status(502).json({error:failure.message,code:failure.code,failure}); }
 });
-app.post('/ai/verify-place', apiLimiter, authenticateRequest, async (req, res) => {
-  const {placeName,placeAddress,placeTypes} = req.body;
-  res.json(await engineAI.aiVerifyPlace(req.body,placeName,placeAddress,placeTypes));
+app.post('/ai/verify-place', apiLimiter, authenticateRequest, providerRequestContext, async (req, res) => {
+  try {
+    const {placeName,placeAddress,placeTypes} = req.body;
+    res.json(await engineAI.aiVerifyPlace(req.body,placeName,placeAddress,placeTypes,privateAiOptions(req)));
+  } catch (error) {
+    const failure=failureOf(error,{stage:'verification',provider:'anthropic'});
+    res.status(422).json({error:failure.message,code:failure.code,failure});
+  }
 });
 
 // AI: Infer city/country for each place using ALL siblings in the list as context.
 // Used by the Google Takeout import flow and by the "Re-resolve from link" pin action
 // when the original URL doesn't carry coordinates.
-app.post('/ai/infer-place-regions', apiLimiter, authenticateRequest, async (req, res) => {
+app.post('/ai/infer-place-regions', apiLimiter, authenticateRequest, providerRequestContext, async (req, res) => {
   const { places, listName, siblingPlaces } = req.body;
 
   if (!Array.isArray(places) || places.length === 0) {
@@ -393,67 +406,9 @@ app.post('/ai/infer-place-regions', apiLimiter, authenticateRequest, async (req,
     return res.status(400).json({ error: 'no valid place names' });
   }
 
-  const cacheKey = engineAI.cacheKey('infer-regions', {cleanListName,cleanPlaces,cleanSiblings}, `user:${req.authUid}`);
-  const cached = await getCached(cacheKey);
-  if (cached) return res.json(cached);
-
   try {
-    const allContextNames = Array.from(new Set([
-      ...cleanPlaces.map((p) => p.name),
-      ...cleanSiblings,
-    ]));
-
-    const placesBlock = cleanPlaces
-      .map((p, i) => `${i + 1}. "${p.name}"${p.url ? `\n   URL: ${p.url}` : ''}`)
-      .join('\n');
-
-    const prompt = `You are identifying the location of places saved in a user's map list.
-
-Use ALL available context to disambiguate. A place name alone ("Joe's Pizza") is often ambiguous because the same name exists in many cities worldwide. But when sibling places in the same list clearly point to one region, use that regional context to place the ambiguous ones.
-
-Priority of signals (strongest first):
-1. The place name itself if it's unique or tied to a landmark ("Sagrada Familia")
-2. Sibling places in the same list — if most siblings are in Barcelona, an ambiguous "Joe's Pizza" in that list is very likely also in Barcelona
-3. The list name if it names a place ("Spain", "Tokyo Trip")
-4. Any hints in the URL slug
-
-Return "confidence": "low" and null city/country ONLY if the name is so generic AND the siblings give no regional signal. When siblings cluster in one region, treat that as strong evidence and use "medium" or "high".
-
-List name: ${cleanListName ? `"${cleanListName}"` : '(none)'}
-All places in this list (for regional context): ${allContextNames.map((n) => `"${n}"`).join(', ')}
-
-Places to identify:
-${placesBlock}
-
-Return ONLY valid JSON in this exact shape:
-{"results":[{"name":"<exact input name>","city":"<city or null>","country":"<country or null>","confidence":"high|medium|low"}]}`;
-
-    const message = await withProvider('anthropic',() => anthropic.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 2400,
-      messages: [{ role: 'user', content: prompt }],
-    },{timeout:30000,maxRetries:0}),4);
-
-    const parsed = engineAI.parseResponse(message);
-    if (!Array.isArray(parsed?.results) || parsed.results.some(r=>!r || typeof r.name!=='string' || !['city','country'].every(k=>r[k]==null || typeof r[k]==='string'))) throw new Error('Invalid region inference');
-    const results = parsed.results;
-
-    // Normalize: ensure every input place has a corresponding result.
-    const byName = new Map(results.map((r) => [String(r?.name || '').trim(), r]));
-    const normalized = cleanPlaces.map((p) => {
-      const r = byName.get(p.name) || {};
-      const confidence = ['high', 'medium', 'low'].includes(r.confidence) ? r.confidence : 'low';
-      return {
-        name: p.name,
-        city: r.city || null,
-        country: r.country || null,
-        confidence,
-      };
-    });
-
-    const response = { results: normalized };
-    await setCache(cacheKey, response);
-    res.json(response);
+    res.json(await engineAI.aiInferPlaceRegions({places:cleanPlaces,listName:cleanListName,siblingPlaces:cleanSiblings},
+      privateAiOptions(req)));
   } catch (error) {
     console.error('AI infer-place-regions failed:', error.message);
     const failure=failureOf(error,{stage:'ai',provider:'anthropic'});
@@ -464,13 +419,13 @@ Return ONLY valid JSON in this exact shape:
 // AI Vision: Extract place names from carousel slide images.
 // Thin wrapper around lib/vision.js so the shared helper can be reused
 // by /enrich without duplicating cache/prompt logic.
-app.post('/ai/vision-extract', apiLimiter, visionLimiter, authenticateRequest, async (req, res) => {
+app.post('/ai/vision-extract', apiLimiter, visionLimiter, authenticateRequest, providerRequestContext, async (req, res) => {
   const { imageUrls, contentId, caption, hashtags, subtitles } = req.body;
   if (!imageUrls || !Array.isArray(imageUrls) || imageUrls.length === 0) {
     return res.status(400).json({ error: 'imageUrls array required' });
   }
   try {
-    const result = await extractPlacesFromSlides({ imageUrls, contentId, caption, hashtags, subtitles },{scope:`user:${req.authUid}`});
+    const result = await extractPlacesFromSlides({ imageUrls, contentId, caption, hashtags, subtitles },privateAiOptions(req));
     res.json(result);
   } catch(error) {const failure=failureOf(error);res.status(502).json({error:failure.message,code:failure.code,failure});}
 });
@@ -488,8 +443,8 @@ app.post('/enrich/selection', apiLimiter, authenticateRequest, async (req,res)=>
   catch(error) {const failure=failureOf(error);res.status(failure.code==='access_blocked'?403:502).json({failure,error:failure.message});}
 });
 
-app.post('/enrich', apiLimiter, authenticateRequest, async (req, res) => {
-  const { url, userId, captionText, jobId, retryOf } = req.body || {};
+app.post('/enrich', apiLimiter, authenticateRequest, providerRequestContext, async (req, res) => {
+  const { url, userId, captionText, jobId, retryOf, retryKind, clientCapabilities } = req.body || {};
   console.log(`[/enrich] job=${jobId || '?'} user=${userId || '?'} url=${url || '?'} admin=${req.adminBypass ? 1 : 0}`);
 
   if (!url || !userId || !jobId) {
@@ -511,6 +466,8 @@ app.post('/enrich', apiLimiter, authenticateRequest, async (req, res) => {
       captionText,
       adminBypass: !!req.adminBypass,
       retryOf,
+      retryKind,
+      clientCapabilities,
     });
   } catch (err) {
     console.error('/enrich claim failed:', err);
@@ -520,6 +477,11 @@ app.post('/enrich', apiLimiter, authenticateRequest, async (req, res) => {
   worker.nudge();
 
   return res.status(result.code).json(result.body);
+});
+
+app.post('/pins/:pinId/details/retry', apiLimiter, authenticateRequest, providerRequestContext, async(req,res)=>{
+  try {res.json(await detailsWorker.retry(req.params.pinId,req.authUid,req.body?.revision,req.body?.taskId));}
+  catch(error){const failure=failureOf(error);res.status(failure.code==='access_blocked'?403:422).json({error:failure.message,code:failure.code,failure});}
 });
 
 const PORT = process.env.PORT || 3000;
@@ -532,9 +494,20 @@ const PORT = process.env.PORT || 3000;
 // fail-closed 409 trip-wire.
 const SEED_BOOT_TIMEOUT_MS = 5000;
 function bootListen() {
+  // Deletes only aged, owned workspaces whose local process is no longer alive.
+  const sweepMedia=()=>require('./lib/media/publicMediaDownload').sweepOrphanWorkspaces()
+    .catch(()=>console.warn('Media orphan cleanup deferred'));
+  void sweepMedia();
+  // A restart can happen before crashed workspaces reach the cleanup age.
+  // Revisit them during this process lifetime; this never restarts media work.
+  const mediaCleanup=setInterval(sweepMedia,60*60*1000);
+  mediaCleanup.unref?.();
   worker.start();
+  detailsWorker.start();
+  budgetWorker.start();
   app.listen(PORT, () => {
     console.log(`Mapd link extractor running on port ${PORT}`);
+    console.log(JSON.stringify(require('./lib/transcriptionReadiness').transcriptionReadiness()));
   });
 }
 if (require.main === module) {

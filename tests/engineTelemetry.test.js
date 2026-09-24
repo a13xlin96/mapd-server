@@ -12,6 +12,9 @@ test.each([
   [{status:'needs_selection', progress:{saved:1,total:2}}, 'confirmation'],
   [{status:'complete'}, 'success'],
   [{status:'duplicate'}, 'duplicate'],
+  [{status:'complete',analysisRecovery:{version:1,status:'incomplete',canRetry:true}}, 'partial'],
+  [{status:'duplicate',analysisRecovery:{version:1,status:'incomplete',canRetry:true}}, 'partial'],
+  [{status:'complete',analysisRecovery:{version:1,status:'complete'}}, 'success'],
   [{status:'processing'}, 'unknown'],
 ])('classifies actual stored terminal state %j', (data, expected) => {
   expect(outcomeOf(data)).toBe(expected);

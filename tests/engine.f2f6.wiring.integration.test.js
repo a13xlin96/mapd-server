@@ -224,7 +224,7 @@ test.each([
     expect(runYtDlp).toHaveBeenCalledWith(url, expect.objectContaining({ multilingual: true }));
     expect(fetchOGMetadata).not.toHaveBeenCalled();
     expect(aiExtractPlaces).toHaveBeenCalledWith(expect.objectContaining({ subtitles: '喫茶 月光',
-      subtitleTracks: [{ language: 'ja', provenance: { original: true } }] }), expect.objectContaining({ scope: 'public' }));
+      subtitleTracks: [{ language: 'ja', provenance: { original: true } }] }), expect.objectContaining({ scope: require('../lib/sharedAiIdentity').SERVER_PUBLIC_SCOPE }));
   } else {
     expect(runYtDlp).not.toHaveBeenCalled();
     expect(fetchOGMetadata).toHaveBeenCalledWith(url);

@@ -55,7 +55,7 @@ async function generateManifest(options) {
   const contracts = { server: contract(serverContract), supportedApps: [...new Set(appContracts.map(contract))], verification: 'declared; requires compatibility test evidence' };
   if (!appArtifacts?.length || !serverArtifacts?.length) throw new Error('Both --app-artifact and --server-artifact are required');
   const app = await repository(appRepo, ['package.json', 'package-lock.json', 'firestore.rules', 'firestore.indexes.json'], allowDirty);
-  const server = await repository(serverRepo, ['package.json', 'package-lock.json', 'functions/package.json', 'functions/package-lock.json', 'lib/engineVersion.js', 'lib/engineFeatures.js', 'Dockerfile'], allowDirty);
+  const server = await repository(serverRepo, ['package.json', 'package-lock.json', 'functions/package.json', 'functions/package-lock.json', 'lib/engineVersion.js', 'lib/engineFeatures.js', 'lib/media/mediaConfig.js', 'lib/media/providers/openaiTranscription.js', 'Dockerfile'], allowDirty);
   const artifacts = [];
   for (const [component, filenames] of [['app', appArtifacts], ['server', serverArtifacts]]) {
     for (const filename of filenames) artifacts.push({ component, ...(await fingerprint(path.resolve(filename))) });
@@ -73,6 +73,7 @@ async function generateManifest(options) {
       'Artifact hashes identify supplied bytes; the caller must verify their CI source revision.',
       'Android JavaScript export does not establish installable preview or physical-device validation.',
       'This manifest is not a deployment record or a rollout approval.',
+      'For media activation, attach the container digest, ffmpeg/ffprobe version reports, mediaRecoveryV1 device checks, and real-media evaluation. Default-off source code is not evidence of production activation.',
     ],
   };
 }

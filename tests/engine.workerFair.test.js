@@ -1,5 +1,12 @@
 jest.mock('../lib/firestore',()=>({admin:require('./helpers/fakeFirestore').makeAdmin()}));
 jest.mock('../lib/cache',()=>({redis:{set:jest.fn(),get:jest.fn(),eval:jest.fn()}}));
+// Queue fairness has no ledger datastore. Separate budget integration suites
+// exercise durable journaling; this fixture must not leave an outage outbox.
+jest.mock('../lib/engineBudget',()=>{
+  const actual=jest.requireActual('../lib/engineBudget');
+  const budget=actual.createEngineBudget({db:null,journal:null,logger:null});
+  return {...actual,beginProviderObservation:budget.beginProviderObservation,flushProviderObservations:budget.flushPendingWrites};
+});
 const {WorkerFirestore}=require('./helpers/workerFirestore');
 const {FakeTimestamp}=require('./helpers/fakeFirestore');
 const {redis}=require('../lib/cache');

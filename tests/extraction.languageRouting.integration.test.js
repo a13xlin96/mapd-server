@@ -89,8 +89,10 @@ test.each([false, true])('native and English source-cache variants stay isolated
   const englishResult = nativeFirst ? second : first;
   expect(nativeResult).toMatchObject({ description: 'Dinner @moonlight', subtitles: `${nativeText} ${englishText}` });
   expect(nativeResult.subtitle_tracks).toEqual([
-    { language: 'ja-orig', text: nativeText, provenance: { original: true, automatic: true, manual: false, translation: false } },
-    { language: 'en', text: englishText, provenance: { original: false, automatic: true, manual: false, translation: true } },
+    { language: 'ja-orig', text: nativeText, provenance: { original: true, automatic: true, manual: false, translation: false },
+      segments:[{startMs:1000,endMs:3000,text:nativeText,timing:'native'}] },
+    { language: 'en', text: englishText, provenance: { original: false, automatic: true, manual: false, translation: true },
+      segments:[{startMs:1000,endMs:3000,text:englishText,timing:'native'}] },
   ]);
   expect(englishResult.subtitles).toBe(englishText);
   expect(englishResult.subtitle_tracks).toEqual([nativeResult.subtitle_tracks[1]]);

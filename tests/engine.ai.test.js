@@ -1,6 +1,6 @@
 jest.mock('../lib/anthropic',()=>({anthropic:{messages:{create:jest.fn()}}}));
 jest.mock('../lib/cache',()=>({getCached:jest.fn(),setCache:jest.fn()}));
-jest.mock('../lib/providerRuntime',()=>({withProvider:(_p,work)=>work()}));
+jest.mock('../lib/providerRuntime',()=>({withProvider:jest.fn((_p,work)=>work())}));
 const {anthropic}=require('../lib/anthropic');
 const {getCached,setCache}=require('../lib/cache');
 const {aiExtractPlaces,aiVerifyPlace,cacheKey}=require('../enrich/ai');
@@ -44,4 +44,45 @@ test.each(['confirmedPlaceId','requiresSelection','vision'])('model output canno
   anthropic.messages.create.mockResolvedValue(response(JSON.stringify({places:[place]})));
   await expect(aiExtractPlaces({description:'@cafe'},{scope:'public'})).rejects.toMatchObject({code:'invalid_response'});
   expect(setCache).not.toHaveBeenCalled();
+});
+
+test('concurrent identical extraction, including single-place projection, calls the provider once',async()=>{
+  const {aiExtractSingle}=require('../enrich/ai');
+  const calls=[aiExtractPlaces({title:'coalesced'},{scope:'user:coalesced'}),aiExtractPlaces({title:'coalesced'},{scope:'user:coalesced'}),aiExtractSingle({title:'coalesced'},{scope:'user:coalesced'})];
+  expect(await Promise.all(calls)).toEqual([{places:[],count:0},{places:[],count:0},{place:null}]);
+  expect(anthropic.messages.create).toHaveBeenCalledTimes(1);
+});
+test('verification accepts caller scope and keys complete candidate evidence',async()=>{
+  anthropic.messages.create.mockResolvedValue(response('{"match":true,"betterQuery":null}'));
+  await Promise.all([
+    aiVerifyPlace({title:'Cafe'},'Cafe','Kyoto',['cafe'],{scope:'user:a'}),
+    aiVerifyPlace({title:'Cafe'},'Cafe','Kyoto',['cafe'],{scope:'user:a'}),
+    aiVerifyPlace({title:'Cafe'},'Cafe','Tokyo',['cafe'],{scope:'user:a'}),
+    aiVerifyPlace({title:'Cafe'},'Cafe','Kyoto',['cafe'],{scope:'user:b'}),
+  ]);
+  expect(anthropic.messages.create).toHaveBeenCalledTimes(3);
+});
+test('verification preserves rate limit failure rather than successful null match',async()=>{
+  anthropic.messages.create.mockRejectedValue(Object.assign(Error('quota'),{status:429}));
+  expect(await aiVerifyPlace({title:'Cafe'},'Cafe','Kyoto',[],{scope:'user:a'})).toMatchObject({failure:{code:'rate_limited'}});
+  expect(setCache).not.toHaveBeenCalled();
+});
+test('region helper shares complete normalized evidence and rejects incomplete provider output',async()=>{
+  const {aiInferPlaceRegions}=require('../enrich/ai');
+  const input={places:[{name:'Cafe',url:'https://example.com/cafe'}],listName:'Tokyo',siblingPlaces:['Tokyo Tower']};
+  anthropic.messages.create.mockResolvedValue(response('{"results":[{"name":"Cafe","city":"Tokyo","country":"Japan","confidence":"high"}]}'));
+  const result=await Promise.all([aiInferPlaceRegions(input,{scope:'user:a'}),aiInferPlaceRegions(input,{scope:'user:a'})]);
+  expect(result[0].results[0].city).toBe('Tokyo');expect(anthropic.messages.create).toHaveBeenCalledTimes(1);
+  anthropic.messages.create.mockResolvedValue(response('{"results":[]}'));
+  await expect(aiInferPlaceRegions(input,{scope:'user:a',bypassCache:true})).rejects.toMatchObject({code:'invalid_response'});
+});
+
+test('text requests provide bounded observation descriptors without raw prompt data',async()=>{
+  const {withProvider}=require('../lib/providerRuntime');
+  await aiExtractPlaces({title:'京都 ☕'},{scope:'user:observation'});
+  const descriptor=withProvider.mock.calls[0][3];
+  const request=anthropic.messages.create.mock.calls[0][0];
+  expect(descriptor).toMatchObject({stage:'ai',rateKey:'haiku',descriptor:{model:request.model,maxImageTokens:0,maxOutputTokens:2400,cacheEnabled:false}});
+  expect(descriptor.descriptor.maxInputTokens).toBe(Buffer.byteLength(JSON.stringify(request.messages),'utf8')+1024);
+  expect(JSON.stringify(descriptor)).not.toContain('京都');
 });

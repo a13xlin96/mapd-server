@@ -12,7 +12,10 @@
     "test:load": "node scripts/test-engine-load.js",
     "test:accounting:emulator": "node --test tests/emulator/accounting.integration.js",
     "test:worker:emulator": "node scripts/test-worker-emulator.js",
-    "release:manifest": "node scripts/release-manifest.js"
+    "release:manifest": "node scripts/release-manifest.js",
+    "test:media": "npm test -- --runInBand --testPathPatterns=media\\.",
+    "test:media:smoke": "node tests/media/smoke.cjs",
+    "replay:media": "node scripts/replay-multimodal-engine.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",

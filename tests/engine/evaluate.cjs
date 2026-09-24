@@ -30,8 +30,14 @@ async function evaluate(fixture) {
   }
   if (fixture.kind === 'cache' || fixture.kind === 'validation') {
     const cache = new Map(); let calls = 0;
+    const shared = require('../../lib/sharedAiOperation').createSharedAiOperations({allowLocal:true,
+      cache:{getCached:async k=>cache.get(k),setCache:async(k,v)=>cache.set(k,v)}});
     const ai = load('enrich/ai.js', {
-      '../lib/cache': {getCached:async k=>cache.get(k),setCache:async(k,v)=>cache.set(k,v)},
+      '../lib/sharedAiOperation': {...shared, SERVER_PUBLIC_SCOPE:require('../../lib/sharedAiOperation').SERVER_PUBLIC_SCOPE},
+      '../lib/providerRuntime': {withProvider:async (_provider, work) => {
+        await require('../../lib/jobContext').current()?.sharedOperation?.authorizeDispatch();
+        return work();
+      }},
       '../lib/anthropic': {anthropic:{messages:{create:async()=>{
         calls++;
         return fixture.kind === 'validation'
@@ -41,16 +47,16 @@ async function evaluate(fixture) {
     });
     if (fixture.kind === 'validation') {
       try {await ai.aiExtractPlaces({title:'Synthetic post',description:'Tai Sushi, Kyoto'}); return false;}
-      catch {return cache.size === 0;}
+      catch {return calls === 1 && cache.size === 0;}
     }
     const base = {title:'My trip',description:'A wonderful holiday. '.repeat(8),subtitles:'A wonderful introduction. '.repeat(8)};
-    await ai.aiExtractPlaces(base,{scope:'synthetic'});
+    await ai.aiExtractPlaces(base,{scope:'user:synthetic'});
     const changed = {...base};
     if (fixture.signal === 'caption-tail') changed.description += fixture.input;
     if (fixture.signal === 'hashtag-context') changed.hashtags = [fixture.input];
     if (fixture.signal === 'uploader-context') changed.uploader = fixture.input;
     if (fixture.signal === 'transcript-tail') changed.subtitles += fixture.input;
-    await ai.aiExtractPlaces(changed,{scope:'synthetic'});
+    await ai.aiExtractPlaces(changed,{scope:'user:synthetic'});
     return calls === 2;
   }
   if (fixture.kind === 'matching') {
