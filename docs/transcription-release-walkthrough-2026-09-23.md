@@ -32,11 +32,11 @@ A short, explicitly initiated transcription of non-sensitive sample audio must v
 
 ## Local verification for this candidate
 
-- Server: 1,646 tests passed; 34 existing opt-in tests skipped.
+- Server: 1,649 tests passed on Node 20.20.2 (matching hosted CI); 34 existing opt-in tests skipped.
 - Functions package: 13 tests passed.
 - Offline engine regression: 32/32 scenarios passed.
 - Startup diagnostic: covered by the server suite, including key non-disclosure, invalid private configuration and no network calls.
-- Docker is unavailable locally; fresh hosted container checks remain necessary.
+- Docker is unavailable locally. The first hosted production-container build, actual decoder smoke, Functions and database-emulator checks passed. Its unit-test job exposed a download cleanup race and a timing-sensitive fixture; the follow-up fixes require fresh hosted checks.
 
 These results do not establish any production deployment, model access, physical-device test or live accuracy result.
 
@@ -49,3 +49,7 @@ The September 23 read-only compatibility review approved the bounded readiness d
 - Verify Redis coordination or an explicitly valid single-process setup and Firestore access. Startup begins the normal workers, which can process previously authorized work even while media enrollment is off.
 
 Disposition: update the draft PR and run clean CI; do not merge or deploy until these dependencies are verified. No defect was found in the new readiness logger. The review did not inspect live production configuration.
+
+Subsequent read-only Firebase inspection of the repository-configured project `mapd-820d4` found only `enrichOnPendingJob` deployed. `accountingPinWritten`, `accountingVisitWritten` and `accountingUserDeleted` are not deployed there. No functions, rules, indexes or documents were modified during inspection.
+
+The first hosted run caught a real asynchronous output-open race: `pipeline()` could reject before `WriteStream` opened its exclusive destination, letting cleanup finish too early. The downloader now waits for output closure before ownership-based deletion. A delayed-open regression covers it, and independent review found no issue in the fix. Transcription and shared-operation deadline fixtures now use controlled clocks to distinguish pre-dispatch failure, post-dispatch uncertainty, and parent cancellation without depending on a fast runner.

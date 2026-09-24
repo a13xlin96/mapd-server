@@ -122,13 +122,28 @@ test('duplicate dispatch authorization cannot authorize another physical call',a
   })).rejects.toMatchObject({code:'attempt_stopped'});
 });
 test('late results after execution deadline cannot become cached success',async()=>{
-  const {runSharedAiOperation,cache,activeCount,firestore}=setup(), hold=gate();
-  const result=runSharedAiOperation(config({timeoutMs:15}),dispatchWork(()=>hold.promise));
-  await expect(result).rejects.toMatchObject({code:'dependency_timeout'});
-  hold.release(good);await wait(10);
-  expect(cache.setCache).not.toHaveBeenCalled();
-  expect(activeCount()).toBe(0);
-  expect(firestore.read(COLLECTION,identity(config()).key+'_1').state).toBe('uncertain');
+  jest.useFakeTimers({now:1000000});
+  const hold=gate();
+  try {
+    const {runSharedAiOperation,cache,activeCount,firestore}=setup();
+    const work=jest.fn(dispatchWork(()=>hold.promise));
+    const outcome=runSharedAiOperation(config({timeoutMs:15}),work)
+      .then(result=>({result}),error=>({error}));
+    await jest.advanceTimersByTimeAsync(0);
+    // Expire only after dispatch authorization; a busy real runner can use up
+    // 15ms before dispatch, which correctly produces 'failed', not 'uncertain'.
+    const key=identity(config()).key+'_1';
+    expect(firestore.read(COLLECTION,key).dispatch).toBeDefined();
+    expect(work).toHaveBeenCalledTimes(1);
+    await jest.advanceTimersByTimeAsync(15);
+    expect((await outcome).error).toMatchObject({code:'dependency_timeout'});
+    hold.release(good);await jest.advanceTimersByTimeAsync(10);
+    expect(cache.setCache).not.toHaveBeenCalled();
+    expect(activeCount()).toBe(0);
+    expect(firestore.read(COLLECTION,key).state).toBe('uncertain');
+  } finally {
+    hold.release(good);await jest.advanceTimersByTimeAsync(0);jest.useRealTimers();
+  }
 });
 test('malformed results and provider failures stay typed and require explicit refresh',async()=>{
   for(const response of [{answer:42},new EngineError('rate_limited',{retryAfterSeconds:20})]) {

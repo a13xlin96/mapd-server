@@ -81,6 +81,29 @@ test.each([{headers:{'content-length':'1000'},chunks:[mp4]},{chunks:[mp4,mp4]}])
   await expect(downloadPublicMedia({url:'https://cdn.example/v',destination,maxBytes:mp4.length},{request:transport([response])})).rejects.toMatchObject({code:'input_too_large'});
   await expect(fsp.stat(destination)).rejects.toMatchObject({code:'ENOENT'});
 });
+test('upstream failure waits for a delayed file open and close before cleanup',async()=>{
+  const destination=path.join(root,'delayed-open'),realOpen=fs.open;
+  let releaseOpen,settled=false;
+  const opened=new Promise(resolve=>{
+    jest.spyOn(fs,'open').mockImplementation((filename,flags,mode,callback)=>{
+      realOpen(filename,flags,mode,(...args)=>{
+        releaseOpen=()=>callback(...args);
+        resolve();
+      });
+    });
+  });
+  const result=downloadPublicMedia({url:'https://cdn.example/v',destination,maxBytes:mp4.length},
+    {request:transport([{chunks:[mp4,mp4]}])}).then(value=>{
+      settled=true;return value;
+    },failure=>{settled=true;return failure;});
+  await opened;
+  try {
+    await new Promise(resolve=>setImmediate(resolve));
+    expect(settled).toBe(false);
+  } finally {releaseOpen();}
+  expect(await result).toMatchObject({code:'input_too_large'});
+  await expect(fsp.stat(destination)).rejects.toMatchObject({code:'ENOENT'});
+});
 test('disguised manifest and empty/malformed containers cannot reach decoder',async()=>{
   const destination=path.join(root,'video');
   await expect(downloadPublicMedia({url:'https://cdn.example/video.mp4',destination},{request:transport([{chunks:[Buffer.from('#EXTM3U\nhttp://127.0.0.1/private')]}])})).rejects.toMatchObject({code:'invalid_response'});

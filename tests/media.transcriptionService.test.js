@@ -45,14 +45,14 @@ test('successful subtitle coverage prevents a paid audio request',async()=>{
   const result=await transcribe(undefined,{}, {subtitles:{language:'ja',segments:[{text:'鯛寿司',startMs:0,endMs:20000}],coverage:{status:'complete',intervals:[[0,20000]]}}});
   expect(provider.transcribeChunk).not.toHaveBeenCalled();expect(result.segments[0].origin).toBe('subtitle');
 });
-test('partial chunk failure retains successful evidence and is not full coverage',async()=>{
+test.each(['rate_limited','dependency_timeout'])('partial chunk failure (%s) retains successful evidence without stopping the caller',async code=>{
   const {transcribe,provider}=setup();provider.transcribeChunk.mockImplementation(async({startMs,endMs})=>{
-    if(startMs>0)throw new EngineError('rate_limited',{provider:'openai'});
+    if(startMs>0)throw new EngineError(code,{provider:'openai'});
     return {text:'Tai Sushi',segments:[{text:'Tai Sushi',startMs,endMs,timing:'chunk'}]};
   });
   const result=await transcribe([chunk(),chunk(19000,39000,'b')],{}, {durationMs:39000});
   expect(result.coverage).toEqual({status:'partial',intervals:[[0,20000]],reason:'audio_chunk_failed'});
-  expect(result.text).toBe('Tai Sushi');expect(result.failures[0].code).toBe('rate_limited');
+  expect(result.text).toBe('Tai Sushi');expect(result.failures[0].code).toBe(code);
 });
 test('explicit retry targets only failed input/version identity and never globally refreshes successes',async()=>{
   let failure=true;const failed=Object.assign(new EngineError('dependency_timeout'),{retryGeneration:7});
@@ -96,23 +96,45 @@ test('invalid provider output and out-of-window native times are explicit failur
   const {transcribe,provider}=setup();provider.transcribeChunk.mockResolvedValue({text:'Cafe',segments:[{text:'Cafe',startMs:0,endMs:30000,timing:'native'}]});
   const result=await transcribe();expect(result.coverage.status).toBe('failed');expect(result.failures[0].code).toBe('invalid_response');
 });
-test('child deadline exposes already completed chunks; parent cancellation does not authorize partial consumption',async()=>{
-  const {transcribe,provider}=setup();let release;
-  const held=new Promise(r=>{release=r;});
-  provider.transcribeChunk.mockImplementation(async({startMs,endMs})=>{
-    if(startMs>0) await held;
-    return {text:'Tai Sushi',segments:[{text:'Tai Sushi',startMs,endMs,timing:'chunk'}]};
-  });
-  const parent={deadline:Date.now()+5000,signal:new AbortController().signal};
-  const controller=new AbortController();
-  const context={deadline:Date.now()+40,signal:controller.signal,parentContext:parent};
-  const timer=setTimeout(()=>controller.abort(new EngineError('dependency_timeout',{stage:'media'})),45);
-  let error;
-  try {await jobContext.run(context,()=>transcribe([chunk(),chunk(19000,39000,'b')],{}, {durationMs:39000}));}
-  catch(e){error=e;} finally {release();clearTimeout(timer);}
-  expect(error).toMatchObject({code:'dependency_timeout',partialResult:{text:'Tai Sushi',coverage:{status:'partial',intervals:[[0,20000]]}}});
-  const stopped=new AbortController();stopped.abort();
-  await expect(jobContext.run({...parent,signal:stopped.signal},()=>transcribe())).rejects.not.toHaveProperty('partialResult');
+test.each([
+  ['child deadline exposes already completed chunks',false],
+  ['parent cancellation after a completed chunk does not authorize partial consumption',true],
+])('%s',async(_name,cancelParent)=>{
+  jest.useFakeTimers({now:1000000});
+  let release;
+  try {
+    const {transcribe,provider,writes}=setup();
+    const held=new Promise(r=>{release=r;});
+    provider.transcribeChunk.mockImplementation(async({startMs,endMs})=>{
+      if(startMs>0) await held;
+      return {text:'Tai Sushi',segments:[{text:'Tai Sushi',startMs,endMs,timing:'chunk'}]};
+    });
+    const parent=new AbortController();
+    const context={deadline:Date.now()+40,signal:new AbortController().signal,
+      parentContext:{deadline:Date.now()+5000,signal:parent.signal}};
+    const outcome=jobContext.run(context,()=>transcribe([chunk(),chunk(19000,39000,'b')],{}, {durationMs:39000}))
+      .then(result=>({result}),error=>({error}));
+    // Drain publication before expiring the child: real short timers can fire
+    // before Date.now() reaches its deadline and yield an ordinary chunk failure.
+    await jest.advanceTimersByTimeAsync(0);
+    expect(provider.transcribeChunk).toHaveBeenCalledTimes(2);
+    expect(writes).toHaveLength(1);
+    expect(writes[0].coverage.intervals).toEqual([[0,20000]]);
+    if(cancelParent)parent.abort();
+    await jest.advanceTimersByTimeAsync(40);
+    const {error}=await outcome;
+    if(cancelParent) {
+      expect(error).toMatchObject({code:'attempt_stopped'});
+      expect(error).not.toHaveProperty('partialResult');
+    } else {
+      expect(error).toMatchObject({code:'dependency_timeout',partialResult:{text:'Tai Sushi',coverage:{status:'partial',intervals:[[0,20000]]}}});
+    }
+    expect(provider.transcribeChunk).toHaveBeenCalledTimes(2);
+  } finally {
+    release?.();
+    await jest.advanceTimersByTimeAsync(0);
+    jest.useRealTimers();
+  }
 });
 test('child deadline retains a known failed generation alongside successful partial ASR, without restarting chunks',async()=>{
   const child=new AbortController(),parent=new AbortController();let calls=0;
