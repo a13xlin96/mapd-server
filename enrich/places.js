@@ -29,6 +29,7 @@ function mapNewToLegacy(place) {
       },
     },
     types: place.types || [],
+    ...(Array.isArray(place.addressComponents) ? {address_components: mapAddressComponents(place.addressComponents)} : {}),
     rating: place.rating,
     user_ratings_total: place.userRatingCount,
   };
@@ -42,7 +43,7 @@ function mapAddressComponents(components) {
   }));
 }
 
-async function searchGooglePlaces(query, locationBias, locationRestriction) {
+async function searchGooglePlaces(query, locationBias, locationRestriction, options = {}) {
   const apiKey = process.env.GOOGLE_PLACES_API_KEY;
   if (!apiKey) {
     throw new EngineError('dependency_error',{stage:'places_search',provider:'google'});
@@ -53,13 +54,20 @@ async function searchGooglePlaces(query, locationBias, locationRestriction) {
     : locationBias
       ? `places:search:${query}@${locationBias.lat},${locationBias.lng}`
       : `places:search:${query}`;
-  const normalizedKey = cacheKey.toLowerCase().trim();
+  // A localized result must never replace the default-language cached result.
+  // Keep old keys usable; new search responses add structured address evidence.
+  const languageCode = options.languageCode;
+  if (languageCode && !['ja', 'zh-TW', 'zh-CN', 'ko', 'th', 'ar', 'ru', 'uk', 'el', 'he', 'hi'].includes(languageCode)) {
+    throw new EngineError('invalid_response', {stage: 'places_search', provider: 'google'});
+  }
+  const normalizedKey = cacheKey.toLowerCase().trim() + (languageCode ? `#language:${languageCode.toLowerCase()}` : '');
 
   const cached = await getCached(normalizedKey);
   if (cached) return cached;
 
   try {
     const body = { textQuery: query, pageSize:5 };
+    if (languageCode) body.languageCode = languageCode;
     if (locationRestriction) {
       body.locationRestriction = {
         rectangle: {
@@ -83,7 +91,7 @@ async function searchGooglePlaces(query, locationBias, locationRestriction) {
         headers: {
           'Content-Type': 'application/json',
           'X-Goog-Api-Key': apiKey,
-          'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.location,places.types',
+          'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.addressComponents,places.location,places.types',
         },
         signal,
         timeout: Math.max(1,Math.min(10000,(deadline || Infinity)-Date.now())),

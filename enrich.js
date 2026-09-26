@@ -11,7 +11,8 @@ const {randomUUID} = require('crypto');
 const {withLease} = require('./lib/providerRuntime');
 const jobContext = require('./lib/jobContext');
 const {getRetryContext,withOutcomeSummary,retainUnresolved} = require('./lib/retryContext');
-const {rankPlaces,validCoordinates} = require('./enrich/confidence');
+const {validCoordinates} = require('./enrich/confidence');
+const {createPlaceMatcher} = require('./enrich/placeMatching');
 const {EngineError,asEngineError,failureOf} = require('./lib/engineError');
 const ENGINE_VERSION = require('./lib/engineVersion');
 const {extractPublicPost} = require('./lib/extraction');
@@ -873,9 +874,10 @@ async function runAIPipeline({ jobId, url, userId, captionText }) {
     if(visionError && !textPlaces.length)throw visionError;
   }
   const searches=new Map();
+  const matchPlace=createPlaceMatcher(searchGooglePlaces);
   const matchCandidates=async()=>{
   const candidates = [];
-  const matchedIds = new Set();
+  const resolvedMatches = new Map();
   const existingMatches = [];
   // AI-extracted places that fell out of the loop WITHOUT being proven
   // already-pinned (bad query, no search results, missing details). The
@@ -895,12 +897,25 @@ async function runAIPipeline({ jobId, url, userId, captionText }) {
         results = await searches.get(query);
       }
       catch(error) {unresolvedCount++;outcomes.push({...p,name:p.name,city:p.city || '',address:p.address || '',status:'unresolved',failure:failureOf(error)});continue;}
-      const match = rankPlaces(results,ogData,p);
+      const match = await matchPlace(results,ogData,p,query);
       const top = match.place;
-      if (!top) {unresolvedCount++;outcomes.push({...p,name:p.name,city:p.city || '',address:p.address || '',status:'unresolved',failure:failureOf(new EngineError('no_verified_match'))});continue;}
+      if (!top) {unresolvedCount++;outcomes.push({...p,name:p.name,city:p.city || '',address:p.address || '',status:'unresolved',
+        ranking:{score:0,candidates:match.ranked.map(r=>({placeId:r.top.place_id,score:r.score,...r.evidence}))},
+        failure:failureOf(match.localizationFailure || new EngineError('no_verified_match'))});continue;}
       if((retry.baseOutcomes || []).some(o=>o.status==='dismissed' && o.placeId===top.place_id))continue;
-      if(matchedIds.has(top.place_id)) continue;
-      matchedIds.add(top.place_id);
+      // Resolve all aliases before deciding whether to save or attach a
+      // source. A later uncertain/localized alias must not lose its need for
+      // confirmation just because another name for this ID appeared first.
+      const previous = resolvedMatches.get(top.place_id);
+      if (previous) {
+        previous.match.requiresSelection ||= match.requiresSelection;
+        continue;
+      }
+      resolvedMatches.set(top.place_id, {p, match});
+    }
+    for (const {p, match} of resolvedMatches.values()) {
+      await jobContext.assertActive();
+      const top = match.place;
       requiresSelection = requiresSelection || match.requiresSelection;
       // Per-place placeId dedup: skip if user already has this pin
       const existing = await findPinByPlaceId(userId, top.place_id);

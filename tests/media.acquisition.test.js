@@ -45,6 +45,34 @@ test('captionless direct media needs no extra metadata reader',async()=>{
   expect(await discoverMediaSource({url:sourceUrl,extracted:attachMediaDescriptor({},descriptor)},{runYtDlp})).toBe(descriptor);
   expect(runYtDlp).not.toHaveBeenCalled();
 });
+test.each([false,true])('caption-only HTML allows one video discovery, cached=%s',async cached=>{
+  const unavailable=createMediaDescriptor({url:sourceUrl});
+  const available=createMediaDescriptor({url:sourceUrl,renditions:[{url:'https://cdn.example/video.mp4',format:'mp4'}]});
+  const fresh=attachMediaDescriptor({description:'A restaurant in Kyoto'},unavailable);
+  const extracted=cached?JSON.parse(JSON.stringify(fresh)):fresh;
+  const runYtDlp=jest.fn().mockResolvedValue(attachMediaDescriptor({mediaDiscoveryAttempted:true},available));
+  expect(await discoverMediaSource({url:sourceUrl,extracted},{runYtDlp})).toBe(available);
+  expect(runYtDlp).toHaveBeenCalledTimes(1);
+  expect(runYtDlp.mock.calls[0][1]).toMatchObject({mediaOnly:true});
+});
+test.each([false,true])('a completed unsuccessful discovery is not retried, cached=%s',async cached=>{
+  const fresh=attachMediaDescriptor({mediaDiscoveryAttempted:true},createMediaDescriptor({url:sourceUrl}));
+  const extracted=cached?JSON.parse(JSON.stringify(fresh)):fresh,runYtDlp=jest.fn();
+  expect((await discoverMediaSource({url:sourceUrl,extracted},{runYtDlp})).availability).toBe('unavailable');
+  expect(runYtDlp).not.toHaveBeenCalled();
+});
+test.each([{isLive:true},{isCarousel:true}])('known unsupported media %p does not launch another reader',async flags=>{
+  const descriptor=createMediaDescriptor({url:sourceUrl,...flags}),runYtDlp=jest.fn();
+  expect(await discoverMediaSource({url:sourceUrl,extracted:attachMediaDescriptor({},descriptor)},{runYtDlp})).toBe(descriptor);
+  expect(runYtDlp).not.toHaveBeenCalled();
+});
+test('a block during caption-only discovery propagates without another request',async()=>{
+  const blocked=Object.assign(new Error('source limited'),{code:'rate_limited'});
+  const runYtDlp=jest.fn().mockRejectedValue(blocked);
+  const extracted=attachMediaDescriptor({description:'Dinner'},createMediaDescriptor({url:sourceUrl}));
+  await expect(discoverMediaSource({url:sourceUrl,extracted},{runYtDlp})).rejects.toBe(blocked);
+  expect(runYtDlp).toHaveBeenCalledTimes(1);
+});
 test('JSON cache loses local URL but allows exactly one current-attempt rediscovery',async()=>{
   const descriptor=createMediaDescriptor({url:sourceUrl,renditions:[{url:'https://cdn.example/video.mp4',format:'mp4'}]});
   const extracted=JSON.parse(JSON.stringify(attachMediaDescriptor({mediaDiscoveryAttempted:true},descriptor)));
