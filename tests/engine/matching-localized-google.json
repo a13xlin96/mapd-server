@@ -1,0 +1,73 @@
+{
+  "place_id": "ChIJHVqKATADaDQR5GIuap1vifA",
+  "name": "上好雞肉",
+  "formatted_address": "235台灣新北市中和區民有里民治街8巷1號",
+  "address_components": [
+    {
+      "long_name": "1號",
+      "short_name": "1號",
+      "types": [
+        "street_number"
+      ]
+    },
+    {
+      "long_name": "民治街8巷",
+      "short_name": "民治街8巷",
+      "types": [
+        "route"
+      ]
+    },
+    {
+      "long_name": "民有里",
+      "short_name": "民有里",
+      "types": [
+        "administrative_area_level_3",
+        "political"
+      ]
+    },
+    {
+      "long_name": "中和區",
+      "short_name": "中和區",
+      "types": [
+        "administrative_area_level_2",
+        "political"
+      ]
+    },
+    {
+      "long_name": "新北市",
+      "short_name": "新北市",
+      "types": [
+        "administrative_area_level_1",
+        "political"
+      ]
+    },
+    {
+      "long_name": "台灣",
+      "short_name": "TW",
+      "types": [
+        "country",
+        "political"
+      ]
+    },
+    {
+      "long_name": "235",
+      "short_name": "235",
+      "types": [
+        "postal_code"
+      ]
+    }
+  ],
+  "geometry": {
+    "location": {
+      "lat": 25.0049547,
+      "lng": 121.4748792
+    }
+  },
+  "types": [
+    "chicken_restaurant",
+    "restaurant",
+    "food",
+    "point_of_interest",
+    "establishment"
+  ]
+}

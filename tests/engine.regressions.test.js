@@ -5,6 +5,34 @@ describe('offline engine regression corpus (not live accuracy)',()=>{
 const {parseInstagramPost} = require('../lib/postMetadata');
 const html = value=>`<script type="application/json">${JSON.stringify(value)}</script>`;
 describe('account-tag evidence',()=>{
+  test.each([{__typename:'GraphVideo'},{__typename:'XDTGraphVideo'},{media_type:2}])('typed partial media %p retains supported metadata',type=>{
+    const result=parseInstagramPost(html({shortcode:'TARGET',...type,owner:{username:'creator'},location:{name:'Kyoto'},video_duration:12.4}),'TARGET');
+    expect(result).toMatchObject({tagMetadataAvailable:true,accountTagCoverage:'partial',uploader:'creator',location:'Kyoto',durationMs:12400});
+  });
+  test('a type label with no usable post fields is still not structured metadata',()=>{
+    const result=parseInstagramPost(html({shortcode:'TARGET',__typename:'GraphVideo',owner:{username:false},location:{name:12},video_duration:-1}),'TARGET');
+    expect(result.tagMetadataAvailable).toBe(false);
+  });
+  test('navigation parameters with a matching shortcode are not a structured post',()=>{
+    const result=parseInstagramPost('<meta property="og:description" content="Dinner @tai.sushi">'+html({
+      initialRouteInfo:{route:{params:{shortcode:'TARGET',caption:true,username:'',view:'reel'}}},
+    }),'TARGET');
+    expect(result.tagMetadataAvailable).toBe(false);
+    expect(result.accountTagCoverage).toBe('unavailable');
+    expect(result.accountTags).toEqual([expect.objectContaining({handle:'tai.sushi',origin:'caption'})]);
+  });
+  test('navigation parameters cannot shadow matching post media or tags',()=>{
+    const result=parseInstagramPost(html({
+      post:{shortcode:'TARGET',video_url:'https://cdn.example/right.mp4',usertags:{in:[{user:{username:'tai.sushi'}}]}},
+      route:{params:{shortcode:'TARGET',caption:true}},
+    }),'TARGET');
+    expect(result.mediaRenditions).toEqual([{url:'https://cdn.example/right.mp4',format:'mp4',hasAudio:true}]);
+    expect(result.accountTags).toEqual([expect.objectContaining({handle:'tai.sushi',origin:'post_tag'})]);
+  });
+  test('matching navigation parameters do not bypass the login-wall check',()=>{
+    const metadata=parseInstagramPost('<meta property="og:title" content="Instagram"><meta property="og:description" content="Log in to see photos and videos">'+html({route:{shortcode:'TARGET',caption:true}}),'TARGET');
+    expect(()=>require('../lib/postMetadata').assertReadableInstagramPost(metadata)).toThrow(expect.objectContaining({code:'access_blocked'}));
+  });
   test('only matching post tags and collaborators are used, not suggestions or uploader',()=>{
     const result=parseInstagramPost(html({posts:[
       {shortcode:'OTHER',coauthor_producers:[{username:'unrelated'}]},
