@@ -250,6 +250,40 @@ test('429 stops after one rendition and preserves cooldown hint',async()=>{
   await expect(acquireMedia({descriptor,root},{request})).rejects.toMatchObject({code:'rate_limited',retryAfterSeconds:60});
   expect(request).toHaveBeenCalledTimes(1);expect(await fsp.readdir(root)).toEqual([]);
 });
+async function combinedHtmlDescriptor(htmlUrl='https://cdn.example/html.mp4') {
+  const direct=createMediaDescriptor({url:sourceUrl,renditions:[{url:htmlUrl,format:'mp4'}]});
+  const discovered=mediaFromYtDlp({webpage_url:sourceUrl,formats:[{
+    url:'https://cdn.example/silent.mp4',ext:'mp4',protocol:'https',vcodec:'h264',acodec:'none',
+  }]},sourceUrl);
+  const runYtDlp=jest.fn(async()=>attachMediaDescriptor({},discovered));
+  const descriptor=await discoverMediaSource({url:sourceUrl,extracted:attachMediaDescriptor({},direct)},{runYtDlp});
+  expect(runYtDlp).toHaveBeenCalledTimes(1);
+  expect(descriptor.renditions[0]).toMatchObject({url:htmlUrl,hasAudio:null});
+  return descriptor;
+}
+test('combined discovery downloads the possible-audio HTML video only once and cleans up',async()=>{
+  const descriptor=await combinedHtmlDescriptor(),request=transport([{}]);
+  const media=await acquireMedia({descriptor,root},{request});
+  expect(request).toHaveBeenCalledTimes(1);
+  expect(String(request.mock.calls[0][0])).toBe('https://cdn.example/html.mp4');
+  expect(descriptor.renditions[0].hasAudio).toBeNull(); // Download is not an audio probe.
+  expect(descriptor.audioRendition).toBeUndefined();
+  await media.dispose();expect(await fsp.readdir(root)).toEqual([]);
+});
+test.each([403,429])('combined discovery HTTP %s cannot fall back to its silent sibling',async status=>{
+  const descriptor=await combinedHtmlDescriptor(),request=transport([{status}]);
+  await expect(acquireMedia({descriptor,root},{request})).rejects.toMatchObject({
+    code:status===429?'rate_limited':'access_blocked',
+  });
+  expect(request).toHaveBeenCalledTimes(1);expect(await fsp.readdir(root)).toEqual([]);
+});
+test('combining held readers never bypasses download-time public DNS validation',async()=>{
+  const descriptor=await combinedHtmlDescriptor();
+  dns.lookup.mockResolvedValue([{address:'10.0.0.1',family:4}]);
+  const request=transport([]);
+  await expect(acquireMedia({descriptor,root},{request})).rejects.toMatchObject({code:'access_blocked'});
+  expect(request).not.toHaveBeenCalled();expect(await fsp.readdir(root)).toEqual([]);
+});
 test('caller disposal does not remove a pending operation input; last release does',async()=>{
   const workspace=await createWorkspace({root});await fsp.writeFile(path.join(workspace.directory,'input'),'bytes');
   const release=workspace.retain();await workspace.dispose();await workspace.dispose();
