@@ -27,6 +27,9 @@ require('./lib/enrichmentSweeper'); // boots the orphan-job sweeper
 
 const app = express();
 app.set('trust proxy', 1); // Render sits behind a proxy; req.ip must be the real client
+// Must precede the general JSON parser: this operator route accepts no body.
+const {createMediaDiagnosticRouter, ROUTE:mediaDiagnosticRoute} = require('./lib/mediaDiagnostic');
+app.use(mediaDiagnosticRoute, createMediaDiagnosticRouter({db:firestore}));
 app.use(express.json());
 
 // Per-IP limiter for AI/extract routes. 60 req/min is ~10x a heavy human
