@@ -137,6 +137,70 @@ test('clean grounding summaries keep successful coverage complete',async()=>{
   const result=await f.run();expect(result.incomplete).toBe(false);
   expect(result.coverage.visual.status).toBe('complete');expect(result.coverage.fusion.status).toBe('complete');
 });
+
+function deferred() {
+  let resolve,reject;
+  const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});
+  return {promise,resolve,reject};
+}
+test('both frame batches start together, drain before fusion and preserve input ordering',async()=>{
+  const first=deferred(),second=deferred(),started=deferred();
+  const vision=jest.fn().mockImplementationOnce(()=>first.promise).mockImplementationOnce(()=>{started.resolve();return second.promise;});
+  const f=fixture({vision}),run=f.run();await started.promise;
+  expect(vision).toHaveBeenCalledTimes(2);
+  expect(vision.mock.calls[0][1].signal).toBe(vision.mock.calls[1][1].signal);
+  expect(f.deps.fusion).not.toHaveBeenCalled();
+  second.resolve({places:[{name:'Second'}],observations:[{evidenceId:'frame:second',quote:'Second'}]});
+  await Promise.resolve();
+  expect(f.deps.fusion).not.toHaveBeenCalled();
+  expect((await f.deps.acquire.mock.results[0].value).dispose).not.toHaveBeenCalled();
+  first.resolve({places:[{name:'First'}],observations:[{evidenceId:'frame:first',quote:'First'}]});
+  await run;
+  expect(f.deps.fusion.mock.calls[0][0].textEvidence.filter(e=>e.modality==='visual').map(e=>e.evidenceId))
+    .toEqual(['frame:first:obs:0','frame:second:obs:1']);
+  expect((await f.deps.acquire.mock.results[0].value).dispose).toHaveBeenCalledTimes(1);
+});
+test.each([0,1])('a failed frame batch %s retains its successful sibling without retries or completed manifest',async failed=>{
+  const first=deferred(),second=deferred(),started=deferred(),writeManifest=jest.fn();
+  const vision=jest.fn().mockImplementationOnce(()=>first.promise).mockImplementationOnce(()=>{started.resolve();return second.promise;});
+  const f=fixture({vision,writeManifest,probe:jest.fn(async()=>({durationMs:3000,hasAudio:false}))}),run=f.run();
+  await started.promise;
+  const error=new EngineError('dependency_timeout',{stage:'video_vision'});
+  error.retryOperations=[{kind:'video_vision',retryKey:'failed-batch'}];
+  [first,second][failed].reject(error);
+  await Promise.resolve();expect((await f.deps.acquire.mock.results[0].value).dispose).not.toHaveBeenCalled();
+  [first,second][1-failed].resolve({places:[{name:'Visible cafe',requiresSelection:true}]});
+  const result=await run;
+  expect(result).toMatchObject({incomplete:true,coverage:{visual:{status:'partial',reason:'dependency_timeout'}},
+    retryOperations:[{kind:'video_vision',retryKey:'failed-batch'}]});
+  expect(result.places.map(p=>p.name)).toEqual(['Visible cafe']);
+  expect(vision).toHaveBeenCalledTimes(2);expect(writeManifest).not.toHaveBeenCalled();
+});
+test('both failed batches are drained and retain both retry identities without claiming visual coverage',async()=>{
+  const first=deferred(),second=deferred(),started=deferred();
+  const vision=jest.fn().mockImplementationOnce(()=>first.promise).mockImplementationOnce(()=>{started.resolve();return second.promise;});
+  const f=fixture({vision}),run=f.run();await started.promise;
+  for(const [i,operation] of [first,second].entries()) {
+    const error=new EngineError('dependency_timeout',{stage:'video_vision'});
+    error.retryOperations=[{kind:'video_vision',retryKey:String(i)}];operation.reject(error);
+  }
+  const result=await run;
+  expect(result.coverage.visual).toMatchObject({status:'failed',reason:'dependency_timeout'});
+  expect(result.retryOperations.map(r=>r.retryKey)).toEqual(['0','1']);
+  expect(result.places.map(p=>p.name)).toContain('Cafe A');
+});
+test('cancelled parent cannot consume either late concurrent batch',async()=>{
+  const first=deferred(),second=deferred(),started=deferred(),controller=new AbortController();
+  const vision=jest.fn().mockImplementationOnce(()=>first.promise).mockImplementationOnce(()=>{started.resolve();return second.promise;});
+  const writeManifest=jest.fn(),f=fixture({vision,writeManifest});
+  const run=jobContext.run({...context(),signal:controller.signal},()=>createVideoEvidence(f.deps)({url:'x'}));
+  const rejected=expect(run).rejects.toMatchObject({code:'attempt_stopped'});
+  await started.promise;controller.abort();
+  expect(vision.mock.calls.every(([,options])=>options.signal.aborted)).toBe(true);
+  first.resolve({places:[{name:'Late first'}]});second.resolve({places:[{name:'Late second'}]});
+  await rejected;expect(writeManifest).not.toHaveBeenCalled();
+  expect((await f.deps.acquire.mock.results[0].value).dispose).toHaveBeenCalledTimes(1);
+});
 test.each([false,true])('coordinator emits only trusted source counters and records separate audio attempt=%s',async hasSeparate=>{
   const {mediaFromYtDlp,MEDIA_SOURCE_DIAGNOSTIC_OPERATIONS}=require('../lib/media/mediaSource');
   const url='https://www.instagram.com/reel/SYNTHETIC/';

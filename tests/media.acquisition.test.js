@@ -463,3 +463,93 @@ test('HTML fallback preserves failed discovery diagnostics without exporting or 
   expect(readMediaSourceDiagnostics(result)).toMatchObject({mediaSourceDirect:1,mediaSourceYtDlp:1,
     mediaSourceFallback:1,mediaSourceEntryEligibleAudio:1,mediaSourceAudioAttached:0});
 });
+
+// Synthetic structure only: one unknown MP4 repeated by three video_versions,
+// four explicit video-only sizes, and deliberately no standalone AAC format.
+// No captured metadata, real post IDs or signed URLs belong in these fixtures.
+function syntheticInventoryWithoutAudio() {
+  const unknown={url:'https://cdn.example/unknown.mp4',ext:'mp4',protocol:'https'};
+  return {...unknown,webpage_url:sourceUrl,formats:[
+    ...[1,2,3].map(id=>({...unknown,format_id:String(id)})),
+    ...[[360,640],[540,960],[720,1280],[1080,1920]].map(([width,height],i)=>({
+      url:`https://cdn.example/silent-${i}.mp4`,ext:'mp4',protocol:'https',vcodec:'vp9',acodec:'none',width,height,
+    })),
+  ]};
+}
+test('synthetic saved-inventory-minus-AAC still selects unknown audio above every dimensioned silent format',()=>{
+  const descriptor=mediaFromYtDlp(syntheticInventoryWithoutAudio(),sourceUrl);
+  expect(descriptor.renditions[0]).toEqual({url:'https://cdn.example/unknown.mp4',format:'mp4',hasAudio:null,width:null,height:null});
+  expect(descriptor.audioRendition).toBeUndefined();expect(descriptor.renditions).toHaveLength(4);
+  expect(readMediaSourceDiagnostics(descriptor)).toMatchObject({mediaSourceYtDlp:1,mediaSourceRootFormats:7,
+    mediaSourcePostBound:1,mediaSourceAudioRejectVideo:7,mediaSourceAudioAttached:0,
+    mediaSourceUniqueAudioKnown:0,mediaSourceUniqueAudioUnknown:1,mediaSourceUniqueAudioAbsent:4,
+    mediaSourceChosenAudioState:2,mediaSourceChosenWidth:0,mediaSourceChosenHeight:0,
+    mediaSourceChosenDimensionsLimited:0,mediaSourceDuplicateAudioDemotions:0});
+});
+test('accepted unique audio counts precede shortlist truncation and exclude rejected candidates',()=>{
+  const rendition=(i,hasAudio,height=720)=>({url:`https://cdn.example/${i}.mp4`,format:'mp4',hasAudio,width:360,height});
+  const descriptor=createMediaDescriptor({url:sourceUrl,renditions:[
+    rendition(0,false),rendition(1,null),rendition(2,true,1080),rendition(3,true),
+    rendition(4,false),rendition(5,null),rendition(3,true),
+    {...rendition(6,true),url:'http://cdn.example/rejected'}, {...rendition(7,true),hasVideo:false},
+  ]});
+  expect(descriptor.renditions.map(r=>r.url)).toEqual([3,2,1,5].map(i=>`https://cdn.example/${i}.mp4`));
+  expect(readMediaSourceDiagnostics(descriptor)).toMatchObject({mediaSourceUniqueAudioKnown:2,
+    mediaSourceUniqueAudioUnknown:2,mediaSourceUniqueAudioAbsent:2,mediaSourceChosenAudioState:3,
+    mediaSourceChosenWidth:360,mediaSourceChosenHeight:720,mediaSourceDuplicateAudioDemotions:0});
+});
+test.each([[null,false,1],[false,null,1],[true,false,1],[false,true,1],[false,false,0]])(
+  'explicit silent duplicate remains authoritative and demotions are order independent: %p then %p',
+  (first,second,demotions)=>{
+    const descriptor=createMediaDescriptor({url:sourceUrl,renditions:[first,second,second].map(hasAudio=>({
+      url:'https://cdn.example/same.mp4',format:'mp4',hasAudio,width:360,height:640,
+    }))});
+    expect(descriptor.renditions).toHaveLength(1);expect(descriptor.renditions[0].hasAudio).toBe(false);
+    expect(readMediaSourceDiagnostics(descriptor)).toMatchObject({mediaSourceUniqueAudioKnown:0,
+      mediaSourceUniqueAudioUnknown:0,mediaSourceUniqueAudioAbsent:1,mediaSourceChosenAudioState:1,
+      mediaSourceChosenWidth:360,mediaSourceChosenHeight:640,mediaSourceDuplicateAudioDemotions:demotions});
+  });
+test('selected dimensions and counts are bounded diagnostics without mutating descriptor metadata',()=>{
+  const descriptor=createMediaDescriptor({url:sourceUrl,renditions:Array.from({length:101},(_,i)=>({
+    url:`https://cdn.example/${i}?private=synthetic-secret`,format:'mp4',hasAudio:null,
+    width:1e100,height:720.25,
+  }))});
+  const stats=readMediaSourceDiagnostics(descriptor);
+  expect(stats).toMatchObject({mediaSourceUniqueAudioUnknown:100,mediaSourceChosenAudioState:2,
+    mediaSourceChosenWidth:16384,mediaSourceChosenHeight:720,mediaSourceChosenDimensionsLimited:1});
+  expect(descriptor.renditions[0]).toMatchObject({width:1e100,height:720.25,hasAudio:null});
+  expect(Object.entries(stats).every(([name,value])=>MEDIA_SOURCE_DIAGNOSTIC_OPERATIONS.includes(name)
+    && Number.isSafeInteger(value) && value>=0 && value<=16384)).toBe(true);
+  expect(JSON.stringify(stats)).not.toMatch(/synthetic-secret|https:|SYNTHETIC|private|mp4/);
+  expect(JSON.stringify(attachMediaDescriptor({},descriptor))).not.toContain('mediaSourceChosen');
+  stats.mediaSourceChosenAudioState=3;
+  expect(readMediaSourceDiagnostics(descriptor).mediaSourceChosenAudioState).toBe(2);
+  expect(readMediaSourceDiagnostics({...descriptor,...stats})).toEqual({mediaSourceUnknown:1});
+});
+test.each([{is_live:true},{entries:[{},{}]},{webpage_url:'https://www.instagram.com/reel/OTHER/'}])(
+  'selection diagnostics do not grant source authority to excluded metadata %p',override=>{
+    const descriptor=mediaFromYtDlp({...syntheticInventoryWithoutAudio(),...override},sourceUrl);
+    expect(descriptor.availability).toBe('unavailable');expect(descriptor.renditions).toEqual([]);
+    expect(descriptor.audioRendition).toBeUndefined();
+    expect(readMediaSourceDiagnostics(descriptor)).toMatchObject({mediaSourceUniqueAudioKnown:0,
+      mediaSourceUniqueAudioUnknown:0,mediaSourceUniqueAudioAbsent:0,mediaSourceChosenAudioState:0,
+      mediaSourceChosenWidth:0,mediaSourceChosenHeight:0,mediaSourceDuplicateAudioDemotions:0});
+  });
+test('HTML fallback reports selection from the retained descriptor and inventory from the failed discovery',async()=>{
+  const direct=createMediaDescriptor({url:sourceUrl,renditions:[{url:'https://cdn.example/html.mp4',format:'mp4',hasAudio:null,width:720,height:1280}]});
+  const unavailable=mediaFromYtDlp({webpage_url:sourceUrl,entries:[{formats:[diagnosticAudio()]}]},sourceUrl);
+  const result=await discoverMediaSource({url:sourceUrl,extracted:attachMediaDescriptor({},direct)},
+    {runYtDlp:async()=>attachMediaDescriptor({},unavailable),withProvider:(_p,work)=>work()});
+  expect(result).toBe(direct);expect(result.audioRendition).toBeUndefined();
+  expect(readMediaSourceDiagnostics(result)).toMatchObject({mediaSourceFallback:1,mediaSourceEntryEligibleAudio:1,
+    mediaSourceUniqueAudioUnknown:1,mediaSourceChosenAudioState:2,mediaSourceChosenWidth:720,mediaSourceChosenHeight:1280});
+});
+test('shared metrics registry retains all selection diagnostics without a second allowlist change',()=>{
+  const {OPS,createMetrics}=require('../lib/engineMetrics');
+  const stats=readMediaSourceDiagnostics(mediaFromYtDlp(syntheticInventoryWithoutAudio(),sourceUrl));
+  const metrics=createMetrics({platform:'instagram'});
+  for(const [name,value] of Object.entries(stats)) {expect(OPS).toContain(name);metrics.operation(name,value);}
+  const report=metrics.finish('success');
+  for(const [name,value] of Object.entries(stats)) expect(report.operations[name]).toEqual({sum:value,observations:1,max:value});
+  expect(report.droppedEvents).toBe(0);
+});
