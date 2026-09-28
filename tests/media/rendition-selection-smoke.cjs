@@ -16,12 +16,13 @@ module.exports=async function renditionSelectionSmoke(media,deps) {
     '-i',media.path,'-map','0:v:0','-vf','scale=1280:720','-c:v','libx264','-threads','1','-preset','ultrafast',
     '-crf','20','-an','-f','mp4',file],{deadline:Date.now()+20000});
   const post='https://www.instagram.com/reel/SMOKE720/';
-  const descriptor=mediaFromYtDlp({webpage_url:post,duration:3,formats:[
+  const descriptor=mediaFromYtDlp({webpage_url:post,formats:[
     {url:'https://cdn.example/unknown',ext:'mp4',protocol:'https',vcodec:'h264'},
     {url:'https://cdn.example/bounded720',ext:'mp4',protocol:'https',vcodec:'h264',acodec:'none',width:1280,height:720},
     {url:'https://cdn.example/audio',ext:'m4a',protocol:'https',vcodec:'none',acodec:'aac'},
   ]},post);
   assert.equal(descriptor.renditions[0].url,'https://cdn.example/bounded720');
+  assert.equal(descriptor.durationMs,null); // Observed Instagram metadata shape.
   assert(descriptor.audioRendition);
   const video={...media,path:file,contentDigest:createHash('sha256').update(await fs.readFile(file)).digest('hex')};
   const processed=await processMedia({media:video,deadline:Date.now()+10000},deps);
