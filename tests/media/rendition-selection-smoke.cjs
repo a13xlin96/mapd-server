@@ -8,7 +8,7 @@ const {runLocalProcess,processMedia}=require('../../lib/media/mediaProcess');
 const {selectFrames}=require('../../lib/media/frameSelector');
 const {prepareAudioChunks}=require('../../lib/media/audioDecode');
 
-// Real offline 720p selection + separate AAC alignment using the same brief
+// Real offline 720p preparation + separate AAC alignment using the same brief
 // 300ms visual clue and audio as the main generated smoke. No CDN/AI calls.
 module.exports=async function renditionSelectionSmoke(media,deps) {
   const file=path.join(media.directory,'bounded720.media');
@@ -21,9 +21,12 @@ module.exports=async function renditionSelectionSmoke(media,deps) {
     {url:'https://cdn.example/bounded720',ext:'mp4',protocol:'https',vcodec:'h264',acodec:'none',width:1280,height:720},
     {url:'https://cdn.example/audio',ext:'m4a',protocol:'https',vcodec:'none',acodec:'aac'},
   ]},post);
-  assert.equal(descriptor.renditions[0].url,'https://cdn.example/bounded720');
+  // A separate AAC URL cannot displace the potentially muxed original.
+  assert.equal(descriptor.renditions[0].url,'https://cdn.example/unknown');
   assert.equal(descriptor.durationMs,null); // Observed Instagram metadata shape.
   assert(descriptor.audioRendition);
+  // Exercise separate-track preparation independently; selection keeps the
+  // original above. Generated AAC does not reproduce every CDN priming layout.
   const video={...media,path:file,contentDigest:createHash('sha256').update(await fs.readFile(file)).digest('hex')};
   const processed=await processMedia({media:video,deadline:Date.now()+10000},deps);
   assert.equal(processed.hasAudio,false);assert.equal(processed.width,1280);assert.equal(processed.height,720);
