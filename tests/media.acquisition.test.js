@@ -8,7 +8,7 @@ const {EventEmitter}=require('events');
 const {Readable}=require('stream');
 const dns=require('dns').promises;
 const {createMediaDescriptor,attachMediaDescriptor,discoverMediaSource,mediaFromYtDlp}=require('../lib/media/mediaSource');
-const {acquireMedia,downloadPublicMedia,createWorkspace,sweepOrphanWorkspaces,sniffContainer}=require('../lib/media/publicMediaDownload');
+const {acquireMedia,acquireSeparateAudio,downloadPublicMedia,createWorkspace,sweepOrphanWorkspaces,sniffContainer}=require('../lib/media/publicMediaDownload');
 const {parseInstagramPost}=require('../lib/postMetadata');
 const {parseSubtitleCues}=require('../lib/ytdlp');
 const sourceUrl='https://www.instagram.com/reel/SYNTHETIC/';
@@ -321,4 +321,79 @@ test('exclusive output collision cannot delete an existing file',async()=>{
 });
 test('metadata for a different post cannot donate its video',()=>{
   expect(mediaFromYtDlp({webpage_url:'https://www.instagram.com/reel/OTHER/',url:'https://cdn.example/v',ext:'mp4'},sourceUrl).availability).toBe('unavailable');
+});
+
+function separateDescriptor(override={},metadata={}) {
+  return mediaFromYtDlp({webpage_url:sourceUrl,duration:30,formats:[
+    {url:'https://cdn.example/video.mp4',ext:'mp4',protocol:'https',vcodec:'vp9',acodec:'none',height:640,width:360},
+    {url:'https://cdn.example/audio.m4a',ext:'m4a',protocol:'https',vcodec:'none',acodec:'mp4a.40.5',...override},
+  ],...metadata},sourceUrl);
+}
+test('same-post yt-dlp direct AAC becomes one private audio-only candidate, never a video rendition',()=>{
+  const descriptor=separateDescriptor();
+  expect(descriptor.audioRendition).toEqual({url:'https://cdn.example/audio.m4a',format:'m4a',contentId:'instagram:SYNTHETIC'});
+  expect(descriptor.renditions).toHaveLength(1);expect(descriptor.renditions[0].hasAudio).toBe(false);
+  expect(JSON.stringify(descriptor)).not.toContain('audio.m4a');
+  expect(JSON.stringify(attachMediaDescriptor({},descriptor))).not.toContain('cdn.example');
+  expect(JSON.parse(JSON.stringify(descriptor)).audioRendition).toBeUndefined();
+});
+test.each([
+  {vcodec:'h264'}, {vcodec:undefined}, {acodec:'none'}, {acodec:'opus'}, {protocol:'http_dash_segments'},
+  {protocol:'http'}, {url:'http://cdn.example/audio'}, {url:'https://u:p@cdn.example/audio'},
+  {url:'https://cdn.example/audio.m3u8'}, {fragments:[{}]}, {manifest_url:'https://cdn.example/a.mpd'},
+  {has_drm:true}, {ext:'webm'}, {url:'https://cdn.example/video.mp4'},
+])('unsupported separate audio cannot become download authority: %p',override=>{
+  expect(separateDescriptor(override).audioRendition).toBeUndefined();
+});
+test.each([{webpage_url:undefined},{webpage_url:'https://www.instagram.com/reel/OTHER/'},{is_live:true},{entries:[{},{}]}])('audio requires exact same-post identity and supported content: %p',metadata=>{
+  expect(separateDescriptor({},metadata).audioRendition).toBeUndefined();
+});
+test('separate audio shares one workspace, stays alive through owned references, and can acquire only once',async()=>{
+  const request=transport([{},{}]);
+  const video=await acquireMedia({descriptor:separateDescriptor(),root},{request});
+  const audio=await acquireSeparateAudio({media:video,processed:{hasAudio:false}},{request});
+  expect(audio.directory).toBe(video.directory);expect(audio.path).not.toBe(video.path);
+  expect((await fsp.stat(audio.path)).mode&0o777).toBe(0o600);
+  expect(await fsp.readdir(root)).toHaveLength(1);expect(request).toHaveBeenCalledTimes(2);
+  await expect(acquireSeparateAudio({media:video,processed:{hasAudio:false}},{request})).rejects.toMatchObject({code:'attempt_stopped'});
+  await video.dispose();expect((await fsp.stat(audio.path)).isFile()).toBe(true);
+  await audio.dispose();await audio.dispose();await expect(fsp.stat(video.directory)).rejects.toMatchObject({code:'ENOENT'});
+});
+test('muxed or forged video cannot acquire separate audio',async()=>{
+  const request=transport([{}]);const video=await acquireMedia({descriptor:separateDescriptor(),root},{request});
+  await expect(acquireSeparateAudio({media:video,processed:{hasAudio:true}},{request})).rejects.toMatchObject({code:'attempt_stopped'});
+  await expect(acquireSeparateAudio({media:{...video},processed:{hasAudio:false}},{request})).rejects.toMatchObject({code:'attempt_stopped'});
+  expect(request).toHaveBeenCalledTimes(1);await video.dispose();
+});
+test('audio byte limit is the remaining cumulative video+audio allowance, not a fresh allowance',async()=>{
+  const request=transport([{},{}]);const video=await acquireMedia({descriptor:separateDescriptor(),root,config:{maxDownloadBytes:mp4.length*2-1}},{request});
+  await expect(acquireSeparateAudio({media:video,processed:{hasAudio:false}},{request})).rejects.toMatchObject({code:'input_too_large'});
+  await expect(fsp.stat(path.join(video.directory,'audio.media'))).rejects.toMatchObject({code:'ENOENT'});
+  expect(await fsp.readFile(video.path)).toEqual(mp4);expect(request).toHaveBeenCalledTimes(2);await video.dispose();
+});
+test('audio respects remaining single-workspace quota and leaves the video usable after failure',async()=>{
+  const request=transport([{},{}]);const video=await acquireMedia({descriptor:separateDescriptor(),root,config:{maxWorkspaceBytes:1024}},{request});
+  const used=await video.assertQuota();await fsp.writeFile(path.join(video.directory,'ballast'),Buffer.alloc(1024-used-8));
+  await expect(acquireSeparateAudio({media:video,processed:{hasAudio:false}},{request})).rejects.toMatchObject({code:'input_too_large'});
+  expect(await video.assertQuota()).toBeLessThanOrEqual(1024);expect(await fsp.readFile(video.path)).toEqual(mp4);await video.dispose();
+});
+test('video probing/waiting consumes the same absolute 25s download window',async()=>{
+  const request=transport([{}]);const now=Date.now();
+  const video=await acquireMedia({descriptor:separateDescriptor(),root},{request});
+  jest.spyOn(Date,'now').mockReturnValue(now+25001);
+  await expect(acquireSeparateAudio({media:video,processed:{hasAudio:false}},{request})).rejects.toMatchObject({code:'dependency_timeout'});
+  expect(request).toHaveBeenCalledTimes(1);await video.dispose();
+});
+test.each([429,403])('separate audio HTTP %s consumes its only attempt and never damages video',async status=>{
+  const request=transport([{}, {status,headers:{'retry-after':'60'}}]);
+  const video=await acquireMedia({descriptor:separateDescriptor(),root},{request});
+  await expect(acquireSeparateAudio({media:video,processed:{hasAudio:false}},{request})).rejects.toMatchObject({code:status===429?'rate_limited':'access_blocked'});
+  await expect(acquireSeparateAudio({media:video,processed:{hasAudio:false}},{request})).rejects.toMatchObject({code:'attempt_stopped'});
+  expect(request).toHaveBeenCalledTimes(2);expect(await fsp.readFile(video.path)).toEqual(mp4);await video.dispose();
+});
+test('parallel separate audio acquisition admits one request',async()=>{
+  const request=transport([{},{}]);const video=await acquireMedia({descriptor:separateDescriptor(),root},{request});
+  const results=await Promise.allSettled([1,2].map(()=>acquireSeparateAudio({media:video,processed:{hasAudio:false}},{request})));
+  expect(results.filter(r=>r.status==='fulfilled')).toHaveLength(1);expect(request).toHaveBeenCalledTimes(2);
+  await results.find(r=>r.status==='fulfilled').value.dispose();await video.dispose();
 });

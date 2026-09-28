@@ -86,6 +86,55 @@ test('truncated model output is an invalid response, never a complete empty resu
   const {vision,createMessage}=setup();createMessage.mockResolvedValue({...message({places:[],observations:[]}),stop_reason:'max_tokens'});
   await expect(vision(base,opts)).rejects.toMatchObject({code:'invalid_response'});
 });
+test.each(['vision','fusion'])('%s accepts reordered cached maps but rejects changed evidence',async method=>{
+  const raw=method==='vision'?rawVideo():{places:[{name:'ngâm CAFE',evidenceRefs:[ref('audio:1','ngâm CAFE')]}]};
+  const sorted=value=>Array.isArray(value)?value.map(sorted):value && typeof value==='object'
+    ? Object.fromEntries(Object.keys(value).sort().map(k=>[k,sorted(value[k])])):value;
+  const sharedOperation=async(options,work)=>{
+    const value=sorted(await work());expect(options.validate(value)).toBe(true);
+    const forged=structuredClone(value);forged.places[0].name='Invented Restaurant';
+    expect(options.validate(forged)).toBe(false);
+    return value;
+  };
+  const f=setup({raw,sharedOperation});
+  expect((await f[method]({...base,textEvidence:[audio]},opts)).places).toHaveLength(1);
+  expect(f.createMessage).toHaveBeenCalledTimes(1);
+});
+test('media uses the bounded response parser for harmless framing and rejects duplicate keys',async()=>{
+  const {vision,createMessage}=setup();
+  createMessage.mockResolvedValue({stop_reason:'end_turn',content:[{type:'text',text:'Here is the JSON:\n```json\n'+JSON.stringify(rawVideo())+'\n```'}]});
+  expect((await vision(base,opts)).places[0].name).toBe('鯛寿司');
+  const invalid=setup();invalid.createMessage.mockResolvedValue({stop_reason:'end_turn',content:[{type:'text',text:'{"places":[],"places":[],"observations":[]}'}]});
+  await expect(invalid.vision(base,opts)).rejects.toMatchObject({code:'invalid_response',stage:'video_vision',aiResponseReason:'format_duplicate_key'});
+  expect(invalid.createMessage).toHaveBeenCalledTimes(1);
+});
+test('sorted cache and follower reuse do not dispatch another vision call',async()=>{
+  const {canonical}=require('../lib/sharedAiIdentity'),cache=new Map();
+  const shared=createSharedAiOperations({allowLocal:true,cache:{getCached:async k=>cache.get(k),
+    setCache:async(k,v)=>cache.set(k,JSON.parse(canonical(v)))}});
+  const f=setup({sharedOperation:shared.runSharedAiOperation});
+  const [one,two]=await Promise.all([f.vision(base,opts),f.vision(base,opts)]);
+  const cached=await f.vision(base,opts);
+  expect(one).toEqual(two);expect(cached).toEqual(one);expect(f.createMessage).toHaveBeenCalledTimes(1);
+});
+test('structural cache comparison still rejects extra fields and a changed frame order',async()=>{
+  const f=setup({raw:{observations:[],places:[]},sharedOperation:async(options,work)=>{
+    const value=await work();expect(options.validate(value)).toBe(true);
+    expect(options.validate({...value,extra:'not allowed'})).toBe(false);
+    expect(options.validate({...value,frames:[...value.frames].reverse()})).toBe(false);
+    return value;
+  }});
+  await f.vision({...base,frames:[frame(),frame(5,14000)]},opts);
+  expect(f.createMessage).toHaveBeenCalledTimes(1);
+});
+test.each([
+  ['{"observations":[],"pl\\u0061ces":[],"places":[]}', 'format_duplicate_key'],
+  ['I cannot help with that. {"places":[]}', 'format_framing'],
+])('media malformed framing is rejected without leaking provider text',async(text,reason)=>{
+  const f=setup();f.createMessage.mockResolvedValue({stop_reason:'end_turn',content:[{type:'text',text}]});
+  await expect(f.vision(base,opts)).rejects.toMatchObject({code:'invalid_response',aiResponseReason:reason});
+  expect(f.createMessage).toHaveBeenCalledTimes(1);
+});
 test('vision failure exposes exact retry operation; changed frames do not reuse retry authority',async()=>{
   let fail=true;const sharedOperation=jest.fn(async(_options,work)=>{if(fail)throw Object.assign(new EngineError('dependency_timeout'),{retryGeneration:3});return work();});
   const {vision,run}=setup({sharedOperation});let failure;
@@ -239,7 +288,7 @@ test('baseline identity and geography partition fusion cache; legacy missing con
     expect(await f.fusion({...input,baselinePlaces:baseline},opts)).toEqual({places:[],contradictions:[]});
   }
   expect(f.createMessage).toHaveBeenCalledTimes(3);
-  expect(f.run.mock.calls[0][0]).toMatchObject({schemaVersion:2,promptVersion:'grounded-crossmodal-v2',
+  expect(f.run.mock.calls[0][0]).toMatchObject({schemaVersion:3,promptVersion:'grounded-crossmodal-v2',
     input:{baselinePlaces:[{name:'Tai Sushi',city:'Kyoto',country:'',address:''}]}});
   expect(f.createMessage.mock.calls[0][0].messages[0].content).toContain('Baseline context (not evidence):');
 });

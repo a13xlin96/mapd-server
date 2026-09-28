@@ -3,10 +3,10 @@ const fs=require('fs').promises;
 const os=require('os');
 const path=require('path');
 const {EventEmitter}=require('events');
-const {processMedia,parseProbe,runLocalProcess,runFfmpeg,withDecodeSlot}=require('../lib/media/mediaProcess');
+const {processMedia,parseProbe,parseSeparateAudioProbe,runLocalProcess,runFfmpeg,withDecodeSlot}=require('../lib/media/mediaProcess');
 jest.mock('../lib/providerRuntime',()=>({withProvider:(_p,work)=>work(),withLease:(_key,work)=>work()}));
 const {createWorkspace}=require('../lib/media/publicMediaDownload');
-const {prepareAudioChunks}=require('../lib/media/audioDecode');
+const {prepareAudioChunks,audioEvidenceDigest}=require('../lib/media/audioDecode');
 let root,media;
 const probe={format:{duration:'30',start_time:'0',format_name:'mov,mp4,m4a,3gp,3g2,mj2'},streams:[{index:0,codec_type:'video',width:1280,height:720},{index:1,codec_type:'audio'}]};
 function audioInfo(n,pts,samples) {return `[Parsed_ashowinfo_2 @ 0x0] n:${n} pts:${pts} pts_time:${pts/16000} fmt:s16 channels:1 chlayout:mono rate:16000 nb_samples:${samples}\n`;}
@@ -191,4 +191,72 @@ test('tighter chunk duration still respects the 32-request cap and leaves excess
   expect(run).toHaveBeenCalledTimes(1);expect(chunks).toHaveLength(32);
   expect(chunks.every(c=>c.endMs-c.startMs<=2000)).toBe(true);
   expect(require('../lib/media/audioSegments').missingIntervals(chunks.map(c=>[c.startMs,c.endMs]),180000)).toEqual([[33000,180000]]);
+});
+
+const separateVideo=(origin=0)=>parseProbe({format:{...probe.format,duration:'3',start_time:String(origin)},
+  streams:[{...probe.streams[0],start_time:String(origin)}]});
+const audioOnly=(origin=0,duration=3.09)=>({format:{...probe.format,duration:String(duration),start_time:String(origin)},
+  streams:[{index:0,codec_type:'audio',codec_name:'aac',sample_rate:'48000',channels:2,start_time:String(origin),duration:String(duration)}]});
+test('separate audio probe keeps video clip duration with a longer same-origin AAC track',async()=>{
+  const value=audioOnly(),video=separateVideo();
+  const spawn=jest.fn(()=>{const p=fakeProcess();setImmediate(()=>{p.stdout.emit('data',Buffer.from(JSON.stringify(value)));p.emit('close',0);});return p;});
+  const result=await processMedia({media,audioForVideo:video},{spawn});
+  expect(result).toMatchObject({hasAudio:true,durationMs:3000,audioStartMs:0,audioStreamIndex:0,
+    separateAudio:{originMs:0,startMs:0,endMs:3090,transform:'copyts-video-origin-pcm16k-mono-v1'}});
+  expect(spawn.mock.calls[0][1]).toEqual(expect.arrayContaining(['-protocol_whitelist','file','-enable_drefs','0']));
+});
+test.each([
+  p=>{p.streams.push({index:1,codec_type:'video',width:1,height:1});},
+  p=>{p.streams.push({...p.streams[0],index:1});},
+  p=>{p.streams.push({index:1,codec_type:'data'});},
+  p=>{p.streams[0].disposition={attached_pic:1};},
+  p=>{p.streams[0].codec_name='opus';},
+  p=>{delete p.streams[0].start_time;},
+  p=>{delete p.format.start_time;},
+  p=>{p.streams[0].start_time='0.1';},
+  p=>{p.format.start_time='0.1';p.streams[0].start_time='0.1';},
+  p=>{p.streams[0].duration='2';},
+  p=>{p.streams[0].duration='NaN';},
+  p=>{p.format.duration='181';p.streams[0].duration='181';},
+  p=>{p.streams[0].sample_rate='999999';},
+  p=>{p.streams[0].channels=0;},
+  p=>{p.streams[0].index=-1;},
+  p=>{p.format.format_name='hls';},
+])('separate audio rejects ambiguous timeline, hidden streams or invalid bounds before decode',mutate=>{
+  const value=audioOnly();mutate(value);
+  expect(()=>parseSeparateAudioProbe(value,separateVideo())).toThrow(expect.objectContaining({code:'invalid_response',stage:'audio_timeline'}));
+});
+test('a video with implicit/default origin cannot authorize a separate track',()=>{
+  const unknown=parseProbe({...probe,streams:[probe.streams[0]]});
+  expect(unknown.timelineOriginKnown).toBe(false);
+  expect(()=>parseSeparateAudioProbe(audioOnly(),unknown)).toThrow();
+  expect(()=>parseSeparateAudioProbe(audioOnly(),{...separateVideo(),hasAudio:true})).toThrow();
+});
+test('separate audio preserves raw timestamps then subtracts only the validated video origin',async()=>{
+  const processed=parseSeparateAudioProbe(audioOnly(5),separateVideo(5));
+  const run=jest.fn().mockResolvedValue({stdout:Buffer.alloc(3*16000*2),stderr:audioInfo(0,0,3*16000)});
+  const chunks=await prepareAudioChunks({media,processed},{runFfmpeg:run});
+  expect(chunks.map(c=>[c.startMs,c.endMs])).toEqual([[0,3000]]);
+  expect(run.mock.calls[0][0]).toMatchObject({preserveTimestamps:true});
+  expect(run.mock.calls[0][0].args.join(' ')).toContain('asetpts=PTS-(5)/TB,atrim=start=0:end=3');
+  const spawn=jest.fn(()=>{const p=fakeProcess();setImmediate(()=>p.emit('close',0));return p;});
+  await runFfmpeg({media,args:[],preserveTimestamps:true},{spawn});
+  expect(spawn.mock.calls[0][1]).toContain('-copyts');expect(spawn.mock.calls[0][1]).not.toContain('-start_at_zero');
+});
+test('shorter aligned audio and sample rounding remain partial without inventing tail coverage',async()=>{
+  const processed=parseSeparateAudioProbe(audioOnly(0,2),separateVideo());
+  const run=jest.fn().mockResolvedValue({stdout:Buffer.alloc(2*16000*2),stderr:audioInfo(0,0,2*16000)});
+  const chunks=await prepareAudioChunks({media,processed},{runFfmpeg:run});
+  expect(chunks.map(c=>[c.startMs,c.endMs])).toEqual([[0,2000]]);
+  expect(require('../lib/media/audioSegments').missingIntervals(chunks.map(c=>[c.startMs,c.endMs]),3000)).toEqual([[2000,3000]]);
+});
+test('separate audio cache identity includes both assets, validated transform and source times',()=>{
+  const processed=parseSeparateAudioProbe(audioOnly(),separateVideo());
+  const base=audioEvidenceDigest('a'.repeat(64),'b'.repeat(64),processed);
+  expect(base).toMatch(/^[a-f0-9]{64}$/);
+  expect(audioEvidenceDigest('a'.repeat(64),'b'.repeat(64),processed)).toBe(base);
+  expect(audioEvidenceDigest('a'.repeat(64),'c'.repeat(64),processed)).not.toBe(base);
+  expect(audioEvidenceDigest('c'.repeat(64),'b'.repeat(64),processed)).not.toBe(base);
+  expect(audioEvidenceDigest('a'.repeat(64),'b'.repeat(64),parseSeparateAudioProbe(audioOnly(5),separateVideo(5)))).not.toBe(base);
+  expect(()=>audioEvidenceDigest('bad','b'.repeat(64),processed)).toThrow();
 });

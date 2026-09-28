@@ -9,7 +9,7 @@ const {spawnSync}=require('child_process');
 const assert=require('assert/strict');
 const {createWorkspace}=require('../../lib/media/publicMediaDownload');
 const {processMedia,runLocalProcess}=require('../../lib/media/mediaProcess');
-const {prepareAudioChunks}=require('../../lib/media/audioDecode');
+const {prepareAudioChunks,audioEvidenceDigest}=require('../../lib/media/audioDecode');
 const {selectFrames}=require('../../lib/media/frameSelector');
 const deps={ffmpegPath:process.env.FFMPEG_BIN || 'ffmpeg',ffprobePath:process.env.FFPROBE_BIN || 'ffprobe'};
 (async()=>{
@@ -33,9 +33,27 @@ const deps={ffmpegPath:process.env.FFMPEG_BIN || 'ffmpeg',ffprobePath:process.en
     const result=await selectFrames({media,processed,deadline:Date.now()+25000,limit:16},deps);
     assert(result.frames.length>0);assert(result.frames.some(frame=>frame.timestampMs>=1200 && frame.timestampMs<=1500),'brief generated visual clue missed');
     assert(result.frames.every(frame=>frame.bytes.length>24 && frame.bytes.length<=1536*1024));
+    // Exercise separate-container alignment with the exact FFmpeg shipped in
+    // the production image; fake probe fixtures cannot establish decoder behavior.
+    const split=async(kind)=>{
+      const target=path.join(media.directory,`${kind}.media`);
+      await runLocalProcess(deps.ffmpegPath,['-nostdin','-hide_banner','-i',media.path,
+        '-map',kind==='video'?'0:v:0':'0:a:0','-c','copy','-f','mp4',target],{deadline:Date.now()+10000});
+      return {...media,path:target,contentDigest:require('crypto').createHash('sha256').update(await fs.readFile(target)).digest('hex')};
+    };
+    const separateVideo=await split('video'),separateAudio=await split('audio');
+    const videoInfo=await processMedia({media:separateVideo,deadline:Date.now()+10000},deps);
+    const audioInfo=await processMedia({media:separateAudio,audioForVideo:videoInfo,deadline:Date.now()+10000},deps);
+    const separateChunks=await prepareAudioChunks({media:separateAudio,processed:audioInfo,deadline:Date.now()+10000},deps);
+    assert.equal(videoInfo.hasAudio,false);assert.equal(audioInfo.hasAudio,true);
+    assert(separateChunks.length>0);assert.equal(separateChunks[0].startMs,0);
+    assert(separateChunks.every(chunk=>chunk.endMs<=videoInfo.clipEndMs));
+    assert.notEqual(audioEvidenceDigest(separateVideo.contentDigest,separateAudio.contentDigest,audioInfo),separateVideo.contentDigest);
+    const separateTracks={chunks:separateChunks.length,originMs:audioInfo.separateAudio.originMs,
+      endMs:separateChunks.at(-1).endMs,videoDurationMs:videoInfo.durationMs};
     const highDetail=await require('./high-detail-smoke.cjs')(media,deps);
     const adversarial=await require('./adversarial-smoke.cjs')(media,deps);
     process.stdout.write(JSON.stringify({ok:true,durationMs:processed.durationMs,chunks:audio.length,
-      scannedFrames:result.scannedFrames,selectedTimestampsMs:result.frames.map(f=>f.timestampMs),highDetail,adversarial})+'\n');
+      scannedFrames:result.scannedFrames,selectedTimestampsMs:result.frames.map(f=>f.timestampMs),separateTracks,highDetail,adversarial})+'\n');
   } finally {await media.dispose();}
 })().catch(error=>{process.stderr.write(error.message+'\n');process.exitCode=1;});
