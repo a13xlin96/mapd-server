@@ -6,6 +6,8 @@ Implementation version: `media-v1` / `media-evidence-v1`; frame policy `scene-gr
 
 `mediaSource` accepts a server-read post and returns an internal descriptor for a public direct MP4/WebM rendition. Its capability cannot be created by request JSON; attaching it to extracted metadata is non-enumerable. The downloader validates public DNS at connection time and on redirects. A blocked or expired rendition ends this attempt; there is no automatic source refresh/fallback loop.
 
+If the selected video has no audio, one direct AAC/M4A rendition from the same explicitly identified post may supply it. The video and audio share the existing aggregate download, workspace and time limits. Stream timing must align with the video; unavailable or ambiguous audio remains explicit incomplete/unavailable coverage. Source and rendition-selection diagnostics contain only fixed, bounded numeric fields, never URLs or raw metadata.
+
 `publicMediaDownload` owns a private temporary workspace. `mediaProcess`, `audioDecode` and `frameSelector` consume local files under bounded process lifetimes. Audio and normalized images handed to shared producers are copied into producer-owned buffers. No worker-local path is serialized to remote followers. Cleanup retains active process references, waits for close after cancellation, and conservatively retains orphan directories if process identity cannot be established.
 
 ## Transcription adapter
@@ -35,9 +37,11 @@ The facade returns `provider`, `model`, `adapterVersion`, `mediaDigest`, `langua
 
 Frames carry source digest, image digest, decoder timestamp, dimensions, normalized crop coordinates and local bytes. Vision consumes at most eight frames per request, at most two batches and sixteen frames per attempt. Each normalized frame is at most 1.5 MiB; each batch is at most 12 MiB. Scene/grid ranking is an image heuristic, not an OCR detector. Real brief-sign recall remains an evaluation gate.
 
+The two batches start concurrently under the same phase deadline and existing provider-slot admission. Both subscriptions settle before fusion or disposal, and results merge in input order. Failure of one batch preserves the other and marks coverage partial. The maximum call count is unchanged; a first-batch failure can now coexist with a second paid call instead of preventing that batch from starting.
+
 The video-specific response contains literal visual observations and place candidates. Each name and nonempty geographic field requires a validated reference with `evidenceId`, literal `quote`, `supports` (`name`, `city`, `country`, `address`), and a normalized frame `region` when appropriate. Validation checks reference existence, quotes and geometry; it cannot prove that model recognition or semantic association is correct.
 
-Final `grounded-crossmodal-v2` fusion combines caption, timed speech/subtitles and validated visual observations. Baseline candidates are hypotheses, not evidence. The result is `{places, contradictions}`. A contradiction names a baseline venue and cites literal evidence; affected candidates require confirmation. New media candidates always require selection. Evidence quotes and frame/audio bodies are stripped before mobile job publication.
+Final `grounded-crossmodal-v3` fusion combines caption, timed speech/subtitles and validated visual observations. Baseline candidates are hypotheses, not evidence. Provider output may omit unsupported geographic claims or unsupported candidates only after every reference, shape and region passes validation; retained claims must then pass strict validation. Omission counts mark partial coverage and prevent a completed manifest. Cached artifacts remain strictly validated. A contradiction names a baseline venue and cites literal evidence; affected candidates require confirmation. New media candidates always require selection. Evidence quotes and frame/audio bodies are stripped before mobile job publication.
 
 ## Recovery contract
 
