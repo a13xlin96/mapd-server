@@ -34,6 +34,17 @@ test('fake second provider works with native timestamps and absent usage',async(
   const {transcribe}=setup({adapter});const result=await transcribe();
   expect(result).toMatchObject({provider:'fake',model:'speech-v2',language:'vi',segments:[{timing:'native',startMs:500,endMs:1500}]});
 });
+test('reordered persisted transcription maps remain reusable without accepting forged timing',async()=>{
+  const sorted=value=>Array.isArray(value)?value.map(sorted):value && typeof value==='object'
+    ? Object.fromEntries(Object.keys(value).sort().map(k=>[k,sorted(value[k])])):value;
+  const f=setup({sharedOperation:async(options,work)=>{
+    const value=sorted(await work());expect(options.validate(value)).toBe(true);
+    const forged=structuredClone(value);forged.segments[0].endMs=999999;
+    expect(options.validate(forged)).toBe(false);return value;
+  }});
+  expect((await f.transcribe()).text).toBe('鯛寿司');
+  expect(f.provider.transcribeChunk).toHaveBeenCalledTimes(1);
+});
 test('changed bytes, model hint or private scope cannot collide',async()=>{
   const {transcribe,provider}=setup();
   await transcribe();await transcribe([chunk(0,20000,'different')]);await transcribe(undefined,{}, {languageHint:'ja'});

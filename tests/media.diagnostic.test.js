@@ -136,6 +136,15 @@ test('claim commit acknowledgement failure is never followed by execution or rec
   expect((await f.send()).body.status).toBe('running');
   expect(f.extract).not.toHaveBeenCalled();
 });
+test.each(['media_reference','private transcript https://secret.test'])('response diagnostics expose only allowlisted reason codes (%s)',async reason=>{
+  const error=new EngineError('invalid_response',{stage:'video_vision'});
+  Object.defineProperty(error,'aiResponseReason',{value:reason});
+  const f=setup({collect:jest.fn(async()=>({...emptyResult(),incomplete:true,error}))});
+  await f.send();await f.router.whenIdle();
+  expect(f.read().result.responseValidation).toBe(reason==='media_reference'?reason:undefined);
+  expect(JSON.stringify(f.read().result)).not.toContain('private transcript');
+  expect(f.collect).toHaveBeenCalledTimes(1);
+});
 
 test('nonempty audio coverage persists under Firestore nested-array constraints', async () => {
   const f = setup();

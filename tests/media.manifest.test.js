@@ -14,7 +14,7 @@ test('only completed valid evidence is stored; no automatic failed-result refres
  await writeManifest('key',{...result,incomplete:true},{writer});expect(writer).toHaveBeenCalledTimes(1);
 });
 test('old silent-rendition manifests cannot suppress new audio discovery',async()=>{
- const key=manifestKey(base),oldKey=key.replace('media-manifest-v3:','media-manifest-v2:');
+ const key=manifestKey(base),oldKey=key.replace('media-manifest-v4:','media-manifest-v2:');
  expect(oldKey).not.toBe(key);
  const old={...result,coverage:{...result.coverage,audio:{status:'unavailable',reason:'no_audio_track'}}};
  const cache=new Map([[oldKey,{version:1,createdAt:100,result:old}]]);
