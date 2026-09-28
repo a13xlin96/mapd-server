@@ -28,8 +28,9 @@ const generate=args=>runLocalProcess(deps.ffmpegPath,['-nostdin','-hide_banner',
     assert(result.frames.some(f=>f.timestampMs>=1200 && f.timestampMs<1500),'0.3s generated overlay was not selected');
     if(expectRotation)assert(result.frames.every(f=>f.width===180 && f.height===320));
     if(!processed.hasAudio)assert.deepEqual(await prepareAudioChunks({media,processed,deadline},deps),[]);
+    const lossless=await require('./lossless-smoke.cjs')(media,processed,deps,result);
     report.push({case:name,durationMs:processed.durationMs,rotation:processed.rotation,hasAudio:processed.hasAudio,
-      clip:[processed.clipStartMs,processed.clipEndMs],scannedFrames:result.scannedFrames,selectedTimestampsMs:result.frames.map(f=>f.timestampMs)});
+      clip:[processed.clipStartMs,processed.clipEndMs],scannedFrames:result.scannedFrames,selectedTimestampsMs:result.frames.map(f=>f.timestampMs),lossless});
     return {media,processed};
   }
   try {
