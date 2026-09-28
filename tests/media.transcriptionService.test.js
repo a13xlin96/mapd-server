@@ -130,7 +130,7 @@ test.each([
     await jest.advanceTimersByTimeAsync(0);
     expect(provider.transcribeChunk).toHaveBeenCalledTimes(2);
     expect(writes).toHaveLength(1);
-    expect(writes[0].coverage.intervals).toEqual([[0,20000]]);
+    expect(writes[0].coverage.intervals).toEqual([{startMs:0,endMs:20000}]);
     if(cancelParent)parent.abort();
     await jest.advanceTimersByTimeAsync(40);
     const {error}=await outcome;
