@@ -37,13 +37,120 @@ test('post-scoped renditions stay out of serialized metadata and reject playlist
 });
 test('matching post only exposes media; unrelated recommended post does not',()=>{
   const html='<script>'+JSON.stringify({items:[{shortcode:'OTHER',video_url:'https://cdn.example/wrong.mp4'},{shortcode:'SYNTHETIC',video_versions:[{url:'https://cdn.example/right.mp4'}]}]})+'</script>';
-  expect(parseInstagramPost(html,'SYNTHETIC').mediaRenditions).toEqual([{url:'https://cdn.example/right.mp4',format:'mp4',hasAudio:true,width:undefined,height:undefined}]);
+  expect(parseInstagramPost(html,'SYNTHETIC').mediaRenditions).toEqual([{url:'https://cdn.example/right.mp4',format:'mp4',hasAudio:null,width:undefined,height:undefined}]);
 });
-test('captionless direct media needs no extra metadata reader',async()=>{
-  const descriptor=createMediaDescriptor({url:sourceUrl,renditions:[{url:'https://cdn.example/video.mp4',format:'mp4'}]});
+test('captionless evidenced muxed media needs no extra metadata reader',async()=>{
+  const descriptor=createMediaDescriptor({url:sourceUrl,renditions:[{url:'https://cdn.example/video.mp4',format:'mp4',hasAudio:true}]});
   const runYtDlp=jest.fn();
   expect(await discoverMediaSource({url:sourceUrl,extracted:attachMediaDescriptor({},descriptor)},{runYtDlp})).toBe(descriptor);
   expect(runYtDlp).not.toHaveBeenCalled();
+});
+test.each([undefined,true,false])('post-level has_audio=%s does not fabricate per-URL audio presence',has_audio=>{
+  const metadata=parseInstagramPost('<script>'+JSON.stringify({shortcode:'SYNTHETIC',has_audio,
+    video_url:'https://cdn.example/top.mp4',video_versions:[{url:'https://cdn.example/version.mp4'}]})+'</script>','SYNTHETIC');
+  expect(metadata.mediaRenditions.map(r=>r.hasAudio)).toEqual(has_audio === false ? [false,false] : [null,null]);
+});
+test('rendition-local boolean audio declaration is preserved, not a truthy string or unrelated post flag',()=>{
+  const metadata=parseInstagramPost('<script>'+JSON.stringify({items:[{shortcode:'OTHER',has_audio:true},
+    {shortcode:'SYNTHETIC',video_versions:[true,false,undefined,'true'].map((has_audio,i)=>({url:`https://cdn.example/${i}.mp4`,has_audio}))}]})+'</script>','SYNTHETIC');
+  expect(metadata.mediaRenditions.map(r=>r.hasAudio)).toEqual([true,false,null,null]);
+});
+test('known audio outranks unknown then absent; missing and invalid heights never become ideal 720',()=>{
+  const rendition=(name,hasAudio,height)=>({url:`https://cdn.example/${name}`,format:'mp4',hasAudio,height});
+  const descriptor=createMediaDescriptor({url:sourceUrl,renditions:[
+    rendition('missing',true),rendition('zero',true,0),rendition('unknown',null,720),
+    rendition('absent',false,720),rendition('known',true,1080),rendition('best',true,720),
+  ]});
+  expect(descriptor.renditions.map(r=>r.url.split('/').at(-1))).toEqual(['best','known','missing','zero']);
+  expect(descriptor.renditions[2].height).toBeNull();expect(descriptor.renditions[3].height).toBeNull();
+  const ranked=createMediaDescriptor({url:sourceUrl,renditions:[rendition('absent',false,720),rendition('unknown',null,1080),rendition('known',true)]});
+  expect(ranked.renditions.map(r=>r.hasAudio)).toEqual([true,null,false]);
+});
+test.each([undefined,null,'','unknown','N/A','?','none','aac'])('yt-dlp acodec=%s preserves known/unknown/absent',acodec=>{
+  const descriptor=mediaFromYtDlp({webpage_url:sourceUrl,formats:[{url:'https://cdn.example/video',ext:'mp4',vcodec:'h264',acodec}]},sourceUrl);
+  expect(descriptor.renditions[0].hasAudio).toBe(acodec==='aac' ? true : acodec==='none' ? false : null);
+});
+test('yt-dlp prefers evidenced muxed video and retains audio-only/adaptive exclusions',()=>{
+  const f=(name,extra)=>({url:`https://cdn.example/${name}`,ext:'mp4',protocol:'https',...extra});
+  const descriptor=mediaFromYtDlp({webpage_url:sourceUrl,formats:[
+    f('unknown',{height:720,vcodec:'h264'}),f('video-only',{height:720,vcodec:'h264',acodec:'none'}),
+    f('audio-only',{vcodec:'none',acodec:'aac'}),f('audio-unproven-video',{acodec:'aac'}),
+    f('audio-m4a',{ext:'m4a',vcodec:'none',acodec:'aac'}),f('dash',{protocol:'http_dash_segments',vcodec:'h264',acodec:'aac'}),
+    f('muxed',{height:1080,vcodec:'h264',acodec:'aac'}),
+  ]},sourceUrl);
+  expect(descriptor.renditions.map(r=>r.url.split('/').at(-1))).toEqual(['muxed','unknown','video-only']);
+});
+test('duplicate top-level unknown URL cannot override explicit audio absence or exhaust rendition bound',()=>{
+  const common={url:'https://cdn.example/video-only',ext:'mp4'};
+  const descriptor=mediaFromYtDlp({...common,webpage_url:sourceUrl,formats:[
+    {...common,vcodec:'h264',acodec:'none',height:720},
+    {url:'https://cdn.example/unknown',ext:'mp4',height:1080,vcodec:'h264'},
+  ]},sourceUrl);
+  expect(descriptor.renditions.map(r=>r.hasAudio)).toEqual([null,false]);
+  expect(descriptor.renditions[1].height).toBe(720);
+});
+test.each([null,false])('HTML audio=%s permits one bounded metadata-only discovery before exactly one selected download',async hasAudio=>{
+  const direct=createMediaDescriptor({url:sourceUrl,renditions:[{url:'https://cdn.example/html',format:'mp4',hasAudio}]});
+  const available=mediaFromYtDlp({webpage_url:sourceUrl,formats:[{url:'https://cdn.example/muxed',ext:'mp4',vcodec:'h264',acodec:'aac'}]},sourceUrl);
+  const runYtDlp=jest.fn().mockResolvedValue(attachMediaDescriptor({mediaDiscoveryAttempted:true},available));
+  const deadline=Date.now()+10000;
+  const descriptor=await discoverMediaSource({url:sourceUrl,deadline,config:{requestTimeoutMs:500},
+    extracted:attachMediaDescriptor({},direct)},{runYtDlp});
+  expect(descriptor).toBe(available);expect(runYtDlp).toHaveBeenCalledTimes(1);
+  const options=runYtDlp.mock.calls[0][1];expect(options.mediaOnly).toBe(true);
+  expect(options.deadline).toBeLessThanOrEqual(Date.now()+500);expect(options.deadline).toBeLessThanOrEqual(deadline);
+  const request=transport([{}],url=>expect(String(url)).toBe('https://cdn.example/muxed'));
+  const media=await acquireMedia({descriptor,root},{request});await media.dispose();
+  expect(request).toHaveBeenCalledTimes(1);expect(runYtDlp).toHaveBeenCalledTimes(1);
+});
+test.each([null,false])('already-discovered direct audio=%s never starts another metadata reader',async hasAudio=>{
+  const direct=createMediaDescriptor({url:sourceUrl,renditions:[{url:'https://cdn.example/video',format:'mp4',hasAudio}]});
+  const runYtDlp=jest.fn();
+  expect(await discoverMediaSource({url:sourceUrl,extracted:attachMediaDescriptor({mediaDiscoveryAttempted:true},direct)},{runYtDlp})).toBe(direct);
+  expect(runYtDlp).not.toHaveBeenCalled();
+});
+test.each(['rate_limited','access_blocked','dependency_timeout','attempt_stopped','dependency_error'])('unknown HTML discovery %s fails without downloading the HTML alternative',async code=>{
+  const direct=createMediaDescriptor({url:sourceUrl,renditions:[{url:'https://cdn.example/html',format:'mp4'}]});
+  const error=Object.assign(new Error('synthetic'),{code}),runYtDlp=jest.fn().mockRejectedValue(error);
+  const request=transport([{}]);
+  await expect((async()=>{
+    const descriptor=await discoverMediaSource({url:sourceUrl,extracted:attachMediaDescriptor({},direct)},{runYtDlp});
+    return acquireMedia({descriptor,root},{request});
+  })()).rejects.toBe(error);
+  expect(runYtDlp).toHaveBeenCalledTimes(1);expect(request).not.toHaveBeenCalled();
+});
+test.each([{code:'rate_limited'},{code:'access_blocked'},{code:'dependency_timeout'},{status:429},{response:{status:403}}])('existing source failure prevents unknown-HTML discovery: %p',async sourceFailure=>{
+  const direct=createMediaDescriptor({url:sourceUrl,renditions:[{url:'https://cdn.example/html',format:'mp4'}]});
+  const runYtDlp=jest.fn();
+  await expect(discoverMediaSource({url:sourceUrl,sourceFailure,extracted:attachMediaDescriptor({},direct)},{runYtDlp})).rejects.toBe(sourceFailure);
+  expect(runYtDlp).not.toHaveBeenCalled();
+});
+test('discovery cannot donate another post or override live/carousel exclusions with HTML fallback',async()=>{
+  const direct=createMediaDescriptor({url:sourceUrl,renditions:[{url:'https://cdn.example/html',format:'mp4'}]});
+  const extracted=attachMediaDescriptor({},direct);
+  const wrong=createMediaDescriptor({url:'https://www.instagram.com/reel/OTHER/',renditions:[{url:'https://cdn.example/wrong',format:'mp4',hasAudio:true}]});
+  await expect(discoverMediaSource({url:sourceUrl,extracted},{runYtDlp:jest.fn().mockResolvedValue(attachMediaDescriptor({},wrong))})).rejects.toMatchObject({code:'source_unavailable'});
+  for(const flags of [{isLive:true},{isCarousel:true}]) {
+    const excluded=createMediaDescriptor({url:sourceUrl,...flags});
+    expect(await discoverMediaSource({url:sourceUrl,extracted},{runYtDlp:jest.fn().mockResolvedValue(attachMediaDescriptor({},excluded))})).toBe(excluded);
+  }
+});
+test('successful empty metadata discovery may retain same-post HTML video as unknown, without claiming audio',async()=>{
+  const direct=createMediaDescriptor({url:sourceUrl,renditions:[{url:'https://cdn.example/html',format:'mp4'}]});
+  const runYtDlp=jest.fn().mockResolvedValue(attachMediaDescriptor({},createMediaDescriptor({url:sourceUrl})));
+  const found=await discoverMediaSource({url:sourceUrl,extracted:attachMediaDescriptor({},direct)},{runYtDlp});
+  expect(found).toBe(direct);expect(found.renditions[0].hasAudio).toBeNull();expect(runYtDlp).toHaveBeenCalledTimes(1);
+});
+test('stop or expiry during metadata discovery cannot release a late rendition',async()=>{
+  const direct=createMediaDescriptor({url:sourceUrl,renditions:[{url:'https://cdn.example/html',format:'mp4'}]});
+  const extracted=attachMediaDescriptor({},direct),controller=new AbortController();
+  await expect(discoverMediaSource({url:sourceUrl,extracted,signal:controller.signal},{runYtDlp:async()=>{
+    controller.abort();return attachMediaDescriptor({},direct);
+  }})).rejects.toMatchObject({code:'attempt_stopped'});
+  const clock=jest.spyOn(Date,'now');let now=1000;clock.mockImplementation(()=>now);
+  await expect(discoverMediaSource({url:sourceUrl,extracted,deadline:5000,config:{requestTimeoutMs:100}},{runYtDlp:async()=>{
+    now=1101;return attachMediaDescriptor({},direct);
+  }})).rejects.toMatchObject({code:'dependency_timeout'});
 });
 test.each([false,true])('caption-only HTML allows one video discovery, cached=%s',async cached=>{
   const unavailable=createMediaDescriptor({url:sourceUrl});
