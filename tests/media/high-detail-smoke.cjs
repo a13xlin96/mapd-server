@@ -41,8 +41,9 @@ module.exports=async function highDetailSmoke(workspace,deps) {
       assert.equal(frame.digest,createHash('sha256').update(frame.bytes).digest('hex'));
     }
     assert(total<=12*1024*1024);await workspace.assertQuota();
+    const lossless=await require('./lossless-smoke.cjs')(media,processed,deps,selected,8);
     return {case:'high-detail-eight-frame-batch',sourceFrameMinBytes:Math.min(...sourceBytes),
       selectedFrames:selected.frames.length,maxFrameBytes:Math.max(...selected.frames.map(f=>f.bytes.length)),batchBytes:total,
-      width:selected.frames[0].width,height:selected.frames[0].height};
+      width:selected.frames[0].width,height:selected.frames[0].height,lossless};
   } finally {await fs.rm(raw,{force:true});await fs.rm(file,{force:true});}
 };

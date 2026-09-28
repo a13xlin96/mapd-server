@@ -33,6 +33,7 @@ const deps={ffmpegPath:process.env.FFMPEG_BIN || 'ffmpeg',ffprobePath:process.en
     const result=await selectFrames({media,processed,deadline:Date.now()+25000,limit:16},deps);
     assert(result.frames.length>0);assert(result.frames.some(frame=>frame.timestampMs>=1200 && frame.timestampMs<=1500),'brief generated visual clue missed');
     assert(result.frames.every(frame=>frame.bytes.length>24 && frame.bytes.length<=1536*1024));
+    const lossless=await require('./lossless-smoke.cjs')(media,processed,deps,result);
     // Exercise separate-container alignment with the exact FFmpeg shipped in
     // the production image; fake probe fixtures cannot establish decoder behavior.
     const split=async(kind)=>{
@@ -54,6 +55,6 @@ const deps={ffmpegPath:process.env.FFMPEG_BIN || 'ffmpeg',ffprobePath:process.en
     const highDetail=await require('./high-detail-smoke.cjs')(media,deps);
     const adversarial=await require('./adversarial-smoke.cjs')(media,deps);
     process.stdout.write(JSON.stringify({ok:true,durationMs:processed.durationMs,chunks:audio.length,
-      scannedFrames:result.scannedFrames,selectedTimestampsMs:result.frames.map(f=>f.timestampMs),separateTracks,highDetail,adversarial})+'\n');
+      scannedFrames:result.scannedFrames,selectedTimestampsMs:result.frames.map(f=>f.timestampMs),lossless,separateTracks,highDetail,adversarial})+'\n');
   } finally {await media.dispose();}
 })().catch(error=>{process.stderr.write(error.message+'\n');process.exitCode=1;});
