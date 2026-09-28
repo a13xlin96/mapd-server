@@ -361,7 +361,7 @@ test('explicit partial retry bypasses whole-link dedup but keeps place-ID dedup'
   aiExtractPlaces.mockClear();runYtDlp.mockClear();
   searchGooglePlaces.mockResolvedValue([TACO_PLACE]);
   await runEnrichment('retry',SHORT_B,USER,'');
-  expect(aiExtractPlaces).not.toHaveBeenCalled();expect(runYtDlp).not.toHaveBeenCalled();
+  expect(aiExtractPlaces).toHaveBeenCalledTimes(1);expect(runYtDlp).toHaveBeenCalledTimes(1);
   const child=fs.read('enrichmentJobs','retry');
   expect(child.status).toBe('complete');expect(child.progress).toEqual({saved:2,total:2});
   expect(child.pinId).not.toBe(parent.pinId);

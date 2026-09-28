@@ -7,6 +7,7 @@ const context=require('../lib/jobContext');
 
 const PLACES_API_BASE = 'https://places.googleapis.com/v1';
 const SEARCH_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 days
+const EMPTY_SEARCH_CACHE_TTL_SECONDS = 5 * 60;
 const DETAILS_CACHE_TTL_SECONDS = 30 * 24 * 60 * 60; // 30 days
 
 function validPlaceDetails(value) {
@@ -63,7 +64,10 @@ async function searchGooglePlaces(query, locationBias, locationRestriction, opti
   const normalizedKey = cacheKey.toLowerCase().trim() + (languageCode ? `#language:${languageCode.toLowerCase()}` : '');
 
   const cached = await getCached(normalizedKey);
-  if (cached) return cached;
+  // Successful lookups remain reusable. A user-authorized evidence retry
+  // must not repeat a cached empty result for another seven days.
+  const retrying=context.current()?.retry?.bypassCache===true;
+  if (Array.isArray(cached) && (cached.length>0 || !retrying)) return cached;
 
   try {
     const body = { textQuery: query, pageSize:5 };
@@ -101,7 +105,7 @@ async function searchGooglePlaces(query, locationBias, locationRestriction, opti
 
     const places = (response.data && response.data.places) || [];
     const results = places.map(mapNewToLegacy);
-    await setCache(normalizedKey, results, SEARCH_CACHE_TTL_SECONDS);
+    await setCache(normalizedKey, results, results.length ? SEARCH_CACHE_TTL_SECONDS : EMPTY_SEARCH_CACHE_TTL_SECONDS);
     return results;
   } catch (error) {
     throw asEngineError(error,{stage:'places_search',provider:'google'});

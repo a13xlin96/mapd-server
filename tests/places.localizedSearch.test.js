@@ -27,3 +27,16 @@ test('request failures do not become cached empty search results',async()=>{
   await expect(searchGooglePlaces('Query',undefined,undefined,{languageCode:'ja'})).rejects.toMatchObject({code:'rate_limited'});
   expect(mockCache.size).toBe(0);
 });
+
+test('negative search entries use a short TTL and an explicit retry refreshes only empty entries',async()=>{
+  const context=require('../lib/jobContext');const {setCache}=require('../lib/cache');
+  axios.post.mockResolvedValue({data:{places:[]}});
+  await searchGooglePlaces('Empty');
+  expect(setCache).toHaveBeenLastCalledWith('places:search:empty',[],300);
+  await searchGooglePlaces('Empty');expect(axios.post).toHaveBeenCalledTimes(1);
+  await context.run({retry:{bypassCache:true}},()=>searchGooglePlaces('Empty'));
+  expect(axios.post).toHaveBeenCalledTimes(2);
+  mockCache.set('places:search:found',[{place_id:'one',name:'Existing match'}]);
+  await context.run({retry:{bypassCache:true}},()=>searchGooglePlaces('Found'));
+  expect(axios.post).toHaveBeenCalledTimes(2);
+});

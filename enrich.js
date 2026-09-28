@@ -742,15 +742,19 @@ async function handleGoogleMapsUrl(url, userId) {
 /** AI-first pipeline: extract, dedup, AI places, Places API, return candidates. */
 async function runAIPipeline({ jobId, url, userId, captionText }) {
   const retry = jobContext.current()?.retry || {};
+  const resumeOnly = retry.resumePlaces && !retry.reanalyzeIdentity && !retry.analysisRetry;
+  const recoveryPins = new Map((retry.recoveryCandidates || []).map(pin=>[pin.placeId,pin]));
+  const retainedIdentity = p => !!p.confirmedPlaceId || recoveryPins.has(p.placeId);
+  const retainedPlaces = (retry.resumePlaces || []).filter(retainedIdentity);
   const provider=classifyContentProvider(url);
   const mediaEnabled=videoEligible({features:jobContext.current()?.features,url});
   const isSocial=['instagram','tiktok'].includes(provider) || (jobContext.current()?.features?.versions?.languageRouting==='multilingual-v1' && isYouTubeVideoUrl(url));
 
   let extracted = null, sourceError = null;
   let resolvedUrl = url;
-  if (isSocial && !retry.resumePlaces) {
+  if (isSocial && !resumeOnly) {
     try {extracted = await telemetry.stage('extraction',()=>extractPublicPost(url)); resolvedUrl = extracted.webpage_url || url;}
-    catch (error) {sourceError = asEngineError(error,{stage:'source',provider:extractDomain(url)}); await recordStageFailure(jobId,{stage:'source',kind:sourceError.code,message:sourceError.message});}
+    catch (error) {if(error.code==='attempt_stopped')throw error;sourceError = asEngineError(error,{stage:'source',provider:extractDomain(url)}); await recordStageFailure(jobId,{stage:'source',kind:sourceError.code,message:sourceError.message});}
   }
   if (extracted?.subtitle_failures?.length) {
     const diagnostic = extracted.subtitle_failures.find(f => ['access_blocked','rate_limited','dependency_timeout'].includes(f.code)) || extracted.subtitle_failures[0];
@@ -761,23 +765,27 @@ async function runAIPipeline({ jobId, url, userId, captionText }) {
   }
   let ogData = {title:'',description:'',image:'',url,siteName:extractDomain(url)};
   if (extracted) ogData = {...ogData,title:extracted.title || '',description:extracted.description || '',image:extracted.thumbnail_url || ''};
-  else if (!isSocial && !retry.resumePlaces) {
+  else if (!isSocial && !resumeOnly) {
     try {ogData = await telemetry.stage('metadata',()=>fetchOGMetadata(url));}
-    catch(error) {sourceError = asEngineError(error,{stage:'metadata',provider:'source'});}
+    catch(error) {if(error.code==='attempt_stopped')throw error;sourceError = asEngineError(error,{stage:'metadata',provider:'source'});}
   }
-  if (retry.resumePlaces) ogData = {...ogData,...retry.ogData};
+  if (resumeOnly) ogData = {...ogData,...retry.ogData};
   // Keep app-shared text separately even when the public caption exists.
   // A URL-only share is not meaningful caption evidence.
   const shareText = String(captionText || '').replace(/https?:\/\/\S+/g,'').trim();
   ogData.shareText = shareText;
   if (shareText) ogData.description = [ogData.description,shareText].filter(Boolean).join('\n');
-  if (sourceError && !ogData.description && !ogData.title && !mediaEnabled) throw sourceError;
+  const unreadableSource = sourceError && !ogData.description && !ogData.title;
+  // An independent source failure cannot revoke an already selected save.
+  // Skip empty-input AI, but still resolve stored candidates and retain the
+  // failed analysis outcomes below.
+  if (unreadableSource && !mediaEnabled && !recoveryPins.size) throw sourceError;
 
   // Content-ID dedup (after extract, when webpage_url is canonical)
   const canonicalUrl = (extracted && extracted.webpage_url) || resolvedUrl;
   ogData.image = await persistThumbnail(ogData.image, canonicalUrl);
   const contentId = extractContentId(canonicalUrl);
-  if (contentId && !retry.resumePlaces && !mediaEnabled && !retry.analysisRetry) {
+  if (contentId && !resumeOnly && !retry.reanalyzeIdentity && !mediaEnabled && !retry.analysisRetry) {
     const dup = await findPinByContentId(userId, contentId);
     if (dup && !useContentIndex() && !mediaEnabled && !retry.analysisRetry) return { duplicate: dup, candidates: [], canonicalUrl, ogData };
     // An index membership proves only that a source was attached. It cannot
@@ -798,7 +806,7 @@ async function runAIPipeline({ jobId, url, userId, captionText }) {
   // AI extract places (multi) — text signals only
   let aiResult;
   let aiError;
-  try {aiResult = retry.resumePlaces ? {places:retry.resumePlaces} : await aiExtractPlaces({
+  try {aiResult = resumeOnly ? {places:retry.resumePlaces} : unreadableSource ? {places:[]} : await aiExtractPlaces({
     title: ogData.title,
     description: ogData.description,
     hashtags: extracted && extracted.hashtags,
@@ -847,20 +855,32 @@ async function runAIPipeline({ jobId, url, userId, captionText }) {
 
 
 
-  // Merge text + vision candidates, dedup by normalized name (so
-  // "Café Nowhere" and "cafe nowhere" don't double-pin).
+  // Deduplicate unverified text by evidence, and retained candidates by exact
+  // ID. Equal names/geography do not make two selected branches the same place.
   let allCandidates = dedupe(
-    [...textPlaces, ...visionPlaces],
-    (p) => `${normalizePlaceName(p.name)}|${normalizePlaceName(p.city)}|${normalizePlaceName(p.address)}`,
+    [...(!resumeOnly ? retainedPlaces : []), ...textPlaces, ...visionPlaces],
+    (p) => retainedIdentity(p) ? `id:${p.confirmedPlaceId || p.placeId}`
+      : `text:${[p.name,p.city,p.country,p.address].map(v=>normalizePlaceName(v || '')).join('|')}`,
   );
 
   let mediaResult=null, deferredCandidates=[];
   const escalate=async(reason)=>{
-    mediaResult=await collectVideoEvidence({url:canonicalUrl,extracted,ogData,reason,sourceError,
-      retryOperations:retry.mediaRetryOperations || [],baselinePlaces:allCandidates.slice(0,40)});
+    try {
+      mediaResult=await collectVideoEvidence({url:canonicalUrl,extracted,ogData,reason,sourceError,
+        retryOperations:retry.mediaRetryOperations || [],baselinePlaces:allCandidates.slice(0,40)});
+    } catch(error) {
+      if(error.code==='attempt_stopped' || !recoveryPins.size) throw error;
+      mediaResult={places:[],incomplete:true,error:asEngineError(error,{stage:'media'}),coverage:null,
+        retryOperations:retry.mediaRetryOperations || []};
+    }
     metrics.current()?.evidence({audio:['complete','partial'].includes(mediaResult.coverage?.audio?.status),
       video_frames:['complete','partial'].includes(mediaResult.coverage?.visual?.status) && mediaResult.coverage?.visual?.reason!=='no_distinct_frames'});
-    allCandidates=mergeCandidates(allCandidates,mediaResult.places,{contradictions:mediaResult.contradictions || [],onOverflow:places=>{deferredCandidates=places;}}).map(({evidenceRefs,observations,...candidate})=>candidate);
+    // The text-based media merger must never collapse distinct selected IDs.
+    // Keep retained identities outside it and reserve their selection slots.
+    const retained=allCandidates.filter(retainedIdentity);
+    const merged=mergeCandidates(allCandidates.filter(p=>!retainedIdentity(p)),mediaResult.places,
+      {limit:Math.max(0,40-retained.length),contradictions:mediaResult.contradictions || [],onOverflow:places=>{deferredCandidates=places;}});
+    allCandidates=[...retained,...merged].map(({evidenceRefs,observations,...candidate})=>candidate);
     const ctx=jobContext.current();
     if(ctx) {ctx.mediaCoverage=mediaResult.coverage;ctx.mediaIncomplete=mediaResult.incomplete;ctx.analysisRecovery=null;
       ctx.mediaRetryOperations=mediaResult.retryOperations;}
@@ -868,7 +888,7 @@ async function runAIPipeline({ jobId, url, userId, captionText }) {
   const eligibility=()=>mediaEligibility({features:jobContext.current()?.features,url:canonicalUrl,
     extracted,ogData,places:allCandidates,attempted:!!mediaResult,analysisRetry:retry.analysisRetry});
   const before=eligibility();
-  if(before.run && !retry.resumePlaces)await escalate(before.reason);
+  if(before.run && !resumeOnly)await escalate(before.reason);
   if(!allCandidates.length && !mediaResult) {
     if(aiError && !visionPlaces.length)throw aiError;
     if(visionError && !textPlaces.length)throw visionError;
@@ -889,6 +909,18 @@ async function runAIPipeline({ jobId, url, userId, captionText }) {
   if (allCandidates.length > 0) {
     for (const p of allCandidates) {
       await jobContext.assertActive();
+      const priorKey=place=>[place.name,place.city,place.country,place.address].map(v=>normalizePlaceName(v || '')).join('|');
+      const retainedId=retainedIdentity(p) && (p.confirmedPlaceId || p.placeId);
+      if ((retry.baseOutcomes || []).some(o=>retainedId
+        ? (o.confirmedPlaceId || o.placeId)===retainedId : priorKey(o)===priorKey(p))) continue;
+      const storedPin = recoveryPins.get(p.confirmedPlaceId || p.placeId);
+      if(storedPin) {
+        const match={place:{place_id:storedPin.placeId,name:storedPin.placeName,
+          formatted_address:storedPin.formattedAddress || '',geometry:{location:{lat:storedPin.latitude,lng:storedPin.longitude}}},
+          score:storedPin.confidenceScore || 80,requiresSelection:!p.confirmedPlaceId && p.requiresSelection===true,ranked:[],storedPin};
+        resolvedMatches.set(storedPin.placeId,{p,match});
+        continue;
+      }
       const query = [p.name, p.address, p.city].filter(Boolean).join(' ');
       if (!query || query.trim().length < 2) {unresolvedCount++;outcomes.push({...p,status:'unresolved',failure:failureOf(new EngineError('no_verified_match'))});continue;}
       let results;
@@ -908,7 +940,7 @@ async function runAIPipeline({ jobId, url, userId, captionText }) {
       // confirmation just because another name for this ID appeared first.
       const previous = resolvedMatches.get(top.place_id);
       if (previous) {
-        previous.match.requiresSelection ||= match.requiresSelection;
+        if(!previous.p.confirmedPlaceId)previous.match.requiresSelection ||= match.requiresSelection;
         continue;
       }
       resolvedMatches.set(top.place_id, {p, match});
@@ -925,6 +957,11 @@ async function runAIPipeline({ jobId, url, userId, captionText }) {
         // pipeline's "Already on your map — new link added" behavior).
         existingMatches.push(existing);
         outcomes.push({name:p.name,city:p.city || '',country:p.country || '',address:p.address || '',placeId:top.place_id,status:'existing',pinId:existing.id});
+        continue;
+      }
+      if(match.storedPin) {
+        outcomes.push({...p,status:'candidate',placeId:top.place_id,requiresSelection:match.requiresSelection});
+        candidates.push(match.storedPin);
         continue;
       }
       let details = null;
@@ -961,11 +998,15 @@ async function runAIPipeline({ jobId, url, userId, captionText }) {
   let matches=await matchCandidates();
   const after=mediaEligibility({features:jobContext.current()?.features,url:canonicalUrl,extracted,ogData,
     places:allCandidates,matches,attempted:!!mediaResult,analysisRetry:retry.analysisRetry});
-  if(after.run && !retry.resumePlaces) {await escalate(after.reason);matches=await matchCandidates();}
+  if(after.run && !resumeOnly) {await escalate(after.reason);matches=await matchCandidates();}
   const base=retry.baseOutcomes || [];
   const seen=new Set(matches.outcomes.map(o=>o.placeId || o.pinId).filter(Boolean));
   const freshDeferred=[...(retry.deferredOutcomes || []),...deferredCandidates.map(({name,city,country,address,source})=>({name,city:city || '',country:country || '',address:address || '',source:source || 'media',requiresSelection:true,status:'unresolved',failure:failureOf(new EngineError('input_too_large',{stage:'matching'}))}))];
-  const prior=retainUnresolved(retry.priorUnresolvedOutcomes,[...base,...matches.outcomes,...freshDeferred]);
+  // If refreshed evidence failed, do not lose a previously displayed name.
+  // A successful explicit reanalysis may replace old unverified hypotheses.
+  const previousUnresolved=retry.priorUnresolvedOutcomes || (retry.initialOutcomes || []).filter(o=>o.status==='unresolved'
+    && (retainedIdentity(o) || (retry.reanalyzeIdentity && (sourceError || aiError || visionError || mediaResult?.incomplete))));
+  const prior=retainUnresolved(previousUnresolved,[...base,...matches.outcomes,...freshDeferred]);
   const deferred=[...prior,...freshDeferred];
   if(jobContext.current())jobContext.current().outcomes=[...base.filter(o=>!seen.has(o.placeId || o.pinId)),...matches.outcomes,...deferred];
   matches.unresolvedCount+=deferred.length;
@@ -1097,12 +1138,20 @@ async function runEnrichmentInner(jobId, url, userId, captionText) {
     context.retry = await getRetryContext(firestore,jobId,userId,url);
     context.outcomes=context.retry.initialOutcomes || context.retry.baseOutcomes || [];
     if(context.retry.analysisRecovery) {context.analysisRecovery=context.retry.analysisRecovery;context.mediaRetryOperations=context.retry.mediaRetryOperations || [];}
+    // A stopped process loses memory before the sweeper marks its receipt
+    // failed. Checkpoint outcomes and candidate authority together, including
+    // inherited dismissals/recovery, before any fallible analysis begins.
+    if(context.retry.initialOutcomes) await updateJob(jobId,{
+      outcomes:context.outcomes,retryCandidates:context.retry.recoveryCandidates || [],
+      progress:{saved:context.outcomes.filter(o=>['saved','existing'].includes(o.status)).length,
+        total:context.outcomes.filter(o=>o.status!=='dismissed').length},
+    });
     if(context.retry.analysisRetry && !videoEligible({features:context.features,url})) {
       context.mediaIncomplete=true;context.mediaRetryOperations=context.retry.mediaRetryOperations || [];
       throw new EngineError('dependency_error',{stage:'media_disabled'});
     }
     if(videoEligible({features:context.features,url}))context.allowMultiplePlaces=true;
-    const existingByUrl = context.retry.resumePlaces || context.retry.analysisRetry || useContentIndex() || videoEligible({features:context.features,url}) ? null : await findPinByUrl(userId, url);
+    const existingByUrl = context.retry.resumePlaces || context.retry.reanalyzeIdentity || context.retry.analysisRetry || useContentIndex() || videoEligible({features:context.features,url}) ? null : await findPinByUrl(userId, url);
     if (existingByUrl) {
       await finishDuplicate(existingByUrl, false);
       return;
@@ -1184,7 +1233,37 @@ async function runEnrichmentInner(jobId, url, userId, captionText) {
       return;
     }
 
-    if (ai.outcomes?.length) await updateJob(jobId,{outcomes:jobContext.current().outcomes,unresolvedCount:ai.unresolvedCount || 0,ogTitle:ai.ogData.title || '',ogDescription:ai.ogData.description || '',ogImage:ai.ogData.image || ''});
+    if (ai.outcomes?.length) await updateJob(jobId,{outcomes:jobContext.current().outcomes,unresolvedCount:ai.unresolvedCount || 0,ogTitle:ai.ogData.title || '',ogDescription:ai.ogData.description || '',ogImage:ai.ogData.image || '',candidates:ai.candidates,retryCandidates:[]});
+
+    // A previous explicit selection authorizes retrying that exact stored
+    // candidate, even when another candidate still needs fresh evidence.
+    // Do not ask the user to select it again or rematch it to another branch.
+    const confirmedIds=new Set((context.retry.resumePlaces || []).map(p=>p.confirmedPlaceId).filter(Boolean));
+    const confirmed=ai.candidates.filter(pin=>confirmedIds.has(pin.placeId));
+    for(const pin of confirmed) {
+      const outcome=context.outcomes.find(o=>o.placeId===pin.placeId);
+      try {
+        const result=await writePinTransactional(pin,ai.ogData);
+        Object.assign(outcome,{status:result.alreadyExists?'existing':'saved',pinId:result.pinId});
+        await recordTripSignalSaveIfNew(pin,result,jobId);
+        if(!result.alreadyExists)recordPinSaved(userId,{category:pin.category,city:pin.city,country:pin.country}).catch(()=>{});
+      } catch(error) {
+        if(error.code==='attempt_stopped')throw error;
+        Object.assign(outcome,{status:'unresolved',confirmedPlaceId:pin.placeId,failure:failureOf(error,{stage:'save'})});
+        ai.unresolvedCount++;
+      }
+    }
+    if(confirmed.length) {
+      ai.candidates=ai.candidates.filter(pin=>!confirmedIds.has(pin.placeId));
+      ai.requiresSelection=context.outcomes.some(o=>o.status==='candidate' && o.requiresSelection);
+      if(!ai.candidates.length) {
+        const saved=context.outcomes.some(o=>['saved','existing'].includes(o.status));
+        await updateJob(jobId,{status:saved?'complete':'failed',
+          ...(!saved?{failure:failureOf(new EngineError('dependency_error',{stage:'save'}))}:{}),completedAt:ts()});
+        await sendPushForJob(jobId,userId,ai.unresolvedCount?'failed':'complete');
+        return;
+      }
+    }
 
     if (ai.candidates.length === 1 && !ai.requiresSelection) {
       const result = await writePinTransactional(ai.candidates[0], ai.ogData);
@@ -1215,6 +1294,10 @@ async function runEnrichmentInner(jobId, url, userId, captionText) {
       await updateJob(jobId, {
         status: 'needs_selection',
         candidates: ai.candidates,
+        retryCandidates: confirmed.filter(pin=>context.outcomes.some(o=>o.placeId===pin.placeId && o.status==='unresolved')),
+        outcomes: context.outcomes,
+        progress: {saved:context.outcomes.filter(o=>['saved','existing'].includes(o.status)).length,
+          total:context.outcomes.filter(o=>o.status!=='dismissed').length},
         ogTitle: (ai.ogData && ai.ogData.title) || '',
         ogImage: (ai.ogData && ai.ogData.image) || '',
         completedAt: ts(),
@@ -1228,7 +1311,9 @@ async function runEnrichmentInner(jobId, url, userId, captionText) {
     // content-ID-matchable.
     // Media candidates have already passed grounded fusion and final matching.
     // Do not undo that decision through a weaker single-place fallback.
-    const fallback = ai.mediaAttempted ? null : await runOGFallback({ url: ai.canonicalUrl || url, userId, captionText, ogData: ai.ogData, skipAI:true });
+    // A retry's tracked outcomes are authoritative. A weaker whole-post
+    // fallback cannot replace a selected ID or resurrect a dismissed place.
+    const fallback = ai.mediaAttempted || context.retry.initialOutcomes?.length ? null : await runOGFallback({ url: ai.canonicalUrl || url, userId, captionText, ogData: ai.ogData, skipAI:true });
     if (fallback && fallback.duplicate) {
       const added = await appendSourceToExistingPin(
         fallback.duplicate.id,
@@ -1339,7 +1424,7 @@ async function saveSelectedPlacesInner(jobId,userId,selectedIds) {
           await recordTripSignalSaveIfNew(pin,result,jobId);
           if(!result.alreadyExists) await recordPinSaved(userId,{category:pin.category,city:pin.city,country:pin.country}).catch(()=>{});
         } catch(error) {
-          context.outcomes.push({...evidence,status:'unresolved',failure:failureOf(error,{stage:'save'})});
+          context.outcomes.push({...evidence,placeId:pin.placeId,confirmedPlaceId:pin.placeId,status:'unresolved',failure:failureOf(error,{stage:'save'})});
         }
       }
       const saved=context.outcomes.filter(o=>['saved','existing'].includes(o.status)).length;

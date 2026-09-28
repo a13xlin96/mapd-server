@@ -143,8 +143,10 @@ test('F2: partial retry retains the indexed and newly saved outcomes and resolve
   jest.clearAllMocks();
   searchGooglePlaces.mockResolvedValue([places[2]]);
   const child = await execute('retry', { retryOf: 'partial' });
-  expect(runYtDlp).not.toHaveBeenCalled();
-  expect(aiExtractPlaces).not.toHaveBeenCalled();
+  // Fresh analysis is intentional for an unverified identity. Saved venues
+  // retain their decisions and are not searched or saved a second time.
+  expect(runYtDlp).toHaveBeenCalledTimes(1);
+  expect(aiExtractPlaces).toHaveBeenCalledTimes(1);
   expect(searchGooglePlaces.mock.calls).toEqual([['Coffee House New York']]);
   expect(child).toMatchObject({ status: 'complete', progress: { saved: 3, total: 3 } });
   expect(child.outcomes.slice(0, 2)).toEqual(preserved);
