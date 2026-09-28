@@ -26,7 +26,7 @@ describe('account-tag evidence',()=>{
       post:{shortcode:'TARGET',video_url:'https://cdn.example/right.mp4',usertags:{in:[{user:{username:'tai.sushi'}}]}},
       route:{params:{shortcode:'TARGET',caption:true}},
     }),'TARGET');
-    expect(result.mediaRenditions).toEqual([{url:'https://cdn.example/right.mp4',format:'mp4',hasAudio:true}]);
+    expect(result.mediaRenditions).toEqual([{url:'https://cdn.example/right.mp4',format:'mp4',hasAudio:null}]);
     expect(result.accountTags).toEqual([expect.objectContaining({handle:'tai.sushi',origin:'post_tag'})]);
   });
   test('matching navigation parameters do not bypass the login-wall check',()=>{

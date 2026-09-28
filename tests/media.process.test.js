@@ -54,6 +54,42 @@ test('missing binary fails explicitly rather than silently using an unbounded de
   const p=fakeProcess();const work=runLocalProcess('absent',[],{}, {spawn:()=>p});p.emit('error',new Error('ENOENT'));
   await expect(work).rejects.toMatchObject({code:'dependency_error'});
 });
+test('decoder timing distinguishes queue wait from scan failure without leaking process output',async()=>{
+  const context=require('../lib/jobContext'),metrics=require('../lib/engineMetrics');
+  await context.run({jobId:'private-diagnostic'},async()=>{
+    const m=metrics.start();let unlock;
+    const blocker=withDecodeSlot(()=>new Promise(resolve=>{unlock=resolve;}));
+    const spawn=jest.fn(()=>{const p=fakeProcess();setImmediate(()=>{
+      p.stderr.emit('data',Buffer.from('private signed URL and caption'));p.emit('close',1);
+    });return p;});
+    const work=runFfmpeg({media,args:['-f','null','-'],stage:'frame_scan'},{spawn});
+    const rejected=expect(work).rejects.toMatchObject({code:'invalid_response'});
+    await new Promise(resolve=>setTimeout(resolve,25));expect(spawn).not.toHaveBeenCalled();
+    unlock();await blocker;await rejected;
+    const report=m.finish('failed');
+    expect(report.stages).toEqual(expect.arrayContaining([
+      expect.objectContaining({stage:'media_decode_queue',outcome:'success'}),
+      expect.objectContaining({stage:'frame_scan',outcome:'failed'}),
+    ]));
+    expect(report.stages.filter(s=>s.stage==='media_decode_queue').some(s=>s.durationMs>=20)).toBe(true);
+    expect(JSON.stringify(report)).not.toContain('private signed URL');
+    expect(spawn).toHaveBeenCalledTimes(1);
+  });
+});
+test('a cancelled queued decoder reports the wait without claiming decoding ran',async()=>{
+  const context=require('../lib/jobContext'),metrics=require('../lib/engineMetrics');
+  let unlock;const blocker=withDecodeSlot(()=>new Promise(resolve=>{unlock=resolve;}));
+  try {await context.run({jobId:'cancelled-diagnostic'},async()=>{
+    const m=metrics.start(),controller=new AbortController(),spawn=jest.fn();
+    const work=runFfmpeg({media,args:[],stage:'frame_encode',signal:controller.signal},{spawn});
+    const rejected=expect(work).rejects.toMatchObject({code:'attempt_stopped'});
+    await new Promise(resolve=>setTimeout(resolve,25));controller.abort();await rejected;
+    expect(spawn).not.toHaveBeenCalled();
+    expect(m.finish('cancelled').stages).toEqual([
+      expect.objectContaining({stage:'media_decode_queue',outcome:'cancelled'}),
+    ]);
+  });}finally{unlock();await blocker;}
+});
 test('post-spawn error kills child but retains workspace and decoder slot until close',async()=>{
   const p=fakeProcess();p.kill.mockImplementation(()=>{});let finished=false;
   let ready;const spawned=new Promise(resolve=>{ready=resolve;});

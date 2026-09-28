@@ -13,6 +13,17 @@ test('only completed valid evidence is stored; no automatic failed-result refres
  const writer=jest.fn();await writeManifest('key',result,{writer,now:()=>100});expect(writer).toHaveBeenCalledTimes(1);
  await writeManifest('key',{...result,incomplete:true},{writer});expect(writer).toHaveBeenCalledTimes(1);
 });
+test('old silent-rendition manifests cannot suppress new audio discovery',async()=>{
+ const key=manifestKey(base),oldKey=key.replace('media-manifest-v3:','media-manifest-v2:');
+ expect(oldKey).not.toBe(key);
+ const old={...result,coverage:{...result.coverage,audio:{status:'unavailable',reason:'no_audio_track'}}};
+ const cache=new Map([[oldKey,{version:1,createdAt:100,result:old}]]);
+ const reader=async k=>cache.get(k),writer=async(k,value)=>cache.set(k,value);
+ expect(await readManifest(key,{reader,now:()=>1000})).toBeNull();
+ await writeManifest(key,result,{writer,now:()=>1000});
+ expect(await readManifest(key,{reader,now:()=>1001})).toEqual(result);
+ expect(cache.get(oldKey).result).toEqual(old);
+});
 test('freshness is bounded explicitly, future/expired/invalid manifests miss',async()=>{
  const item={version:1,createdAt:100,result};
  expect(await readManifest('key',{reader:async()=>item,now:()=>1000})).toEqual(result);
