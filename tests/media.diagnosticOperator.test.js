@@ -1,15 +1,17 @@
 const fs = require('node:fs/promises');
+const {tmpdir} = require('node:os');
+const {join} = require('node:path');
 const {createHash} = require('node:crypto');
 const {createTicket, invokeOnce, readResult} = require('../scripts/media-diagnostic-operator');
 const {COLLECTION, MAX_TICKET_MS} = require('../lib/mediaDiagnostic');
 let directory, file, document, ref, db;
 beforeEach(async () => {
-  directory = await fs.mkdtemp('/private/tmp/media-diagnostic-operator-test-');
+  directory = await fs.mkdtemp(join(tmpdir(), 'media-diagnostic-operator-test-'));
   file = `${directory}/ticket.json`;
   ref = {create:jest.fn(async data => {document = data;}), get:jest.fn(async () => ({data:() => document}))};
   db = {collection:jest.fn(() => ({doc:jest.fn(() => ref)}))};
 });
-afterEach(async () => {await fs.rm(directory, {recursive:true, force:true});});
+afterEach(async () => {if (directory) await fs.rm(directory, {recursive:true, force:true});});
 const create = () => createTicket({db, userId:'approved-user', url:'https://www.instagram.com/reel/EXAMPLE/',
   server:'https://approved.example', file});
 
