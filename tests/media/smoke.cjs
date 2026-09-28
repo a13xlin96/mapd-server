@@ -53,8 +53,9 @@ const deps={ffmpegPath:process.env.FFMPEG_BIN || 'ffmpeg',ffprobePath:process.en
     const separateTracks={chunks:separateChunks.length,originMs:audioInfo.separateAudio.originMs,
       endMs:separateChunks.at(-1).endMs,videoDurationMs:videoInfo.durationMs};
     const highDetail=await require('./high-detail-smoke.cjs')(media,deps);
+    const boundedRendition=await require('./rendition-selection-smoke.cjs')(media,deps);
     const adversarial=await require('./adversarial-smoke.cjs')(media,deps);
     process.stdout.write(JSON.stringify({ok:true,durationMs:processed.durationMs,chunks:audio.length,
-      scannedFrames:result.scannedFrames,selectedTimestampsMs:result.frames.map(f=>f.timestampMs),lossless,separateTracks,highDetail,adversarial})+'\n');
+      scannedFrames:result.scannedFrames,selectedTimestampsMs:result.frames.map(f=>f.timestampMs),lossless,separateTracks,highDetail,boundedRendition,adversarial})+'\n');
   } finally {await media.dispose();}
 })().catch(error=>{process.stderr.write(error.message+'\n');process.exitCode=1;});
