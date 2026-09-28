@@ -226,3 +226,32 @@ test.each([false,true])('coordinator emits only trusted source counters and reco
     expect(JSON.stringify(result)).not.toContain('mediaSource');
   } finally {spy.mockRestore();}
 });
+
+test('ASR receives only captured public-post spelling context, never notes or baseline guesses',async()=>{
+ const {buildTranscriptionContext}=require('../lib/media/transcriptionContext');
+ const extracted={title:'Café São Bento',description:'Bánh mì Hồng, Lisboa'};
+ const expected=buildTranscriptionContext(extracted);
+ const readManifest=jest.fn(async()=>{extracted.description='MutatedLater';return null;});
+ const f=fixture({readManifest});
+ await jobContext.run(context(),()=>createVideoEvidence(f.deps)({
+   url:'https://www.instagram.com/reel/CONTEXT/',extracted,
+   ogData:{shareText:'PrivateDiary',description:'PrivateDiary',title:'GuessedVenue'},baselinePlaces:[{name:'GuessedVenue'}],
+ }));
+ const input=f.deps.transcribe.mock.calls[0][0];
+ expect(input.context).toEqual(expected);
+ expect(JSON.stringify(input.context)).not.toMatch(/PrivateDiary|GuessedVenue|MutatedLater/);
+ expect(input.languageHint).toBeUndefined();
+ const expectedKey=require('../lib/media/mediaEvidenceCache').manifestKey({
+   url:'https://www.instagram.com/reel/CONTEXT/',extracted:{title:'Café São Bento',description:'Bánh mì Hồng, Lisboa'},
+   ogData:{shareText:'PrivateDiary',description:'PrivateDiary',title:'GuessedVenue'},
+   config:features.media.policy,userId:'u',baselinePlaces:[{name:'GuessedVenue'}],transcriptionContext:expected,
+ });
+ expect(readManifest).toHaveBeenCalledWith(expectedKey);
+ // A spelling lexicon is never appended as independent spoken/visual evidence.
+ expect(f.deps.fusion.mock.calls[0][0].textEvidence.some(e=>e.text.includes('Lexemes:'))).toBe(false);
+});
+test('private notes alone do not add an ASR context or alter the no-context request',async()=>{
+ const f=fixture();
+ await jobContext.run(context(),()=>createVideoEvidence(f.deps)({url:'x',ogData:{shareText:'PrivateDiary',description:'PrivateDiary'}}));
+ expect(f.deps.transcribe.mock.calls[0][0]).not.toHaveProperty('context');
+});

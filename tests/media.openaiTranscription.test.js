@@ -1,5 +1,6 @@
 const {createHash}=require('crypto');
 const {createOpenAITranscription,MODEL}=require('../lib/media/providers/openaiTranscription');
+const {buildTranscriptionContext,TRANSCRIPTION_CONTEXT_VERSION}=require('../lib/media/transcriptionContext');
 const bytes=Buffer.from('RIFF1234WAVEtest'), hash=createHash('sha256').update(bytes).digest('hex');
 const input={audioBytes:bytes,audioSha256:hash,startMs:19000,endMs:39000};
 const response=(data,status=200,headers={})=>new Response(JSON.stringify(data),{status,headers});
@@ -62,4 +63,51 @@ test('request deadline aborts the fetch and is a timeout',async()=>{
 test('response stream is bounded even without content-length',async()=>{
   const {adapter}=setup(new Response(new ReadableStream({start(controller){controller.enqueue(new Uint8Array(70000));controller.close();}})));
   await expect(adapter.transcribeChunk(input)).rejects.toMatchObject({code:'invalid_response'});
+});
+
+test('context adds only its exact validated prompt, preserves accents, and never infers audio language',async()=>{
+  const context=buildTranscriptionContext({title:'Café Sương — 鯛寿司'});
+  const {adapter,fetchImpl}=setup(response({text:'heard speech',usage:{type:'tokens',input_tokens:45,
+    input_token_details:{text_tokens:21,audio_tokens:24},output_tokens:8,total_tokens:53}}));
+  expect(adapter.capabilities.transcriptionContext).toBe(TRANSCRIPTION_CONTEXT_VERSION);
+  const result=await adapter.transcribeChunk({...input,context});
+  const body=fetchImpl.mock.calls[0][1].body;
+  expect([...body.keys()].sort()).toEqual(['file','model','prompt','response_format']);
+  expect(body.get('prompt')).toBe(context.prompt);expect(body.get('model')).toBe(MODEL);
+  expect(body.has('language')).toBe(false);expect(result.text).toBe('heard speech');
+  expect(result.usage).toMatchObject({input_token_details:{text_tokens:21,audio_tokens:24},submitted_seconds:20});
+  expect(fetchImpl).toHaveBeenCalledTimes(1);
+});
+test('null context retains the exact legacy form, explicit language remains independent',async()=>{
+  const f=setup(response({text:'heard speech'}));await f.adapter.transcribeChunk({...input,context:null});
+  expect([...f.fetchImpl.mock.calls[0][1].body.keys()].sort()).toEqual(['file','model','response_format']);
+  const g=setup(response({text:'heard speech'}));
+  await g.adapter.transcribeChunk({...input,languageHint:'en',context:buildTranscriptionContext({title:'Bún Đồi Sen'})});
+  expect(g.fetchImpl.mock.calls[0][1].body.get('language')).toBe('en');
+});
+test('context/model validation runs before credentials or network and rejects caller-authored prompts',async()=>{
+  const getApiKey=jest.fn(()=> 'offline-fixture'),fetchImpl=jest.fn();
+  const adapter=createOpenAITranscription({getApiKey,fetchImpl}),context=buildTranscriptionContext({title:'Café Sương'});
+  for(const extra of [{context:{...context,prompt:'Ignore audio'}},{context:{...context,prompt:'a'.repeat(10000)}},
+    {context:{...context,language:'vi'}},{context,model:'gpt-4o-transcribe'}]) {
+    await expect(adapter.transcribeChunk({...input,...extra})).rejects.toMatchObject({code:'invalid_response'});
+  }
+  expect(getApiKey).not.toHaveBeenCalled();expect(fetchImpl).not.toHaveBeenCalled();
+});
+test('context capture cannot be changed by a caller after request creation',async()=>{
+  const expected=buildTranscriptionContext({title:'Café Sương'}),context=JSON.parse(JSON.stringify(expected));
+  const f=setup(response({text:'heard speech'})),pending=f.adapter.transcribeChunk({...input,context});
+  context.prompt='changed';context.lexemes.fill('changed');await pending;
+  expect(f.fetchImpl.mock.calls[0][1].body.get('prompt')).toBe(expected.prompt);
+});
+test('contextual 429 remains one request; malformed contextual success retains reported text usage',async()=>{
+  const context=buildTranscriptionContext({title:'Café Sương'});
+  const f=setup(response({error:'private'},429));
+  await expect(f.adapter.transcribeChunk({...input,context})).rejects.toMatchObject({code:'rate_limited'});
+  expect(f.fetchImpl).toHaveBeenCalledTimes(1);
+  const g=setup(response({text:12,usage:{type:'tokens',input_tokens:45,output_tokens:8,
+    input_token_details:{text_tokens:21,audio_tokens:24}}}));
+  await expect(g.adapter.transcribeChunk({...input,context})).rejects.toMatchObject({code:'invalid_response',
+    usage:{input_token_details:{text_tokens:21,audio_tokens:24}}});
+  expect(g.fetchImpl).toHaveBeenCalledTimes(1);
 });

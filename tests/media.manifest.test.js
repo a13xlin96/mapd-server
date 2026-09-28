@@ -31,3 +31,15 @@ test('freshness is bounded explicitly, future/expired/invalid manifests miss',as
  expect(await readManifest('key',{reader:async()=>item,now:()=>50})).toBeNull();
  expect(await readManifest('key',{reader:async()=>({...item,result:{...result,places:[{name:'fabricated'}]}}),now:()=>1000})).toBeNull();
 });
+
+test('exact transcription context partitions manifests while absent context keeps legacy reuse',()=>{
+ const {buildTranscriptionContext}=require('../lib/media/transcriptionContext');
+ const before=manifestKey(base);
+ expect(manifestKey({...base,transcriptionContext:null})).toBe(before);
+ const one=buildTranscriptionContext({title:'Café São Bento'});
+ const two=buildTranscriptionContext({title:'Café São Pedro'});
+ expect(manifestKey({...base,transcriptionContext:one})).not.toBe(before);
+ expect(manifestKey({...base,transcriptionContext:one})).not.toBe(manifestKey({...base,transcriptionContext:two}));
+ expect(manifestKey({...base,transcriptionContext:one,userId:'another'})).toBe(manifestKey({...base,transcriptionContext:one}));
+ expect(()=>manifestKey({...base,transcriptionContext:{...one,prompt:'override'}})).toThrow();
+});

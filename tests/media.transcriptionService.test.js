@@ -5,19 +5,22 @@ const {createTranscriptionService,SERVER_PUBLIC_SCOPE}=require('../lib/media/tra
 const {createSharedAiOperations}=require('../lib/sharedAiOperation');
 const {EngineError}=require('../lib/engineError');
 const jobContext=require('../lib/jobContext');
+const {buildTranscriptionContext,TRANSCRIPTION_CONTEXT_VERSION}=require('../lib/media/transcriptionContext');
+const {identity}=require('../lib/sharedAiIdentity');
 const digest=createHash('sha256').update('video').digest('hex');
 const wav=text=>Buffer.from('RIFF0000WAVE'+text);
 const chunk=(startMs=0,endMs=20000,text='audio')=>({audioBytes:wav(text),startMs,endMs});
-function setup({adapter,sharedOperation}={}) {
+function setup({adapter,sharedOperation,firestore}={}) {
   const cache=new Map();const writes=[];
-  const operations=createSharedAiOperations({allowLocal:true,cache:{getCached:async k=>cache.get(k),setCache:async(k,v)=>{writes.push(v);cache.set(k,v);}}});
+  const operations=createSharedAiOperations({allowLocal:true,firestore,cache:{getCached:async k=>cache.get(k),setCache:async(k,v)=>{writes.push(v);cache.set(k,v);}}});
   const provider=adapter || {id:'openai',model:'gpt-4o-mini-transcribe-2025-12-15',version:'test-v1',
+    capabilities:{transcriptionContext:TRANSCRIPTION_CONTEXT_VERSION},
     transcribeChunk:jest.fn(async ({startMs,endMs})=>({text:'鯛寿司',language:null,segments:[{text:'鯛寿司',startMs,endMs,timing:'chunk'}],usage:{input_tokens:10}}))};
   const providerCall=jest.fn(async(_p,work)=>{await jobContext.current()?.sharedOperation?.authorizeDispatch();return work();});
   const run=jest.fn(sharedOperation || operations.runSharedAiOperation);
   const service=createTranscriptionService({providers:{[provider.id]:provider},sharedOperation:run,providerCall});
   const transcribe=(chunks=[chunk()],options={},extras={})=>service.transcribe({mediaDigest:digest,durationMs:20000,chunks,provider:provider.id,...extras},{scope:SERVER_PUBLIC_SCOPE,...options});
-  return {provider,providerCall,transcribe,run,writes};
+  return {provider,providerCall,transcribe,run,writes,cache};
 }
 test('shared ASR has one physical call and strips billing from follower/cache evidence',async()=>{
   const {transcribe,provider,providerCall,writes,run}=setup();
@@ -249,4 +252,105 @@ test('invalid policy or chunks exceeding recorded audio bounds dispatch nothing'
   await expect(transcribe(undefined,{policy:null})).rejects.toThrow();
   await expect(transcribe(undefined,{requestTimeoutMs:0})).rejects.toThrow();
   expect(run).not.toHaveBeenCalled();expect(provider.transcribeChunk).not.toHaveBeenCalled();
+});
+
+test('no-context calls reuse a pre-context artifact and retain the exact legacy identity',async()=>{
+  const f=setup();
+  const legacy={kind:'asr_chunk',provider:'openai',stage:'transcription',scope:SERVER_PUBLIC_SCOPE,
+    model:f.provider.model,promptVersion:'literal-transcription-v1',schemaVersion:2,optionsVersion:'test-v1:pcm16k-mono-v1',
+    input:{policy:{schemaVersion:1,policyVersion:'media-v1',artifactTtlSeconds:86400},mediaDigest:digest,
+      audioSha256:createHash('sha256').update(chunk().audioBytes).digest('hex'),startMs:0,endMs:20000,languageHint:null}};
+  f.cache.set(`engine:shared-ai:v1:${identity(legacy).key}`,{provider:'openai',model:f.provider.model,language:null,
+    segments:[{text:'Legacy café',startMs:0,endMs:20000,timing:'chunk'}],coverage:{status:'complete',intervals:[{startMs:0,endMs:20000}]}});
+  for(const extra of [{},{context:undefined},{context:null},{context:buildTranscriptionContext({})}]) {
+    expect((await f.transcribe(undefined,{},extra)).text).toBe('Legacy café');
+  }
+  expect(f.provider.transcribeChunk).not.toHaveBeenCalled();
+  for(const [options] of f.run.mock.calls)expect(identity(options).key).toBe(identity(legacy).key);
+});
+test('exact contextual prompts partition cache, followers reuse, and context is never transcript evidence',async()=>{
+  const f=setup(),a=buildTranscriptionContext({title:'Café Sương'}),b=buildTranscriptionContext({title:'Bún Đồi Sen'});
+  await f.transcribe();
+  const results=await Promise.all([f.transcribe(undefined,{}, {context:a}),f.transcribe(undefined,{}, {context:a})]);
+  await f.transcribe(undefined,{}, {context:JSON.parse(JSON.stringify(a))});
+  await f.transcribe(undefined,{}, {context:b});await f.transcribe();
+  expect(f.provider.transcribeChunk).toHaveBeenCalledTimes(3);
+  expect(new Set(f.run.mock.calls.map(([o])=>identity(o).key)).size).toBe(3);
+  expect(f.run.mock.calls[1][0].input.transcriptionContext).toEqual({version:a.version,prompt:a.prompt});
+  expect(f.provider.transcribeChunk.mock.calls[0][0]).not.toHaveProperty('context');
+  expect(f.providerCall.mock.calls[0][3].descriptor).not.toHaveProperty('maxTextInputTokens');
+  const descriptor=f.providerCall.mock.calls[1][3].descriptor;
+  expect(descriptor.maxTextInputTokens).toBe(Buffer.byteLength(a.prompt)+1024);
+  expect(JSON.stringify(descriptor)).not.toContain('Sương');
+  expect(results[0].text).toBe('鯛寿司');
+  expect(JSON.stringify(f.writes)).not.toMatch(/Sương|lexemes|Lexemes/);
+});
+test('context is captured synchronously before caller mutation and matches provider-affecting identity',async()=>{
+  const f=setup(),original=buildTranscriptionContext({title:'Café Sương'}),mutable=JSON.parse(JSON.stringify(original));
+  const pending=f.transcribe(undefined,{}, {context:mutable});
+  mutable.prompt='changed';mutable.lexemes.fill('changed');
+  await pending;
+  const received=f.provider.transcribeChunk.mock.calls[0][0].context;
+  expect(received).toEqual(original);expect(Object.isFrozen(received)).toBe(true);expect(Object.isFrozen(received.lexemes)).toBe(true);
+  expect(f.run.mock.calls[0][0].input.transcriptionContext.prompt).toBe(received.prompt);
+});
+test('malformed context or unsupported adapter cannot dispatch or silently ignore spelling context',async()=>{
+  const f=setup(),context=buildTranscriptionContext({title:'Café Sương'});
+  for(const bad of [{},{...context,prompt:'injected'}, {...context,privateNotes:'hidden'}]) {
+    await expect(f.transcribe(undefined,{}, {context:bad})).rejects.toMatchObject({code:'invalid_response'});
+  }
+  delete f.provider.capabilities;
+  await expect(f.transcribe(undefined,{}, {context})).rejects.toMatchObject({code:'invalid_response'});
+  expect(f.run).not.toHaveBeenCalled();expect(f.providerCall).not.toHaveBeenCalled();
+});
+test('provider-neutral context contract supports an opted-in adapter while model remains part of identity',async()=>{
+  const context=buildTranscriptionContext({title:'Café Sương'});
+  const adapter={id:'fake',model:'speech-v2',version:'context-test',capabilities:{transcriptionContext:TRANSCRIPTION_CONTEXT_VERSION},
+    transcribeChunk:jest.fn(async()=>({text:'heard speech'}))};
+  const f=setup({adapter});await f.transcribe(undefined,{}, {context});
+  const first=f.run.mock.calls[0][0];adapter.model='speech-v3';await f.transcribe(undefined,{}, {context});
+  expect(identity(first).key).not.toBe(identity(f.run.mock.calls[1][0]).key);
+  expect(adapter.transcribeChunk).toHaveBeenCalledTimes(2);
+  expect(adapter.transcribeChunk.mock.calls[0][0].context).toEqual(context);
+  await expect(f.transcribe(undefined,{policy:{}},{context})).rejects.toMatchObject({code:'invalid_response'});
+});
+test.each(['rate_limited','dependency_timeout'])('contextual failed chunk (%s) never retries or falls back to no context',async code=>{
+  const {FakeFirestore}=require('./helpers/fakeFirestore');
+  const f=setup({firestore:new FakeFirestore()});f.provider.transcribeChunk.mockRejectedValue(new EngineError(code,{provider:'openai'}));
+  const context=buildTranscriptionContext({title:'Café Sương'});
+  const first=await f.transcribe(undefined,{}, {context});const again=await f.transcribe(undefined,{}, {context});
+  expect(first.failures[0].code).toBe(code);expect(again.failures[0].code).toBe(code);
+  expect(f.provider.transcribeChunk).toHaveBeenCalledTimes(1);
+  expect(f.run.mock.calls.every(([o])=>o.retryGeneration===undefined && o.bypassCache===undefined && o.input.transcriptionContext.prompt===context.prompt)).toBe(true);
+});
+test('explicit failed-generation authority cannot cross from one context to another',async()=>{
+  let fail=true;
+  const f=setup({sharedOperation:async(_options,work)=>{
+    if(fail)throw Object.assign(new EngineError('dependency_timeout'),{retryGeneration:4});
+    return work();
+  }});
+  const a=buildTranscriptionContext({title:'Café Sương'}),b=buildTranscriptionContext({title:'Café Sen'});
+  const first=await f.transcribe(undefined,{}, {context:a});fail=false;
+  await f.transcribe(undefined,{retryOperations:first.retryOperations},{context:b});
+  expect(f.run.mock.calls[1][0].retryGeneration).toBeUndefined();
+  await f.transcribe(undefined,{retryOperations:first.retryOperations},{context:a});
+  expect(f.run.mock.calls[2][0].retryGeneration).toBe(4);
+});
+test('contextual physical usage is reported once across durable followers and does not leak context into artifacts',async()=>{
+  const {withProvider}=require('../lib/providerRuntime'),{FakeFirestore}=require('./helpers/fakeFirestore');
+  const {createOpenAITranscription}=require('../lib/media/providers/openaiTranscription');
+  const db=new FakeFirestore(),operations=createSharedAiOperations({firestore:db,limits:{pollMs:5}});
+  const fetchImpl=jest.fn(async()=>new Response(JSON.stringify({text:'heard speech',usage:{type:'tokens',input_tokens:45,
+    output_tokens:8,input_token_details:{text_tokens:21,audio_tokens:24}}})));
+  const adapter=createOpenAITranscription({fetchImpl,getApiKey:()=> 'offline-fixture'});
+  const service=createTranscriptionService({providers:{openai:adapter},sharedOperation:operations.runSharedAiOperation,providerCall:withProvider});
+  const reporter={providerCall:jest.fn(),stage:async(_stage,work)=>work()},context=buildTranscriptionContext({title:'Café Sương'});
+  const run=()=>jobContext.run({userId:'fixture',attemptId:'context-test',deadline:Date.now()+5000,sharedMetrics:reporter},()=>
+    service.transcribe({mediaDigest:digest,durationMs:20000,chunks:[chunk()],context},{scope:SERVER_PUBLIC_SCOPE}));
+  const results=await Promise.all([run(),run()]);results.push(await run());
+  expect(fetchImpl).toHaveBeenCalledTimes(1);expect(reporter.providerCall).toHaveBeenCalledTimes(1);
+  expect(fetchImpl.mock.calls[0][1].body.get('prompt')).toBe(context.prompt);
+  expect(reporter.providerCall.mock.calls[0][0]).toMatchObject({provider:'openai',stage:'transcription',tokens:{textInput:21,audioInput:24,output:8}});
+  expect(JSON.stringify(results)).not.toMatch(/usage|lexemes|Sương/);
+  for(const record of db.collections.get(require('../lib/sharedAiStore').COLLECTION).values())expect(JSON.stringify(record)).not.toMatch(/lexemes|Sương/);
 });
