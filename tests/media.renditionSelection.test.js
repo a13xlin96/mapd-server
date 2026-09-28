@@ -24,13 +24,17 @@ test('known muxed audio and existing bounded unknown-audio picks retain priority
  expect(chosen(select({formats:[video('existing',720,720,null),video('bounded',720,1280),aac]}))).toBe('existing');
 });
 test.each([
- {webpage_url:undefined},{duration:undefined},{duration:0},{duration:Infinity},
+ {webpage_url:undefined},
  {formats:[unknown,video('bounded',720,1280)]},
  {formats:[unknown,video('bounded',720,1280),{...aac,protocol:'http_dash_segments'}]},
  {formats:[unknown,video('bounded',720,1280),{...aac,fragments:[{}]}]},
  {formats:[unknown,video('bounded',720,1280),{...aac,has_drm:true}]},
-])('insufficient audio/duration authority does not change unknown-audio precedence: %p',extra=>{
+])('insufficient audio authority does not change unknown-audio precedence: %p',extra=>{
  expect(chosen(select(extra))).toBe('unknown');
+});
+test.each([undefined,null,0,Infinity])('missing or unusable metadata duration %p does not prevent selection before authoritative probing',duration=>{
+ const d=select({duration});expect(chosen(d)).toBe('bounded');expect(d.durationMs).toBeNull();
+ expect(d.audioRendition.url).toBe(aac.url);
 });
 test.each([[360,640],[480,854],[NaN,1280],[Infinity,1280],[720.5,1280],[720,undefined],[1080,1920]])('small, unknown or oversized rendition %p x %p cannot replace the old pick',(w,h)=>{
  expect(chosen(select({formats:[unknown,video('candidate',w,h),aac]}))).toBe('unknown');
