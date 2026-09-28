@@ -191,11 +191,28 @@ test('execution expiry aborts, records timeout and ignores late source completio
   await f.send(); expect(f.collect).not.toHaveBeenCalled(); expect(f.extract).toHaveBeenCalledTimes(1);
 });
 
+test('fired execution cutoff stays timed_out even when wall clock still precedes its deadline', async () => {
+  // Timers and Date.now can disagree at the millisecond boundary (or across
+  // a wall-clock adjustment). A fixed authority clock reproduces this without
+  // relying on the CI runner happening to wake just before Date.now advances.
+  const time=Date.now(),source=gate(),began=gate();let context;
+  const f=setup({now:()=>time,ticket:{expiresAtMs:time+100},extract:jest.fn(async()=>{
+    context=job.current();began.resolve();return source.promise;
+  })});
+  await f.send();await began.promise;await f.router.whenIdle();
+  expect(time).toBeLessThan(f.read().deadlineMs);
+  expect(context.signal.aborted).toBe(true);
+  expect(f.read()).toMatchObject({status:'timed_out',result:{errors:['dependency_timeout']}});
+  source.resolve({title:'late'});await new Promise(resolve=>setImmediate(resolve));
+  await f.send();expect(f.collect).not.toHaveBeenCalled();expect(f.extract).toHaveBeenCalledTimes(1);
+});
+
 test.each(['rate_limited', 'access_blocked', 'dependency_timeout'])('source %s never starts a media fallback', async code => {
   const f = setup({extract:jest.fn(async () => {throw new EngineError(code, {stage:'source'});})});
   await f.send(); await f.router.whenIdle(); await f.send();
   expect(f.collect).not.toHaveBeenCalled(); expect(f.extract).toHaveBeenCalledTimes(1);
   expect(f.read().result.errors).toEqual([code]);
+  expect(f.read().status).toBe('failed'); // A dependency timeout is not the diagnostic's execution cutoff.
 });
 
 test('subtitle 429 accompanying metadata never starts discovery/download', async () => {
