@@ -272,18 +272,41 @@ test('a timed out database write remains recoverable and a late commit cannot du
   let release;
   const barrier = new Promise(resolve => {release = resolve;});
   db.runTransaction = async (callback, options) => {await barrier; return original(callback, options);};
+  // Exercise database timeouts AFTER real journal fsyncs complete. A 25ms
+  // wall-clock race against hosted disk I/O also tests the valid 'unconfirmed'
+  // receipt path, which is a different scenario covered elsewhere in this file.
+  const deadlines=[],realTimeout=setTimeout,realOpen=fs.open;
+  let syncedDirectories=0;
+  const timers=jest.spyOn(global,'setTimeout').mockImplementation((callback,ms,...args)=>{
+    if(ms!==25)return realTimeout(callback,ms,...args);
+    deadlines.push(()=>callback(...args));return {};
+  });
+  const opened=jest.spyOn(fs,'open').mockImplementation(async(name,...args)=>{
+    const file=await realOpen(name,...args);
+    if(name===directory) {
+      const close=file.close.bind(file);
+      file.close=async()=>{await close();syncedDirectories++;};
+    }
+    return file;
+  });
   const budget = createEngineBudget({db, journalDirectory: directory, timeoutMs: 25, logger: null, now});
-  const h = budget.beginProviderObservation(input());
-  void h.markDispatched();
-  expect(await h.settle({result: {}})).toMatchObject({recorded: false, pending: true, durability: 'local', reason: 'ledger_timeout'});
-  db.runTransaction = original;
-  const journal = createSpendJournal({directory});
-  const worker = createEngineBudgetWorker({db, journalDirectory: directory, logger: null});
-  await drain(worker, db, journal);
-  release();
-  await budget.flushPendingWrites();
-  await drain(worker, db, journal);
-  expect(getCounter(db)).toMatchObject({physicalCalls: 1, settledCalls: 1, knownActualMicrodollars: 32000});
+  try {
+    const h = budget.beginProviderObservation(input());
+    void h.markDispatched();
+    const receipt=h.settle({result:{}});
+    await eventually(()=>syncedDirectories===3);
+    for(let i=0;i<3;i++) {await eventually(()=>deadlines.length>0);deadlines.shift()();}
+    expect(await receipt).toMatchObject({recorded: false, pending: true, durability: 'local', reason: 'ledger_timeout'});
+    timers.mockRestore();opened.mockRestore();
+    db.runTransaction = original;
+    const journal = createSpendJournal({directory});
+    const worker = createEngineBudgetWorker({db, journalDirectory: directory, logger: null});
+    await drain(worker, db, journal);
+    release();
+    await budget.flushPendingWrites();
+    await drain(worker, db, journal);
+    expect(getCounter(db)).toMatchObject({physicalCalls: 1, settledCalls: 1, knownActualMicrodollars: 32000});
+  } finally {timers.mockRestore();opened.mockRestore();release();await budget.flushPendingWrites();}
 });
 
 test('two workers and a lost aggregation acknowledgement still apply each contribution exactly once', async () => {
