@@ -56,3 +56,60 @@ test('fusion receives literal visual observations together with speech and basel
  expect(f.deps.fusion.mock.calls[0][0].baselinePlaces).toEqual([expect.objectContaining({name:'Wrong Cafe'})]);
  expect(result.contradictions).toHaveLength(1);
 });
+
+function separateFixture(overrides={}) {
+  const video={durationMs:3000,startMs:0,hasAudio:false,timelineOriginKnown:true,videoStreamIndex:0};
+  const audioProbe={...video,hasAudio:true,audioStreamIndex:0,audioStartMs:0,
+    separateAudio:{version:1,originMs:0,startMs:0,endMs:3090,sampleRate:48000,channels:2,transform:'copyts-video-origin-pcm16k-mono-v1'}};
+  return fixture({discover:jest.fn(async()=>({availability:'available',audioRendition:{url:'https://cdn.example/private-audio'}})),
+    acquireAudio:jest.fn(async()=>({contentDigest:'b'.repeat(64),bytes:100,dispose:jest.fn()})),
+    probe:jest.fn(async input=>input.audioForVideo?audioProbe:video),...overrides});
+}
+test('video-only media acquires/probes separate audio once, uses joint identity for ASR and retains visual identity',async()=>{
+  const f=separateFixture(),result=await f.run();
+  expect(result.incomplete).toBe(false);expect(f.deps.acquire).toHaveBeenCalledTimes(1);expect(f.deps.acquireAudio).toHaveBeenCalledTimes(1);
+  const main=await f.deps.acquire.mock.results[0].value,track=await f.deps.acquireAudio.mock.results[0].value;
+  expect(f.deps.probe).toHaveBeenCalledTimes(2);
+  expect(f.deps.probe.mock.calls[1][0]).toMatchObject({media:track,audioForVideo:{hasAudio:false,durationMs:3000}});
+  expect(f.deps.audio.mock.calls[0][0].media).toBe(track);
+  expect(f.deps.transcribe.mock.calls[0][0].mediaDigest).not.toBe(main.contentDigest);
+  expect(f.deps.transcribe.mock.calls[0][0].mediaDigest).toMatch(/^[a-f0-9]{64}$/);
+  expect(f.deps.vision.mock.calls[0][0].mediaDigest).toBe(main.contentDigest);
+  expect(f.deps.fusion.mock.calls[0][0].mediaDigest).toBe(f.deps.transcribe.mock.calls[0][0].mediaDigest);
+  expect(result.mediaDigest).toBe(f.deps.transcribe.mock.calls[0][0].mediaDigest);
+  expect(f.deps.probe.mock.invocationCallOrder[1]).toBeLessThan(f.deps.audio.mock.invocationCallOrder[0]);
+  expect(f.deps.probe.mock.invocationCallOrder[1]).toBeLessThan(f.deps.frames.mock.invocationCallOrder[0]);
+  expect(f.deps.acquireAudio.mock.calls[0][0].deadline).toBeLessThanOrEqual(f.deps.acquire.mock.calls[0][0].deadline);
+  expect(track.dispose).toHaveBeenCalledTimes(1);expect(main.dispose).toHaveBeenCalledTimes(1);
+  expect(JSON.stringify(result)).not.toContain('private-audio');
+});
+test('muxed video never acquires separate audio even if metadata also offered it',async()=>{
+  const f=separateFixture({probe:jest.fn(async()=>({durationMs:3000,hasAudio:true}))});
+  await f.run();expect(f.deps.acquireAudio).not.toHaveBeenCalled();expect(f.deps.probe).toHaveBeenCalledTimes(1);
+});
+test.each(['rate_limited','access_blocked','dependency_timeout','invalid_response'])('separate audio %s leaves successful visual evidence, performs no ASR and never retries acquisition',async code=>{
+  const f=separateFixture({acquireAudio:jest.fn(async()=>{throw new EngineError(code,{stage:'media_download'});}),
+    vision:jest.fn(async()=>({places:[{name:'Visible cafe',requiresSelection:true}],observations:[{evidenceId:'frame:1',quote:'Visible cafe'}]})),
+    fusion:jest.fn(async()=>({places:[],contradictions:[]}))});
+  const result=await f.run();
+  expect(result).toMatchObject({incomplete:true,coverage:{audio:{status:'failed',reason:code},visual:{status:'complete'}}});
+  expect(result.places.map(p=>p.name)).toContain('Visible cafe');expect(f.deps.acquireAudio).toHaveBeenCalledTimes(1);
+  expect(f.deps.audio).not.toHaveBeenCalled();expect(f.deps.transcribe).not.toHaveBeenCalled();
+  expect((await f.deps.acquire.mock.results[0].value).dispose).toHaveBeenCalledTimes(1);
+});
+test('ambiguous audio probe retains frames and disposes both asset references',async()=>{
+  const f=separateFixture({probe:jest.fn(async input=>{
+    if(input.audioForVideo)throw new EngineError('invalid_response',{stage:'audio_timeline'});
+    return {durationMs:3000,hasAudio:false};
+  })});
+  const result=await f.run();expect(result.coverage.audio.status).toBe('failed');expect(result.coverage.visual.status).toBe('complete');
+  expect(f.deps.transcribe).not.toHaveBeenCalled();
+  expect((await f.deps.acquireAudio.mock.results[0].value).dispose).toHaveBeenCalledTimes(1);
+  expect((await f.deps.acquire.mock.results[0].value).dispose).toHaveBeenCalledTimes(1);
+});
+test('parent cancellation cannot consume late separate audio and still disposes both references',async()=>{
+  const abort=new AbortController(),f=separateFixture({audio:jest.fn(async()=>{abort.abort();return [];})});
+  await expect(jobContext.run({...context(),signal:abort.signal},()=>createVideoEvidence(f.deps)({url:'x'}))).rejects.toMatchObject({code:'attempt_stopped'});
+  expect((await f.deps.acquireAudio.mock.results[0].value).dispose).toHaveBeenCalledTimes(1);
+  expect((await f.deps.acquire.mock.results[0].value).dispose).toHaveBeenCalledTimes(1);
+});
