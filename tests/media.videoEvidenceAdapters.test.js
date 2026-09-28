@@ -52,16 +52,55 @@ test.each([
   r=>{r.places[0].evidenceRefs[0].evidenceId='frame:missing';},
   r=>{r.places[0].evidenceRefs[0].quote='fabricated';},
   r=>{r.places[0].evidenceRefs[0].region=[0,0,2,1];},
-  r=>{r.places[0].name='Another Venue';},
-  r=>{r.places[0].city='Tokyo';},
-  r=>{r.places[0].name='!!!';},
-])('invalid reference/name/geography fails instead of producing an ungrounded candidate',async mutate=>{
+])('invalid references fail instead of producing an ungrounded candidate',async mutate=>{
   const raw=rawVideo();mutate(raw);const {vision}=setup({raw});
   await expect(vision(base,opts)).rejects.toMatchObject({code:'invalid_response'});
 });
 test('geography may be supported by literal public caption quote',async()=>{
   const raw=rawVideo();raw.places[0].city='Kyoto';raw.places[0].evidenceRefs.push(ref('caption:1','Kyoto','city'));
   const {vision}=setup({raw});expect((await vision({...base,textEvidence:[caption]},opts)).places[0].city).toBe('Kyoto');
+});
+test.each(['vision','fusion'])('%s drops unsupported geography, preserves the grounded name, and reuses partial artifacts',async method=>{
+  const raw=method==='vision'?rawVideo():{places:[{name:'ngâm CAFE',evidenceRefs:[ref('audio:1','ngâm CAFE')]}]};
+  raw.places[0].country='Vietnam';raw.places[0].city='An invented city';
+  const f=setup({raw}),input={...base,textEvidence:[audio]};
+  const [one,two]=await Promise.all([f[method](input,opts),f[method](input,opts)]);
+  expect(one).toEqual(two);expect(await f[method](input,opts)).toEqual(one);
+  expect(one.places).toHaveLength(1);
+  expect(one.places[0]).toMatchObject({city:'',country:'',requiresSelection:true});
+  expect(one.grounding).toEqual({omittedClaims:2,omittedCandidates:0});
+  if(method==='vision')expect(one.coverage).toEqual({status:'partial',reason:'literal_claims_omitted',intervals:[]});
+  expect(f.createMessage).toHaveBeenCalledTimes(1);
+  const validate=f.run.mock.calls[0][0].validate,forged=structuredClone(one);
+  forged.places[0].country='Vietnam';expect(validate(forged)).toBe(false);
+  expect(validate({...one,grounding:{omittedClaims:0,omittedCandidates:0,extra:true}})).toBe(false);
+});
+test('unsupported names are omitted without discarding valid observations or other grounded venues',async()=>{
+  const raw=rawVideo();raw.places.unshift({...raw.places[0],name:'Invented venue'});
+  const f=setup({raw}),result=await f.vision(base,opts);
+  expect(result.places.map(p=>p.name)).toEqual(['鯛寿司']);
+  expect(result.observations).toEqual(raw.observations);
+  expect(result.grounding).toEqual({omittedClaims:1,omittedCandidates:1});
+  expect(result.coverage.status).toBe('partial');
+});
+test.each([
+  p=>{p.evidenceRefs[0].evidenceId='frame:missing';},
+  p=>{p.evidenceRefs[0].region=[0,0,2,1];},
+  p=>{p.extra='untrusted';},
+])('a dropped candidate cannot conceal malformed shape or references',async mutate=>{
+  const raw=rawVideo();raw.places[0].name='Unsupported name';mutate(raw.places[0]);
+  const f=setup({raw});await expect(f.vision(base,opts)).rejects.toMatchObject({code:'invalid_response'});
+});
+test('recovery removes unsupported-field references and strict validation still rejects the original claim',async()=>{
+  const {validateVideoResponse,validateProviderVideoResponse}=require('../lib/media/videoVision');
+  const raw={observations:[],places:[{name:'Cafe A',city:'Ho Chi Minh City',address:'25 Hoàng Sa',evidenceRefs:[
+    ref('caption:1','Cafe A'),ref('caption:1','HCM','city'),ref('caption:1','25 Hoàng Sa','address')]}]};
+  const text=[{...caption,text:'Cafe A, 25 Hoàng Sa, HCM'}];
+  expect(()=>validateVideoResponse(raw,[],text)).toThrow();
+  const result=validateProviderVideoResponse(raw,[],text);
+  expect(result.places[0]).toMatchObject({name:'Cafe A',city:'',address:'25 Hoàng Sa'});
+  expect(result.places[0].evidenceRefs.map(r=>r.supports)).toEqual(['name','address']);
+  expect(result.grounding).toEqual({omittedClaims:1,omittedCandidates:0});
 });
 test('source hash/dimensions/duplicate frames are checked before dispatch',async()=>{
   const {vision,createMessage}=setup();
@@ -73,7 +112,8 @@ test('source hash/dimensions/duplicate frames are checked before dispatch',async
 test('false word substrings cannot ground a venue',async()=>{
   const raw={observations:[],places:[{name:'Bar',evidenceRefs:[ref('caption:1','Barcelona')]}]};
   const {vision}=setup({raw});
-  await expect(vision({...base,textEvidence:[{...caption,text:'Barcelona'}]},opts)).rejects.toMatchObject({code:'invalid_response'});
+  const result=await vision({...base,textEvidence:[{...caption,text:'Barcelona'}]},opts);
+  expect(result.places).toEqual([]);expect(result.coverage.status).toBe('partial');
 });
 test('different frames, timestamps and user scopes have independent shared identities',async()=>{
   const {vision,createMessage,run}=setup({raw:{places:[],observations:[]}});
@@ -232,7 +272,7 @@ test.each(['caption','transcript','subtitle','visual'])('literal %s corrections 
   const contradiction={name,evidenceRefs:[{evidenceId:item.evidenceId,quote}]};
   const f=setup({raw:{places:[],contradictions:[contradiction]}});
   const result=await f.fusion({...base,textEvidence:[item],baselinePlaces:[{name}]},opts);
-  expect(result).toEqual({places:[],contradictions:[contradiction]});
+  expect(result).toEqual({places:[],contradictions:[contradiction],grounding:{omittedClaims:0,omittedCandidates:0}});
   await f.fusion({...base,textEvidence:[item],baselinePlaces:[{name}]},opts);
   expect(f.createMessage).toHaveBeenCalledTimes(1);
   expect(f.run.mock.calls[0][0].ttlSeconds(result)).toBe(86400);
@@ -285,10 +325,10 @@ test('baseline identity and geography partition fusion cache; legacy missing con
   const f=setup({raw:{places:[]}}),input={...base,textEvidence:[caption,audio]};
   const baselinePlaces=[{name:'Tai Sushi',city:'Kyoto'}];
   for(const baseline of [baselinePlaces,baselinePlaces,[{name:'Tai Sushi',city:'Tokyo'}],[{name:'Another Cafe',city:'Tokyo'}]]) {
-    expect(await f.fusion({...input,baselinePlaces:baseline},opts)).toEqual({places:[],contradictions:[]});
+    expect(await f.fusion({...input,baselinePlaces:baseline},opts)).toEqual({places:[],contradictions:[],grounding:{omittedClaims:0,omittedCandidates:0}});
   }
   expect(f.createMessage).toHaveBeenCalledTimes(3);
-  expect(f.run.mock.calls[0][0]).toMatchObject({schemaVersion:3,promptVersion:'grounded-crossmodal-v2',
+  expect(f.run.mock.calls[0][0]).toMatchObject({schemaVersion:4,promptVersion:'grounded-crossmodal-v3',
     input:{baselinePlaces:[{name:'Tai Sushi',city:'Kyoto',country:'',address:''}]}});
   expect(f.createMessage.mock.calls[0][0].messages[0].content).toContain('Baseline context (not evidence):');
 });

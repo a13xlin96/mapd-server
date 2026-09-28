@@ -113,3 +113,52 @@ test('parent cancellation cannot consume late separate audio and still disposes 
   expect((await f.deps.acquireAudio.mock.results[0].value).dispose).toHaveBeenCalledTimes(1);
   expect((await f.deps.acquire.mock.results[0].value).dispose).toHaveBeenCalledTimes(1);
 });
+
+test('visual grounding omissions remain partial after a later clean batch and valid places survive',async()=>{
+  const vision=jest.fn().mockResolvedValueOnce({places:[{name:'Cafe B',requiresSelection:true}],
+    grounding:{omittedClaims:2,omittedCandidates:1}}).mockResolvedValueOnce({places:[{name:'Cafe C',requiresSelection:true}],
+    grounding:{omittedClaims:0,omittedCandidates:0}});
+  const writeManifest=jest.fn(),f=fixture({vision,writeManifest,probe:jest.fn(async()=>({durationMs:3000,hasAudio:false}))});
+  const result=await f.run();
+  expect(vision).toHaveBeenCalledTimes(2);
+  expect(result).toMatchObject({incomplete:true,coverage:{visual:{status:'partial',reason:'literal_claims_omitted'}}});
+  expect(result.places.map(p=>p.name)).toEqual(['Cafe B','Cafe C']);expect(writeManifest).not.toHaveBeenCalled();
+});
+test.each([false,true])('fusion grounding omissions preserve valid visual/fused places with text_bound priority=%s',async truncated=>{
+  const writeManifest=jest.fn(),f=fixture({writeManifest,
+    fusion:jest.fn(async()=>({places:[{name:'Cafe A',requiresSelection:true}],grounding:{omittedClaims:1,omittedCandidates:1}}))});
+  const result=await jobContext.run(context(),()=>createVideoEvidence(f.deps)({url:'x',ogData:truncated?{title:'x'.repeat(16001)}:{}}));
+  expect(result).toMatchObject({incomplete:true,coverage:{fusion:{status:'partial',reason:truncated?'text_bound':'literal_claims_omitted'}}});
+  expect(result.places.map(p=>p.name)).toEqual(['Cafe A','Cafe B']);expect(writeManifest).not.toHaveBeenCalled();
+});
+test('clean grounding summaries keep successful coverage complete',async()=>{
+  const f=fixture({vision:jest.fn(async()=>({places:[{name:'Cafe B',requiresSelection:true}],grounding:{omittedClaims:0,omittedCandidates:0}})),
+    fusion:jest.fn(async()=>({places:[{name:'Cafe A',requiresSelection:true}],grounding:{omittedClaims:0,omittedCandidates:0}}))});
+  const result=await f.run();expect(result.incomplete).toBe(false);
+  expect(result.coverage.visual.status).toBe('complete');expect(result.coverage.fusion.status).toBe('complete');
+});
+test.each([false,true])('coordinator emits only trusted source counters and records separate audio attempt=%s',async hasSeparate=>{
+  const {mediaFromYtDlp,MEDIA_SOURCE_DIAGNOSTIC_OPERATIONS}=require('../lib/media/mediaSource');
+  const url='https://www.instagram.com/reel/SYNTHETIC/';
+  const descriptor=mediaFromYtDlp({webpage_url:url,formats:[{url:'https://cdn.example/video.mp4',ext:'mp4',vcodec:'vp9',acodec:'none'},
+    ...(hasSeparate?[{url:'https://cdn.example/audio.m4a?private=secret',ext:'m4a',vcodec:'none',acodec:'aac',protocol:'https'}]:[])]},url);
+  const operation=jest.fn(),spy=jest.spyOn(require('../lib/engineMetrics'),'current').mockReturnValue({operation,
+    recordStage:jest.fn(),stage:(_name,work)=>work()});
+  try {
+    const f=separateFixture({discover:jest.fn(async()=>descriptor)}),result=await f.run();
+    expect(operation).toHaveBeenCalledWith('mediaSourceYtDlp',1);
+    expect(operation).toHaveBeenCalledWith('mediaSourceAudioAttached',Number(hasSeparate));
+    expect(operation).toHaveBeenCalledWith('mediaProbeHasAudio',0);
+    const diagnostics=operation.mock.calls.filter(([name])=>MEDIA_SOURCE_DIAGNOSTIC_OPERATIONS.includes(name));
+    expect(diagnostics.every(([,value])=>Number.isSafeInteger(value) && value>=0 && value<=1000)).toBe(true);
+    if(hasSeparate) {
+      expect(operation).toHaveBeenCalledWith('mediaSeparateAudioAttempted',1);
+      expect(operation).toHaveBeenCalledWith('mediaSeparateAudioProbed',1);
+    } else {
+      expect(f.deps.acquireAudio).not.toHaveBeenCalled();expect(result.coverage.audio.reason).toBe('no_audio_track');
+      expect(operation.mock.calls.some(([name])=>name==='mediaSeparateAudioAttempted')).toBe(false);
+    }
+    expect(JSON.stringify(diagnostics)).not.toMatch(/secret|https:|SYNTHETIC|mp4a/);
+    expect(JSON.stringify(result)).not.toContain('mediaSource');
+  } finally {spy.mockRestore();}
+});

@@ -397,3 +397,69 @@ test('parallel separate audio acquisition admits one request',async()=>{
   expect(results.filter(r=>r.status==='fulfilled')).toHaveLength(1);expect(request).toHaveBeenCalledTimes(2);
   await results.find(r=>r.status==='fulfilled').value.dispose();await video.dispose();
 });
+
+const {readMediaSourceDiagnostics,MEDIA_SOURCE_DIAGNOSTIC_OPERATIONS}=require('../lib/media/mediaSource');
+const diagnosticAudio=extra=>({url:'https://cdn.example/audio.m4a?private=signed-value',ext:'m4a',protocol:'https',vcodec:'none',acodec:'mp4a.40.5',...extra});
+test('source diagnostics distinguish provided/bound audio using only fixed numeric counters',()=>{
+  const descriptor=separateDescriptor(),stats=readMediaSourceDiagnostics(descriptor);
+  expect(stats).toMatchObject({mediaSourceYtDlp:1,mediaSourceRootFormats:2,mediaSourceRootAudioFormats:1,
+    mediaSourceRootEligibleAudio:1,mediaSourcePostBound:1,mediaSourceAudioEligible:1,mediaSourceAudioAttached:1,
+    mediaSourceAudioRejectVideo:1,mediaSourceEntryFormats:0});
+  expect(Object.entries(stats).every(([name,value])=>MEDIA_SOURCE_DIAGNOSTIC_OPERATIONS.includes(name) && Number.isSafeInteger(value) && value>=0 && value<=1000)).toBe(true);
+  expect(JSON.stringify(stats)).not.toMatch(/SYNTHETIC|instagram:|https:|mp4a|signed-value/);
+  expect(JSON.stringify(descriptor)).not.toContain('mediaSourceRootFormats');
+  stats.mediaSourceRootFormats=999;expect(readMediaSourceDiagnostics(descriptor).mediaSourceRootFormats).toBe(2);
+  expect(readMediaSourceDiagnostics({mediaSourceYtDlp:1,diagnostics:stats})).toEqual({mediaSourceUnknown:1});
+});
+test.each([
+  ['Video',{vcodec:'vp9'}],['Codec',{acodec:'private-unknown-codec'}],['Container',{ext:'webm'}],
+  ['Protocol',{protocol:'http_dash_segments'}],['Fragments',{fragments:[{}]}],
+  ['Manifest',{manifest_url:'https://cdn.example/private.mpd'}],['Drm',{has_drm:true}],
+  ['Url',{url:'http://cdn.example/private'}],['Duplicate',{url:'https://cdn.example/video.mp4'}],
+])('source diagnostics count %s rejection without changing audio eligibility', (reason,override)=>{
+  const descriptor=separateDescriptor(override),stats=readMediaSourceDiagnostics(descriptor);
+  expect(stats[`mediaSourceAudioReject${reason}`]).toBeGreaterThanOrEqual(1);
+  expect(stats.mediaSourceAudioEligible).toBe(0);expect(stats.mediaSourceAudioAttached).toBe(0);
+  expect(descriptor.audioRendition).toBeUndefined();expect(JSON.stringify(stats)).not.toContain('private');
+});
+test.each([[undefined,'mediaSourcePostMissing'],['https://www.instagram.com/reel/OTHER/','mediaSourcePostMismatch']])('eligible bytes cannot bypass %s post binding', (webpage_url,metric)=>{
+  const descriptor=separateDescriptor({}, {webpage_url}),stats=readMediaSourceDiagnostics(descriptor);
+  expect(stats[metric]).toBe(1);expect(stats.mediaSourcePostBound).toBe(0);
+  expect(stats.mediaSourceRootEligibleAudio).toBe(1);expect(stats.mediaSourceAudioEligible).toBe(0);
+  expect(descriptor.audioRendition).toBeUndefined();
+});
+test('root stream and nested entry audio are observable but cannot donate a new unbound track',()=>{
+  const descriptor=mediaFromYtDlp({...diagnosticAudio(),webpage_url:sourceUrl,
+    entries:[{webpage_url:sourceUrl,formats:[diagnosticAudio()]}]},sourceUrl);
+  expect(readMediaSourceDiagnostics(descriptor)).toMatchObject({mediaSourceTopAudioOnly:1,mediaSourceTopAudioEligible:1,
+    mediaSourceRootFormats:0,mediaSourceEntries:1,mediaSourceEntryFormats:1,mediaSourceEntryAudioFormats:1,
+    mediaSourceEntryEligibleAudio:1,mediaSourceAudioEligible:0,mediaSourceAudioAttached:0});
+  expect(descriptor.availability).toBe('unavailable');expect(descriptor.audioRendition).toBeUndefined();
+});
+test('metadata inspection has fixed scan bounds and signals truncation',()=>{
+  const descriptor=mediaFromYtDlp({webpage_url:sourceUrl,formats:Array(101).fill(diagnosticAudio()),
+    entries:Array(11).fill({formats:Array(101).fill(diagnosticAudio())})},sourceUrl);
+  const stats=readMediaSourceDiagnostics(descriptor);
+  expect(stats).toMatchObject({mediaSourceRootFormats:100,mediaSourceEntries:10,mediaSourceEntryFormats:1000,
+    mediaSourceRootAudioFormats:100,mediaSourceEntryEligibleAudio:1000,mediaSourceScanTruncated:1,
+    mediaSourceAudioEligible:0,mediaSourceAudioAttached:0});
+});
+test('unavailable source diagnostics survive reused discovery and one on-demand discovery',async()=>{
+  const descriptor=mediaFromYtDlp({webpage_url:sourceUrl,entries:[{formats:[diagnosticAudio()]}]},sourceUrl);
+  const extracted=attachMediaDescriptor({mediaDiscoveryAttempted:true},descriptor),runYtDlp=jest.fn(async()=>extracted);
+  expect(await discoverMediaSource({url:sourceUrl,extracted},{runYtDlp})).toBe(descriptor);
+  expect(runYtDlp).not.toHaveBeenCalled();
+  const fresh=await discoverMediaSource({url:sourceUrl},{runYtDlp,withProvider:(_p,work)=>work()});
+  expect(runYtDlp).toHaveBeenCalledTimes(1);
+  expect(readMediaSourceDiagnostics(fresh).mediaSourceEntryEligibleAudio).toBe(1);
+  expect(fresh.availability).toBe('unavailable');
+});
+test('HTML fallback preserves failed discovery diagnostics without exporting or granting entry audio',async()=>{
+  const direct=createMediaDescriptor({url:sourceUrl,renditions:[{url:'https://cdn.example/html.mp4',format:'mp4'}]});
+  const unavailable=mediaFromYtDlp({webpage_url:sourceUrl,entries:[{formats:[diagnosticAudio()]}]},sourceUrl);
+  const result=await discoverMediaSource({url:sourceUrl,extracted:attachMediaDescriptor({},direct)},
+    {runYtDlp:async()=>attachMediaDescriptor({},unavailable),withProvider:(_p,work)=>work()});
+  expect(result).toBe(direct);expect(result.audioRendition).toBeUndefined();
+  expect(readMediaSourceDiagnostics(result)).toMatchObject({mediaSourceDirect:1,mediaSourceYtDlp:1,
+    mediaSourceFallback:1,mediaSourceEntryEligibleAudio:1,mediaSourceAudioAttached:0});
+});
