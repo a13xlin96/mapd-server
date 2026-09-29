@@ -2,10 +2,41 @@ const {rankPlaces, validCoordinates} = require('./confidence');
 const {distanceKm} = require('../lib/geo');
 const context = require('../lib/jobContext');
 
+// Horn vowels and Vietnamese tone combinations are stronger signals than
+// accents shared by ordinary French, Spanish, or Portuguese venue names.
+const VI_DISTINCTIVE = /[ơư\u1ea0-\u1ef9]/iu;
+const VI_SHARED_LETTERS = /[ăâđêô]/iu;
+const nfc = value => String(value || '').normalize('NFC');
+function vietnamSpelling(value) {
+  const text = nfc(value);
+  return VI_DISTINCTIVE.test(text) || VI_SHARED_LETTERS.test(text);
+}
+const vietnamCountry = value => /^(?:vn|vi[eệ]t\s*nam)$/iu.test(nfc(value).trim());
+function vietnamAddress(value) {
+  const parts = nfc(value).split(/[,，;\n]/).map(part => part.trim()).filter(Boolean);
+  return vietnamCountry(parts[0]) || vietnamCountry(parts.at(-1));
+}
+function vietnamResult(row) {
+  const countries = (Array.isArray(row.address_components) ? row.address_components : [])
+    .filter(component => Array.isArray(component?.types) && component.types.includes('country'));
+  return countries.length
+    ? countries.some(component => vietnamCountry(component.short_name) || vietnamCountry(component.long_name))
+    : vietnamAddress(row.formatted_address);
+}
+
+function vietnamFieldMismatch(source, response, row) {
+  const wanted = nfc(source).trim().toLowerCase();
+  const actual = nfc(response).trim().toLowerCase();
+  if (wanted === actual || !vietnamSpelling(wanted)) return false;
+  // Shared circumflexes can support the source after Vietnam is established,
+  // but a different French name such as Pâtisserie does not prove Vietnamese.
+  return !VI_DISTINCTIVE.test(actual) && !(/[ăđ]/iu.test(actual) && vietnamResult(row));
+}
+
 // This selects a Google response language, not a translation or an assertion
 // about a venue's identity. Recovered results still go through normal ranking.
 function matchingLanguage(place, results) {
-  const text = [place.name, place.city, place.address, place.country].filter(Boolean).join(' ');
+  const text = nfc([place.name, place.city, place.address, place.country].filter(Boolean).join(' '));
   if (/[\p{Script=Hiragana}\p{Script=Katakana}]/u.test(text)) return 'ja';
   if (/\p{Script=Hangul}/u.test(text)) return 'ko';
   if (/\p{Script=Han}/u.test(text)) {
@@ -20,6 +51,8 @@ function matchingLanguage(place, results) {
   if (/\p{Script=Greek}/u.test(text)) return 'el';
   if (/\p{Script=Hebrew}/u.test(text)) return 'he';
   if (/\p{Script=Devanagari}/u.test(text)) return 'hi';
+  if (vietnamCountry(place.country) || vietnamAddress(place.city) || vietnamAddress(place.address) ||
+    VI_DISTINCTIVE.test(text) || (VI_SHARED_LETTERS.test(text) && results.some(vietnamResult))) return 'vi';
   return null;
 }
 
@@ -42,6 +75,14 @@ function mergeLocalizedResults(primary, localized) {
 }
 
 function hasScriptMismatch(place, results, languageCode) {
+  if (languageCode === 'vi') {
+    // Country/ISO evidence selects the language but cannot alone establish a
+    // response-language mismatch. Compare each field with its counterpart;
+    // generic accents alone do not establish a Vietnamese response.
+    return results.some(row =>
+      vietnamFieldMismatch(place.name, row.name, row) ||
+      vietnamFieldMismatch([place.city, place.address, place.country].filter(Boolean).join(' '), row.formatted_address, row));
+  }
   const scripts = {ja: /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u,
     'zh-TW': /\p{Script=Han}/u, 'zh-CN': /\p{Script=Han}/u, ko: /\p{Script=Hangul}/u,
     th: /\p{Script=Thai}/u, ar: /\p{Script=Arabic}/u, ru: /\p{Script=Cyrillic}/u,
