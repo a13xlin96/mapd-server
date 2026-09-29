@@ -220,7 +220,8 @@
     "caption": "Tai Sushi, Kyoto",
     "title": "",
     "address": "388 Komeyacho, Kyoto, Japan",
-    "expected": true
+    "expectedCandidate": true,
+    "expectedRequiresSelection": false
   },
   {
     "id": "wrong-city",
@@ -229,7 +230,8 @@
     "caption": "Tai Sushi in Kyoto",
     "title": "Tai Sushi",
     "address": "Miami, Florida, USA",
-    "expected": false
+    "expectedCandidate": true,
+    "expectedRequiresSelection": true
   },
   {
     "id": "no-evidence",
@@ -238,7 +240,8 @@
     "caption": "Love this place",
     "title": "A fun day",
     "address": "Kyoto, Japan",
-    "expected": false
+    "expectedCandidate": false,
+    "expectedRequiresSelection": false
   },
   {
     "id": "address-confirmed",
@@ -247,7 +250,8 @@
     "caption": "Tai Sushi at 388 Komeyacho, Kyoto",
     "title": "Tai Sushi",
     "address": "388 Komeyacho, Kyoto, Japan",
-    "expected": true
+    "expectedCandidate": true,
+    "expectedRequiresSelection": false
   },
   {
     "id": "non-latin-match",
@@ -256,6 +260,7 @@
     "caption": "京都の寿司店",
     "title": "京都の寿司店",
     "address": "京都市, Japan",
-    "expected": true
+    "expectedCandidate": true,
+    "expectedRequiresSelection": true
   }
 ]

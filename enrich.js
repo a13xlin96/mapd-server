@@ -922,7 +922,7 @@ async function runAIPipeline({ jobId, url, userId, captionText }) {
         continue;
       }
       const query = [p.name, p.address, p.city].filter(Boolean).join(' ');
-      if (!query || query.trim().length < 2) {unresolvedCount++;outcomes.push({...p,status:'unresolved',failure:failureOf(new EngineError('no_verified_match'))});continue;}
+      if (!query || query.trim().length < 2) {unresolvedCount++;outcomes.push({...p,status:'unresolved',failure:failureOf(new EngineError('no_verified_match',{stage:'matching'}))});continue;}
       let results;
       try {
         if(!searches.has(query))searches.set(query,searchGooglePlaces(query));
@@ -933,7 +933,7 @@ async function runAIPipeline({ jobId, url, userId, captionText }) {
       const top = match.place;
       if (!top) {unresolvedCount++;outcomes.push({...p,name:p.name,city:p.city || '',address:p.address || '',status:'unresolved',
         ranking:{score:0,candidates:match.ranked.map(r=>({placeId:r.top.place_id,score:r.score,...r.evidence}))},
-        failure:failureOf(match.localizationFailure || new EngineError('no_verified_match'))});continue;}
+        failure:failureOf(match.localizationFailure || new EngineError('no_verified_match',{stage:'matching'}))});continue;}
       if((retry.baseOutcomes || []).some(o=>o.status==='dismissed' && o.placeId===top.place_id))continue;
       // Resolve all aliases before deciding whether to save or attach a
       // source. A later uncertain/localized alias must not lose its need for
@@ -1060,7 +1060,9 @@ async function runOGFallback({ url, userId, captionText, ogData, skipAI=false })
   if (!place || score < 40) return null;
 
   const existing = await findPinByPlaceId(userId, place.place_id);
-  if (existing) return { duplicate: existing };
+  // An existing pin does not confirm this source's identity. Keep uncertain
+  // matches on the candidate path until selection authorizes an attachment.
+  if (existing && !requiresSelection) return { duplicate: existing };
 
   let details = null;
   try {details = await candidateDetails(place.place_id);} catch { /* valid search result remains usable */ }
@@ -1362,10 +1364,12 @@ async function runEnrichmentInner(jobId, url, userId, captionText) {
       return;
     }
     const lookupFailure = ai.outcomes?.find(o=>o.failure && !['no_verified_match','no_place_found'].includes(o.failure.code))?.failure;
+    const failure = lookupFailure || failureOf(ai.sourceError || (ai.unresolvedCount
+      ? new EngineError('no_verified_match',{stage:'matching'}) : new EngineError('no_place_found')));
     await updateJob(jobId, {
       status: 'failed',
-      error: lookupFailure?.message || failureOf(ai.sourceError || new EngineError(ai.unresolvedCount ? 'no_verified_match' : 'no_place_found')).message,
-      failure: lookupFailure || failureOf(ai.sourceError || new EngineError(ai.unresolvedCount ? 'no_verified_match' : 'no_place_found')),
+      error: failure.message,
+      failure,
       ogTitle: (ai.ogData && ai.ogData.title) || '',
       ogImage: (ai.ogData && ai.ogData.image) || '',
       completedAt: ts(),

@@ -58,7 +58,7 @@ async function searchGooglePlaces(query, locationBias, locationRestriction, opti
   // A localized result must never replace the default-language cached result.
   // Keep old keys usable; new search responses add structured address evidence.
   const languageCode = options.languageCode;
-  if (languageCode && !['ja', 'zh-TW', 'zh-CN', 'ko', 'th', 'ar', 'ru', 'uk', 'el', 'he', 'hi'].includes(languageCode)) {
+  if (languageCode && !['ja', 'zh-TW', 'zh-CN', 'ko', 'th', 'ar', 'ru', 'uk', 'el', 'he', 'hi', 'vi'].includes(languageCode)) {
     throw new EngineError('invalid_response', {stage: 'places_search', provider: 'google'});
   }
   const normalizedKey = cacheKey.toLowerCase().trim() + (languageCode ? `#language:${languageCode.toLowerCase()}` : '');

@@ -19,7 +19,10 @@ function rankPlaces(results, evidence={}, extractedPlace) {
   // original text needs confirmation, including account-derived suggestions.
   const ordinaryText=normalize([evidence.title,evidence.description,evidence.shareText,evidence.subtitles,...(evidence.hashtags || [])].filter(Boolean).join(' ').replace(/@[\p{L}\p{N}_.]+/gu,''));
   const unsupportedName=!!extractedPlace && !hasPhrase(ordinaryText,normalize(extractedPlace.name));
-  const explicitCity = city || normalize((evidence.description || '').match(/\bin\s+([^.!?\n,#]+)/i)?.[1]?.split(/\b(?:with|for|and|where|at|on|we|is|was|then|today|near)\b/i)[0]?.trim());
+  // An arbitrary "in ..." phrase is not an extracted city. Keep it only as a
+  // tentative clue: disagreement requires confirmation, never a hard veto.
+  const captionCity = !city ? normalize((evidence.description || '').match(/\bin\s+([^.!?\n,#]+)/i)?.[1]?.split(/\b(?:with|for|and|where|at|on|we|is|was|then|today|near)\b/i)[0]?.trim()).slice(0,160) : '';
+  const cityHintSource=city?'extracted':captionCity?'caption_tentative':'none';
   const ranked=results.slice(0,10).filter(p=>p?.place_id && p.name && validCoordinates(p) && (!extractedPlace?.confirmedPlaceId || p.place_id===extractedPlace.confirmedPlaceId)).map(top=>{
     const lat=p=>p.geometry?.location?.lat ?? p.lat, lng=p=>p.geometry?.location?.lng ?? p.lng;
     const variants=[top,...(Array.isArray(top._matchingVariants) ? top._matchingVariants : []).filter(v=>
@@ -31,18 +34,25 @@ function rankPlaces(results, evidence={}, extractedPlace) {
       const profile=geography(variant), name=normalize(variant.name);
       const nameMatch=extractedPlace ? nameEvidence(extractedPlace.name,name,profile,similarity) : {score:hasPhrase(ordinaryText,name)?1:0,partial:false};
       const nameScore=nameMatch.score;
-      const cityMatches=matchesGeography(explicitCity,profile.groups) && matchesCountry(country,profile);
+      const cityMatches=matchesGeography(city,profile.groups) && matchesCountry(country,profile);
+      const captionCityMatches=captionCity ? matchesGeography(captionCity,profile.groups) : null;
+      const originalGroups=profile.groups.map(g=>({...g,aliases:g.originalAliases || g.aliases}));
+      const cityAliasRecovery=!!(city && cityMatches && !matchesGeography(city,originalGroups));
       let locationText=ordinaryText;
       for (const venueName of [normalize(extractedPlace?.name),...variants.map(v=>normalize(v.name))].filter(Boolean).sort((a,b)=>b.length-a.length)) locationText=removePhrase(locationText,venueName);
       const geoMention=geographyMention(locationText,profile);
+      const aliasRecovery=cityAliasRecovery || !!(captionCity && captionCityMatches && !matchesGeography(captionCity,originalGroups)) ||
+        profile.groups.some(g=>g.originalAliases && !g.originalAliases.some(alias=>hasPhrase(locationText,alias)) && g.aliases.some(alias=>
+          !g.originalAliases.includes(alias) && hasPhrase(locationText,alias)));
       const address=addressEvidence(addressHint,profile), addressMatches=address.matches;
       const sourceAddress=addressMatches && hasPhrase(locationText,normalize(addressHint));
-      const locationMatches=!!(explicitCity || country || geoMention || addressMatches);
+      const locationMatches=!!(city || country || captionCityMatches || geoMention || addressMatches);
       let score=0;
       if(cityMatches && !address.conflict) {
         if(nameScore===1) score=55+(locationMatches?25:10);
         else if(nameMatch.partial && locationMatches) score=Math.min(59,40+Math.round(19*nameScore));
       }
+      if (captionCityMatches===false) score=Math.min(score,65);
       // A handle resemblance is useful for presenting a candidate, but does not
       // prove this is a restaurant's account. Always require user selection.
       const handleOnly=extractedPlace?.source==='handle';
@@ -52,7 +62,9 @@ function rankPlaces(results, evidence={}, extractedPlace) {
         if(handle.includes(name.replace(/\s/g,'')) && cityMatches) score=45;
       }
       const mediaOnly=['vision','transcript','subtitle','audio','media'].includes(extractedPlace?.source);
-      return {top,score,requiresSelection:!extractedPlace?.confirmedPlaceId && (handleOnly || unsupportedName || missingGeography || mediaOnly || variant!==top || nameMatch.partial || extractedPlace?.requiresSelection===true),evidence:{nameScore,cityMatches,geoMention:!!geoMention,addressMatches:!!addressMatches}};
+      return {top,score,requiresSelection:!extractedPlace?.confirmedPlaceId && (handleOnly || unsupportedName || missingGeography || mediaOnly || variant!==top || nameMatch.partial || aliasRecovery || address.requiresSelection || captionCityMatches===false || extractedPlace?.requiresSelection===true),
+        evidence:{nameScore,cityMatches,geoMention:!!geoMention,addressMatches:!!addressMatches,
+          cityHintSource,captionCityMatches,aliasRecovery:aliasRecovery || !!address.aliasRecovery,addressStatus:address.status,addressConflict:address.conflict,addressReasons:address.reasons}};
     });
     return assessed.sort((a,b)=>b.score-a.score)[0];
   }).sort((a,b)=>b.score-a.score);

@@ -17,7 +17,9 @@ for (let a=65; a<=90; a++) for (let b=65; b<=90; b++) {
     if (name) countryCodes.set(normalize(name),code);
   }
 }
-for (const [name,code] of Object.entries({usa:'US',us:'US','united states of america':'US',uk:'GB','great britain':'GB'})) countryCodes.set(name,code);
+// Add only the needed Vietnam spelling. Importing every Vietnamese country
+// name would collide with ISO AO/BI and turn cuisine words into geography.
+for (const [name,code] of Object.entries({usa:'US',us:'US','united states of america':'US',uk:'GB','great britain':'GB','viet nam':'VN'})) countryCodes.set(name,code);
 const countryNames = [...countryCodes.keys()].sort((a,b)=>b.length-a.length);
 const countryCode = value => countryCodes.get(normalize(value)) || (/^[a-z]{2}$/i.test(value || '') && regions.of(value.toUpperCase()) ? value.toUpperCase() : '');
 function countryAliases(values) {
@@ -59,16 +61,38 @@ function stripPostal(value) {
     return text;
   }).join('');
 }
-function areaAliases(values,kind) {
+function areaAliases(values,kind,country) {
   const aliases = unique(values.map(normalize));
   if (kind==='locality' || kind==='fallback') {
     for (const [short,long] of [['nyc','new york'],['sf','san francisco'],['la','los angeles']]) {
       if (aliases.includes(short) || aliases.includes(long)) aliases.push(short,long);
     }
   }
+  // These are locality spellings, never venue-name translations. Require
+  // Google's country evidence so "HCM" elsewhere cannot borrow Vietnam's city.
+  if (country==='VN') {
+    if (['locality','administrative_area_level_1','fallback'].includes(kind)) {
+      for (const names of [
+        ['ho chi minh','ho chi minh city','hcmc','hcm','tp ho chi minh','thanh pho ho chi minh','sai gon','saigon'],
+        ['ha noi','hanoi','ha noi city','tp ha noi','thanh pho ha noi'],
+      ]) if (names.some(name=>aliases.includes(name))) aliases.push(...names);
+    }
+    if (/^(?:neighborhood|sublocality(?:_level_\d+)?|administrative_area_level_[2345]|fallback)$/.test(kind)) {
+      for (const value of [...aliases]) {
+        const ward=value.match(/^phuong (.+)$|^(.+) ward$/u);
+        const name=ward?.[1] || ward?.[2];
+        if (name) aliases.push(name,`phuong ${name}`,`${name} ward`);
+      }
+    }
+  }
   return unique(aliases);
 }
-function fallbackGeography(value,name) {
+function areaGroup(values,kind,country) {
+  // Preserve the pre-existing NYC/SF/LA policy. Confirmation is new only for
+  // the additional Vietnam equivalences, not a change to those mature paths.
+  return {kind,aliases:areaAliases(values,kind,country),originalAliases:areaAliases(values,kind)};
+}
+function fallbackGeography(value,name,country) {
   const parts = String(value || '').split(/[,，;\n]/).map(p=>normalize(stripPostal(p))).filter(Boolean);
   const groups = [];
   // Country may come first or last. Do not interpret an interior state such as
@@ -80,6 +104,7 @@ function fallbackGeography(value,name) {
       ((part.endsWith(alias) || part.startsWith(alias)) && hasPhrase(part,alias)));
     if (match) {
       groups.push({kind:'country',aliases:countryAliases([match])});
+      country=countryCode(match);
       parts[index] = normalize(stripPostal(removePhrase(part,match)));
       break;
     }
@@ -93,25 +118,28 @@ function fallbackGeography(value,name) {
       continue;
     }
     if (/\d/.test(part) || STREET_MARKER.test(part)) continue;
-    groups.push({kind:'fallback',aliases:areaAliases([part],'fallback')});
+    groups.push(areaGroup([part],'fallback',country));
   }
   return groups;
 }
 function geography(candidate) {
   const components = Array.isArray(candidate.address_components) ? candidate.address_components : [];
   const groups = [];
+  const countryComponent=components.find(c=>Array.isArray(c?.types) && c.types.includes('country'));
+  const typedCountry=countryCode(countryComponent?.short_name) || countryCode(countryComponent?.long_name);
+  const fallback=fallbackGeography(candidate.formatted_address,candidate.name,typedCountry);
+  const country=typedCountry || fallback.find(g=>g.kind==='country')?.aliases.map(countryCode).find(Boolean);
   for (const c of components) {
     const types = Array.isArray(c?.types) ? c.types : [];
     const kind = types.find(t=>t==='country' || /^(?:locality|postal_town|neighborhood|sublocality(?:_level_\d+)?|administrative_area_level_\d+)$/.test(t));
     if (!kind) continue;
     const values = [c.long_name,c.short_name].filter(v=>typeof v==='string' && v.trim());
-    const aliases = kind==='country' ? countryAliases(values) : areaAliases(values,kind);
-    if (aliases.length) groups.push({kind,aliases});
+    const group = kind==='country' ? {kind,aliases:countryAliases(values)} : areaGroup(values,kind,country);
+    if (group.aliases.length) groups.push(group);
   }
-  const fallback = fallbackGeography(candidate.formatted_address,candidate.name);
   if (!groups.some(g=>g.kind!=='country')) groups.push(...fallback.filter(g=>g.kind!=='country'));
   if (!groups.some(g=>g.kind==='country')) groups.push(...fallback.filter(g=>g.kind==='country'));
-  return {groups,components,rawAddress:candidate.formatted_address,address:normalize(candidate.formatted_address),country:groups.find(g=>g.kind==='country')};
+  return {groups,components,fallback,countryCode:country,rawAddress:candidate.formatted_address,address:normalize(candidate.formatted_address),country:groups.find(g=>g.kind==='country')};
 }
 function matchesGeography(hint,groups) {
   const value = normalize(hint);
@@ -131,7 +159,11 @@ function matchesCountry(hint,profile) {
   return !!profile.country?.aliases.includes(normalize(hint));
 }
 function geographyMention(text,profile) {
-  const aliases=profile.groups.flatMap(g=>g.aliases);
+  // The added spelling can describe cuisine ("món Việt Nam"). Keep it for
+  // explicit country/address matching, but never let it alone prove where a
+  // caption's venue is. Other city or full-address evidence can still qualify.
+  const aliases=profile.groups.flatMap(g=>g.kind==='country'
+    ? g.aliases.filter(alias=>alias!=='viet nam') : g.aliases);
   if (aliases.some(alias=>!CJK.test(alias) && alias.length>=3 && hasPhrase(text,alias))) return true;
   // Structural CJK boundaries permit contiguous address components, but are
   // not semantic evidence in prose: 日本料理 / 日本酒 do not locate a venue.
@@ -142,25 +174,59 @@ function geographyMention(text,profile) {
       (/\d/.test(run) && addressEvidence(run,profile).matches)));
 }
 function streetText(value,profile) {
+  const aliases = unique(profile.groups.flatMap(g=>g.aliases)).sort((a,b)=>b.length-a.length);
   let text = String(value || '').split(/[,，;\n]/).map(part=>{
     let segment=normalize(stripPostal(part));
-    for (const alias of profile.country?.aliases || []) segment=removePhrase(segment,alias);
+    let geographicSegment=segment;
+    for (const alias of profile.country?.aliases || []) geographicSegment=removePhrase(geographicSegment,alias);
+    geographicSegment=normalize(stripPostal(geographicSegment));
+    // A locality alias is not a route alias: "HCMC Street" and "Saigon
+    // Street" may be different roads. Preserve Latin route/house segments;
+    // contiguous CJK administrative prefixes still need component stripping.
+    const streetSegment=!CJK.test(segment) &&
+      (STREET_MARKER.test(part) || (/\d/.test(segment) && /\p{L}/u.test(segment))) &&
+      !matchesGeography(geographicSegment,profile.groups);
+    if (streetSegment) return segment;
     // Country-first addresses may put country and postal-locality together.
-    return normalize(stripPostal(segment));
+    segment=geographicSegment;
+    for (const alias of aliases) segment=removePhrase(segment,alias);
+    return segment;
   }).join(' ');
-  const aliases = unique(profile.groups.flatMap(g=>g.aliases)).sort((a,b)=>b.length-a.length);
-  for (const alias of aliases) text = removePhrase(text,alias);
-  for (const c of profile.components) if (c.types?.includes('postal_code')) {
+  for (const c of profile.components) if (Array.isArray(c?.types) && c.types.includes('postal_code')) {
     for (const alias of unique([c.long_name,c.short_name].map(normalize))) text=removePhrase(text,alias);
   }
   return text.replace(/\b(?:no|number)\b/g,' ').replace(/\s+/g,' ').trim();
 }
 function addressEvidence(hint,profile) {
-  if (!hint) return {matches:false,conflict:false};
-  const hintGroups = fallbackGeography(hint);
-  const geoConflict = hintGroups.some(g=>g.kind==='country'
-    ? profile.country && !g.aliases.some(a=>profile.country.aliases.includes(a))
-    : !g.aliases.some(a=>matchesGeography(a,profile.groups)));
+  if (!hint) return {matches:false,conflict:false,status:'not_provided',reasons:[],requiresSelection:false};
+  const hintGroups = fallbackGeography(hint,undefined,profile.countryCode);
+  const countryHint=hintGroups.find(g=>g.kind==='country');
+  const countryConflict=!!(countryHint && profile.country && !countryHint.aliases.some(a=>profile.country.aliases.includes(a)));
+  const regions=hintGroups.filter(g=>g.kind!=='country');
+  const unmatched=regions.filter(g=>!g.aliases.some(a=>matchesGeography(a,profile.groups)));
+  const originals=profile.groups.map(g=>({...g,aliases:g.originalAliases || g.aliases}));
+  const aliasRecovery=regions.some(g=>g.aliases.some(a=>matchesGeography(a,profile.groups)) &&
+    !(g.originalAliases || g.aliases).some(a=>matchesGeography(a,originals)));
+  const uncorroborated=unmatched.filter(g=>!g.aliases.some(a=>matchesGeography(a,profile.fallback)));
+  // In addresses anchored by a country or matching outer region, compare
+  // geographic positions inward. A city mismatch before a matching state is a
+  // contradiction. Additional missing inner wards have no comparable slot and
+  // remain unknown; matches visible in the full address are corroboration.
+  const actualRegions=profile.fallback.filter(g=>g.kind!=='country');
+  const outerAgreement=regions.at(-1)?.aliases.some(a=>actualRegions.at(-1)?.aliases.includes(a));
+  let regionConflict=false, actualIndex=actualRegions.length-1;
+  let anchored=!!((countryHint && profile.country) || outerAgreement);
+  // Align shared region names first instead of assuming equal component
+  // counts. Omitting NY must not align West Village against New York City.
+  for (let index=regions.length-1;index>=0;index--) {
+    const group=regions[index];
+    let anchor=-1;
+    for (let i=actualIndex;i>=0;i--) {
+      if (group.aliases.some(a=>actualRegions[i].aliases.includes(a))) {anchor=i;break;}
+    }
+    if (anchor>=0) {actualIndex=anchor-1;anchored=true;}
+    else if (uncorroborated.includes(group) && anchored && actualIndex>=0) regionConflict=true;
+  }
   const wanted = streetText(hint,profile), actual = streetText(profile.rawAddress,profile);
   const numbers = text => text.match(/\d+[a-z]?(?![a-z])/g) || [];
   const wantedNumbers = numbers(wanted), actualNumbers = numbers(actual);
@@ -168,9 +234,20 @@ function addressEvidence(hint,profile) {
     wantedNumbers.join('|')!==actualNumbers.join('|');
   const compact = text => text.replace(/\s/g,'');
   const meaningful = /\p{L}/u.test(wanted) && wanted.length>=3;
-  const matches = !geoConflict && !numberConflict && meaningful &&
+  const conflict=countryConflict || regionConflict || numberConflict;
+  const matches = !conflict && meaningful &&
     (compact(wanted)===compact(actual) || hasPhrase(profile.address,normalize(hint)));
-  return {matches:!!matches,conflict:!!(geoConflict || numberConflict)};
+  const reasons=[];
+  if (countryConflict) reasons.push('country_conflict');
+  if (regionConflict) reasons.push('address_region_conflict');
+  if (numberConflict) reasons.push('street_number_conflict');
+  if (unmatched.length) reasons.push('geography_components_missing');
+  if (aliasRecovery) reasons.push('locality_alias');
+  if (countryHint && !profile.country) reasons.push('country_unverified');
+  if (!matches && !conflict) reasons.push('street_unverified');
+  const unknown=unmatched.length>0 || !!(countryHint && !profile.country) || !matches;
+  return {matches:!!matches,conflict:!!conflict,status:conflict?'conflict':unknown?'unknown':'match',
+    reasons,aliasRecovery,requiresSelection:!conflict && (unknown || aliasRecovery)};
 }
 
 const GENERIC_NAME = new Set('the and of a an at in restaurant cafe coffee bar kitchen sushi ramen chicken house grill shop food bakery bistro dining blue red green golden new old best good great little big'.split(' '));

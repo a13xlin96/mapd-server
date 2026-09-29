@@ -22,7 +22,7 @@ describe('whole geography components and cached formatted addresses',()=>{
     for (const address_components of [undefined,tokyoComponents]) {
       const result=match(place(undefined,undefined,{address_components}),{city,country:'Japan'});
       expect(result).toMatchObject({score:80,requiresSelection:false});
-      expect(result.ranked[0].evidence).toEqual({nameScore:1,cityMatches:true,geoMention:true,addressMatches:false});
+      expect(result.ranked[0].evidence).toEqual(expect.objectContaining({nameScore:1,cityMatches:true,geoMention:true,addressMatches:false}));
     }
   });
   test.each(['Japan, 〒150-0001 Tokyo, 1 Main Street','1 Main Street, Tokyo, Japan','Tokyo Japan','Japan Tokyo'])('cached geography survives address order: %s',address=>{
@@ -116,7 +116,7 @@ describe('whole geography components and cached formatted addresses',()=>{
     const candidate={...require('./engine/matching-localized-google.json'),address_components:undefined};
     const result=rankPlaces([candidate],{description:caption},chinese);
     expect(result).toMatchObject({score:80,requiresSelection:false});
-    expect(result.ranked[0].evidence).toEqual({nameScore:1,cityMatches:true,geoMention:true,addressMatches:true});
+    expect(result.ranked[0].evidence).toEqual(expect.objectContaining({nameScore:1,cityMatches:true,geoMention:true,addressMatches:true}));
     expect(rankPlaces([candidate],{description:caption},{...chinese,city:'新北市永和區'}).place).toBeNull();
   });
 });
@@ -130,7 +130,7 @@ describe('complete localized Google evidence and identity',()=>{
     const snapshot=JSON.stringify(primary),result=rankPlaces([primary],{description:caption},chinese);
     expect(result.place).toBe(primary);
     expect(result).toMatchObject({score:80,requiresSelection:true});
-    expect(result.ranked[0].evidence).toEqual({nameScore:1,cityMatches:true,geoMention:true,addressMatches:true});
+    expect(result.ranked[0].evidence).toEqual(expect.objectContaining({nameScore:1,cityMatches:true,geoMention:true,addressMatches:true}));
     expect(JSON.stringify(primary)).toBe(snapshot);
   });
   test('recorded Google row tolerates the village missing from the source address',()=>{
@@ -138,7 +138,7 @@ describe('complete localized Google evidence and identity',()=>{
     const primary={...english(),place_id:variant.place_id,geometry:variant.geometry,_matchingVariants:[variant]};
     const result=rankPlaces([primary],{description:caption},chinese);
     expect(result.place).toBe(primary);expect(result.requiresSelection).toBe(true);
-    expect(result.ranked[0].evidence).toEqual({nameScore:1,cityMatches:true,geoMention:true,addressMatches:true});
+    expect(result.ranked[0].evidence).toEqual(expect.objectContaining({nameScore:1,cityMatches:true,geoMention:true,addressMatches:true}));
   });
   test.each([
     ['different ID',{place_id:'another'}],
@@ -296,7 +296,7 @@ describe('original safety and output contracts',()=>{
     const candidate=place(),result=calculateConfidence([candidate],{description:'Tai Sushi in Tokyo'});
     expect(result.place).toMatchObject({place_id:'venue',lat:35.66,lng:139.7,geometry:candidate.geometry});
     expect(Object.keys(result).sort()).toEqual(['place','ranked','requiresSelection','score']);
-    expect(Object.keys(result.ranked[0].evidence).sort()).toEqual(['addressMatches','cityMatches','geoMention','nameScore']);
+    expect(Object.keys(result.ranked[0].evidence).sort()).toEqual(['addressConflict','addressMatches','addressReasons','addressStatus','aliasRecovery','captionCityMatches','cityHintSource','cityMatches','geoMention','nameScore']);
     expect(similarity('tai sushi','tai sushi annex')).toBeCloseTo(2/3);
   });
 });

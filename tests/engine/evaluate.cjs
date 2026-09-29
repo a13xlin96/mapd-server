@@ -63,8 +63,12 @@ async function evaluate(fixture) {
     const {calculateConfidence} = require('../../enrich/confidence');
     const name = fixture.id === 'non-latin-match' ? '京都の寿司店' : 'Tai Sushi';
     const result = {place_id:'fixture-place',name,formatted_address:fixture.address,geometry:{location:{lat:35,lng:135}},types:['restaurant']};
-    const {score} = calculateConfidence([result,{...result,place_id:'fixture-second'}], {title:fixture.title,description:fixture.caption});
-    return (score >= 60) === fixture.expected;
+    const decision = calculateConfidence([result], {title:fixture.title,description:fixture.caption});
+    // A score alone is not authorization to save. In particular, a tentative
+    // caption city can yield a selectable candidate while still requiring the
+    // user's confirmation. Ambiguous IDs have separate ranking/pipeline tests.
+    return typeof fixture.expectedCandidate === 'boolean' && typeof fixture.expectedRequiresSelection === 'boolean' &&
+      !!decision.place === fixture.expectedCandidate && decision.requiresSelection === fixture.expectedRequiresSelection;
   }
   throw new Error('Unknown fixture kind');
 }
