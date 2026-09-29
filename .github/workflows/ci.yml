@@ -29,7 +29,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: npm
           cache-dependency-path: package-lock.json
       - run: npm ci
@@ -66,8 +66,8 @@ jobs:
           node-version: '20'
           cache: npm
           cache-dependency-path: functions/package-lock.json
-      # Functions are a separate deployment package; root dependencies cannot
-      # mask missing Functions dependencies in this clean job.
+      # Functions retain their separately deployed Node 20 runtime; root
+      # dependencies cannot mask missing dependencies in this clean job.
       - run: npm ci
       - name: Functions tests without external network
         run: |
@@ -115,6 +115,14 @@ jobs:
           persist-credentials: false
       - name: Build production image from clean checkout
         run: docker build --tag mapd-server:ci .
+      - name: Verify installed runtime and decoder smoke without network
+        run: |
+          set -o pipefail
+          mkdir -p artifacts
+          docker run --rm --network none --entrypoint sh mapd-server:ci -ec '
+            python3 /usr/local/bin/mapd-runtime-check.py
+            node tests/media/smoke.cjs
+          ' | tee artifacts/runtime-compatibility.txt
       - name: Smoke actual entry point with no network or production credentials
         run: |
           docker run -d --name mapd-smoke --network none \
