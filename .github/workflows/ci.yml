@@ -142,7 +142,7 @@ jobs:
               } catch { await new Promise(resolve => setTimeout(resolve, 1000)); }
             }
             assert.ok(ready, 'Server did not become ready');
-            for (const route of ['/enrich', '/enrich/selection', '/extract']) {
+            for (const route of ['/enrich', '/enrich/selection', '/enrich/review', '/extract']) {
               const response = await fetch(`http://127.0.0.1:3000${route}`, {
                 method: 'POST', headers: {'content-type': 'application/json'}, body: '{}',
                 signal: AbortSignal.timeout(2000),

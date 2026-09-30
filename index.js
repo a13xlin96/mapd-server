@@ -439,6 +439,8 @@ app.post('/ai/vision-extract', apiLimiter, visionLimiter, authenticateRequest, p
 // The phone and Cloud Function both durably admit a pending job. The worker
 // claims it later, so a process exit between HTTP response and execution cannot
 // lose accepted work. Redelivery never restarts a processing or terminal job.
+require('./lib/detectionReviewRoutes').registerDetectionReviewRoute(app, {db:firestore, authenticateRequest, apiLimiter,
+  serverTimestamp:()=>admin.firestore.FieldValue.serverTimestamp()});
 app.post('/enrich/selection', apiLimiter, authenticateRequest, async (req,res)=>{
   const {jobId,selectedPlaceIds}=req.body || {};
   if(typeof jobId!=='string' || !/^[A-Za-z0-9_-]{1,200}$/.test(jobId)) return res.status(400).json({error:'invalid_job'});

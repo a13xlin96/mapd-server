@@ -20,7 +20,7 @@ const {extractPublicPost}=require('../lib/extraction');
 const url='https://www.instagram.com/reel/TEST/';
 beforeEach(()=>{db.reset();jest.clearAllMocks();});
 afterEach(()=>jest.restoreAllMocks());
-test.each(['/extract','/ai/extract-places','/ai/extract-place','/ai/verify-place','/ai/infer-place-regions','/ai/vision-extract','/enrich','/enrich/selection'])('shipped %s route rejects unauthenticated work',async route=>{
+test.each(['/extract','/ai/extract-places','/ai/extract-place','/ai/verify-place','/ai/infer-place-regions','/ai/vision-extract','/enrich','/enrich/selection','/enrich/review'])('shipped %s route rejects unauthenticated work',async route=>{
   expect((await request(app).post(route).send({url,jobId:'job',userId:'u'})).status).toBe(401);
   expect(anthropic.messages.create).not.toHaveBeenCalled();expect(extractPublicPost).not.toHaveBeenCalled();
 });
@@ -43,4 +43,16 @@ test('shipped selection route rejects another user without modifying the job',as
   db.seed('enrichmentJobs','selection',{userId:'u',url,status:'needs_selection',candidates:[]});
   const result=await request(app).post('/enrich/selection').set('Authorization','Bearer attacker').send({jobId:'selection',selectedPlaceIds:[]});
   expect(result.status).toBe(403);expect(db.read('enrichmentJobs','selection').status).toBe('needs_selection');
+});
+
+test('shipped detection review route uses the owner transaction without provider work',async()=>{
+  db.seed('enrichmentJobs','review',{userId:'u',engineVersion:{schema:2},status:'failed',failure:{code:'partial_save'},outcomes:[
+    {name:'Cafe',status:'saved',placeId:'place',pinId:'pin'}, {name:'Cafe',city:'Paris',status:'unresolved',ranking:{candidates:[{placeId:'place'}]}}]});
+  db.seed('pins','pin',{userId:'u',placeId:'place',placeName:'Cafe'});
+  const preview=await request(app).post('/enrich/review').set('Authorization','Bearer u').send({jobId:'review'});
+  expect(preview.status).toBe(200);expect(preview.body.unresolvedCount).toBe(1);
+  const result=await request(app).post('/enrich/review').set('Authorization','Bearer u').send({jobId:'review',version:preview.body.version,
+    decisions:[{outcomeId:preview.body.items[0].outcomeId,action:'same_place',savedPlaceId:'place'}]});
+  expect(result.status).toBe(200);expect(result.body).toMatchObject({completed:true,savedCount:1,unresolvedCount:0,analysisRecovery:null});
+  expect(anthropic.messages.create).not.toHaveBeenCalled();expect(extractPublicPost).not.toHaveBeenCalled();
 });
