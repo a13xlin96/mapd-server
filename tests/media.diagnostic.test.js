@@ -21,9 +21,10 @@ function setup({db = new FakeFirestore(), extract = jest.fn(async () => ({title:
   collect = jest.fn(async () => emptyResult()), now = Date.now, ticket = {}} = {}) {
   db.strictReadOrder = true;
   const id = randomBytes(16).toString('hex'), token = randomBytes(32).toString('hex');
+  const createdAtMs=now();
   db.seed(COLLECTION, id, {schemaVersion:1, status:'pending',
     tokenHash:createHash('sha256').update(token).digest('hex'), userId:'operator-selected-user',
-    url:'https://www.instagram.com/reel/DIAGNOSTIC/', createdAtMs:now(), expiresAtMs:now() + MAX_TICKET_MS, ...ticket});
+    url:'https://www.instagram.com/reel/DIAGNOSTIC/', createdAtMs, expiresAtMs:createdAtMs + MAX_TICKET_MS, ...ticket});
   const router = createMediaDiagnosticRouter({db, extract, collect, now});
   const app = express();
   app.use(ROUTE, router); // same ordering as index.js
@@ -33,6 +34,15 @@ function setup({db = new FakeFirestore(), extract = jest.fn(async () => ({title:
     read:() => db.read(COLLECTION, id),
     stop:value => db.seed(MEDIA_CONTROL.collection, MEDIA_CONTROL.document, {schemaVersion:1, stopNewMediaDispatch:value})};
 }
+
+test('a clock tick during fixture creation cannot make a valid ticket exceed its maximum lifetime', async () => {
+  let time=Date.now();
+  const f=setup({now:()=>time++});
+  expect((await f.send()).status).toBe(202);
+  await f.router.whenIdle();
+  expect(f.read().expiresAtMs-f.read().createdAtMs).toBe(MAX_TICKET_MS);
+  expect(f.extract).toHaveBeenCalledTimes(1);
+});
 
 test('only the ticket capability authenticates; spoofed Firebase/admin/UID headers grant nothing', async () => {
   const f = setup();
