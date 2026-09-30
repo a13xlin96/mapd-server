@@ -11,6 +11,7 @@ const {randomUUID} = require('crypto');
 const {withLease} = require('./lib/providerRuntime');
 const jobContext = require('./lib/jobContext');
 const {getRetryContext,withOutcomeSummary,retainUnresolved} = require('./lib/retryContext');
+const {isReviewedDismissal,reviewedClueMatches} = require('./lib/detectionReview');
 const {validCoordinates} = require('./enrich/confidence');
 const {createPlaceMatcher} = require('./enrich/placeMatching');
 const {EngineError,asEngineError,failureOf} = require('./lib/engineError');
@@ -911,7 +912,7 @@ async function runAIPipeline({ jobId, url, userId, captionText }) {
       await jobContext.assertActive();
       const priorKey=place=>[place.name,place.city,place.country,place.address].map(v=>normalizePlaceName(v || '')).join('|');
       const retainedId=retainedIdentity(p) && (p.confirmedPlaceId || p.placeId);
-      if ((retry.baseOutcomes || []).some(o=>retainedId
+      if ((retry.baseOutcomes || []).some(o=>isReviewedDismissal(o) ? reviewedClueMatches(o,p) : retainedId
         ? (o.confirmedPlaceId || o.placeId)===retainedId : priorKey(o)===priorKey(p))) continue;
       const storedPin = recoveryPins.get(p.confirmedPlaceId || p.placeId);
       if(storedPin) {
@@ -934,7 +935,7 @@ async function runAIPipeline({ jobId, url, userId, captionText }) {
       if (!top) {unresolvedCount++;outcomes.push({...p,name:p.name,city:p.city || '',address:p.address || '',status:'unresolved',
         ranking:{score:0,candidates:match.ranked.map(r=>({placeId:r.top.place_id,score:r.score,...r.evidence}))},
         failure:failureOf(match.localizationFailure || new EngineError('no_verified_match',{stage:'matching'}))});continue;}
-      if((retry.baseOutcomes || []).some(o=>o.status==='dismissed' && o.placeId===top.place_id))continue;
+      if((retry.baseOutcomes || []).some(o=>o.status==='dismissed' && !isReviewedDismissal(o) && o.placeId===top.place_id))continue;
       // Resolve all aliases before deciding whether to save or attach a
       // source. A later uncertain/localized alias must not lose its need for
       // confirmation just because another name for this ID appeared first.
@@ -1007,10 +1008,11 @@ async function runAIPipeline({ jobId, url, userId, captionText }) {
   const previousUnresolved=retry.priorUnresolvedOutcomes || (retry.initialOutcomes || []).filter(o=>o.status==='unresolved'
     && (retainedIdentity(o) || (retry.reanalyzeIdentity && (sourceError || aiError || visionError || mediaResult?.incomplete))));
   const prior=retainUnresolved(previousUnresolved,[...base,...matches.outcomes,...freshDeferred]);
-  const deferred=[...prior,...freshDeferred];
-  if(jobContext.current())jobContext.current().outcomes=[...base.filter(o=>!seen.has(o.placeId || o.pinId)),...matches.outcomes,...deferred];
+  const deferred=[...prior,...freshDeferred].filter(o=>!base.some(d=>reviewedClueMatches(d,o)));
+  if(jobContext.current())jobContext.current().outcomes=[...base.filter(o=>isReviewedDismissal(o) || !seen.has(o.placeId || o.pinId)),...matches.outcomes,...deferred];
   matches.unresolvedCount+=deferred.length;
   return {duplicate:null,...matches,outcomes:[...matches.outcomes,...deferred],ogData,canonicalUrl,mediaAttempted:!!mediaResult,
+    analysisSucceeded:!sourceError && !aiError && !visionError && !mediaResult?.incomplete,
     sourceError:mediaResult?.incomplete ? mediaResult.error || new EngineError('dependency_timeout',{stage:'media'}) : sourceError};
 }
 
@@ -1243,7 +1245,7 @@ async function runEnrichmentInner(jobId, url, userId, captionText) {
     const confirmedIds=new Set((context.retry.resumePlaces || []).map(p=>p.confirmedPlaceId).filter(Boolean));
     const confirmed=ai.candidates.filter(pin=>confirmedIds.has(pin.placeId));
     for(const pin of confirmed) {
-      const outcome=context.outcomes.find(o=>o.placeId===pin.placeId);
+      const outcome=context.outcomes.find(o=>o.status==='candidate' && o.placeId===pin.placeId);
       try {
         const result=await writePinTransactional(pin,ai.ogData);
         Object.assign(outcome,{status:result.alreadyExists?'existing':'saved',pinId:result.pinId});
@@ -1305,6 +1307,18 @@ async function runEnrichmentInner(jobId, url, userId, captionText) {
         completedAt: ts(),
       });
       await sendPushForJob(jobId, userId, 'needs_selection');
+      return;
+    }
+
+    // A successful explicit retry can rediscover only clues the user already
+    // resolved. No new place is not a save failure when committed places and
+    // reviewed dismissals account for all work. Failed analysis cannot take
+    // this path; incomplete media retains the separate recovery contract.
+    if (ai.analysisSucceeded && context.outcomes?.some(isReviewedDismissal) &&
+        context.outcomes.some(o=>['saved','existing'].includes(o.status)) &&
+        context.outcomes.every(o=>['saved','existing','dismissed'].includes(o.status))) {
+      await updateJob(jobId,{status:'complete',failure:null,error:null,unresolvedCount:0,completedAt:ts()});
+      await sendPushForJob(jobId,userId,'complete');
       return;
     }
 
@@ -1421,7 +1435,7 @@ async function saveSelectedPlacesInner(jobId,userId,selectedIds) {
     try {
       for(const pin of claimed.candidates) {
         await jobContext.assertActive();
-        const evidence=original.find(o=>o.placeId===pin.placeId) || {name:pin.placeName,city:pin.city || '',address:pin.formattedAddress || ''};
+        const evidence=original.find(o=>o.status==='candidate' && o.placeId===pin.placeId) || {name:pin.placeName,city:pin.city || '',address:pin.formattedAddress || ''};
         try {
           const result=await writePinTransactional(pin,{});
           context.outcomes.push({...evidence,status:result.alreadyExists?'existing':'saved',pinId:result.pinId});
