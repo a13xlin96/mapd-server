@@ -48,8 +48,15 @@ function removePhrase(text, phrase) {
   return text.replace(new RegExp(escape(phrase),'gu'), (match,index) => boundary(text,index,index+match.length,match) ? ' ' : match);
 }
 const STREET_MARKER = /\b(?:street|st|road|rd|avenue|ave|lane|ln|drive|dr|boulevard|blvd|highway|hwy|way|route|rue|chemin|impasse|allee|platz|gasse)\b|(?:strasse|straße)\b|[街路巷弄號丁目番地]/iu;
-function stripPostal(value) {
-  return String(value || '').split(/([,，;\n])/).map(part=>{
+const VIETNAM_LOCALITIES = [
+  ['ho chi minh','ho chi minh city','hcmc','hcm','tp ho chi minh','thanh pho ho chi minh','sai gon','saigon'],
+  ['ha noi','hanoi','ha noi city','tp ha noi','thanh pho ha noi'],
+];
+function stripPostal(value,country,components=[]) {
+  const parts=String(value || '').split(/([,，;\n])/);
+  let finalLocality=parts.length-1;
+  while(finalLocality>=0 && (!parts[finalLocality].trim() || /^[,，;\n]$/.test(parts[finalLocality]) || countryCode(parts[finalLocality].trim()))) finalLocality--;
+  return parts.map((part,index)=>{
     let text=part.replace(/〒\s*/g,'').replace(/\b\d{3}-\d{4}\b/g,' ')
       .replace(/\b[A-Z]\d[A-Z]\s?\d[A-Z]\d\b|\b[A-Z]{1,2}\d[A-Z\d]?\s?\d[A-Z]{2}\b/gi,' ')
       .replace(/^\s*\d{3,6}(?=[\p{Script=Han}]+[市縣県])/u,'');
@@ -57,7 +64,20 @@ function stripPostal(value) {
     // five-digit prefix followed by a complete locality phrase, never a route.
     const prefix=text.match(/^\s*\d{5}\s*([\p{L}\p{M}][\p{L}\p{M}\s'’\-]*)$/u);
     if (prefix && !STREET_MARKER.test(prefix[1])) text=prefix[1];
-    if (!STREET_MARKER.test(text)) text=text.replace(/\b\d{5}(?:-\d{4})?\s*$|\s+\d{3}\s*$/g,'');
+    if (!STREET_MARKER.test(text)) {
+      // Older Vietnam listings can retain six-digit postal codes. Strip one
+      // only after a complete vetted locality in a Vietnam address; never
+      // erase a six-digit house number or a similarly named route.
+      const postalLocality=text.match(/^\s*(.+?)\s+\d{6}\s*$/u);
+      // A known six-digit house number disables this heuristic for both
+      // candidate and hint. The hint's differing number must remain a
+      // conflict even when the structured route is missing.
+      const routeEvidence=postalLocality && components.some(c=>Array.isArray(c?.types) &&
+        ((c.types.includes('route') && [c.long_name,c.short_name].some(v=>v && normalize(v)===normalize(postalLocality[1]))) ||
+         (c.types.includes('street_number') && [c.long_name,c.short_name].some(v=>v && /^\d{6}$/.test(String(v).trim())))));
+      if (country==='VN' && index===finalLocality && postalLocality && !routeEvidence && VIETNAM_LOCALITIES.some(names=>names.includes(normalize(postalLocality[1])))) text=postalLocality[1];
+      text=text.replace(/\b\d{5}(?:-\d{4})?\s*$|\s+\d{3}\s*$/g,'');
+    }
     return text;
   }).join('');
 }
@@ -72,10 +92,7 @@ function areaAliases(values,kind,country) {
   // Google's country evidence so "HCM" elsewhere cannot borrow Vietnam's city.
   if (country==='VN') {
     if (['locality','administrative_area_level_1','fallback'].includes(kind)) {
-      for (const names of [
-        ['ho chi minh','ho chi minh city','hcmc','hcm','tp ho chi minh','thanh pho ho chi minh','sai gon','saigon'],
-        ['ha noi','hanoi','ha noi city','tp ha noi','thanh pho ha noi'],
-      ]) if (names.some(name=>aliases.includes(name))) aliases.push(...names);
+      for (const names of VIETNAM_LOCALITIES) if (names.some(name=>aliases.includes(name))) aliases.push(...names);
     }
     if (/^(?:neighborhood|sublocality(?:_level_\d+)?|administrative_area_level_[2345]|fallback)$/.test(kind)) {
       for (const value of [...aliases]) {
@@ -92,8 +109,12 @@ function areaGroup(values,kind,country) {
   // the additional Vietnam equivalences, not a change to those mature paths.
   return {kind,aliases:areaAliases(values,kind,country),originalAliases:areaAliases(values,kind)};
 }
-function fallbackGeography(value,name,country) {
-  const parts = String(value || '').split(/[,，;\n]/).map(p=>normalize(stripPostal(p))).filter(Boolean);
+function fallbackGeography(value,name,country,components=[]) {
+  const rawParts=String(value || '').split(/[,，;\n]/).map(p=>p.trim()).filter(Boolean);
+  // Establish only an explicit edge country before country-specific postal
+  // normalization. Structured country evidence still wins in geography().
+  const postalCountry=country || countryCode(rawParts.at(-1)) || countryCode(rawParts[0]);
+  const parts = stripPostal(value,postalCountry,components).split(/[,，;\n]/).map(normalize).filter(Boolean);
   const groups = [];
   // Country may come first or last. Do not interpret an interior state such as
   // Georgia as a second country in a US address.
@@ -127,7 +148,7 @@ function geography(candidate) {
   const groups = [];
   const countryComponent=components.find(c=>Array.isArray(c?.types) && c.types.includes('country'));
   const typedCountry=countryCode(countryComponent?.short_name) || countryCode(countryComponent?.long_name);
-  const fallback=fallbackGeography(candidate.formatted_address,candidate.name,typedCountry);
+  const fallback=fallbackGeography(candidate.formatted_address,candidate.name,typedCountry,components);
   const country=typedCountry || fallback.find(g=>g.kind==='country')?.aliases.map(countryCode).find(Boolean);
   for (const c of components) {
     const types = Array.isArray(c?.types) ? c.types : [];
@@ -175,7 +196,7 @@ function geographyMention(text,profile) {
 }
 function streetText(value,profile) {
   const aliases = unique(profile.groups.flatMap(g=>g.aliases)).sort((a,b)=>b.length-a.length);
-  let text = String(value || '').split(/[,，;\n]/).map(part=>{
+  let text = stripPostal(value,profile.countryCode,profile.components).split(/[,，;\n]/).map(part=>{
     let segment=normalize(stripPostal(part));
     let geographicSegment=segment;
     for (const alias of profile.country?.aliases || []) geographicSegment=removePhrase(geographicSegment,alias);
@@ -199,7 +220,7 @@ function streetText(value,profile) {
 }
 function addressEvidence(hint,profile) {
   if (!hint) return {matches:false,conflict:false,status:'not_provided',reasons:[],requiresSelection:false};
-  const hintGroups = fallbackGeography(hint,undefined,profile.countryCode);
+  const hintGroups = fallbackGeography(hint,undefined,profile.countryCode,profile.components);
   const countryHint=hintGroups.find(g=>g.kind==='country');
   const countryConflict=!!(countryHint && profile.country && !countryHint.aliases.some(a=>profile.country.aliases.includes(a)));
   const regions=hintGroups.filter(g=>g.kind!=='country');
