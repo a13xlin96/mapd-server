@@ -1,6 +1,8 @@
 const {rankPlaces, validCoordinates} = require('./confidence');
 const {distanceKm} = require('../lib/geo');
 const context = require('../lib/jobContext');
+const {geography, matchesGeography, matchesCountry, addressEvidence} = require('./matchingEvidence');
+const {normalizePlaceName} = require('../lib/placeNameNormalize');
 
 // Horn vowels and Vietnamese tone combinations are stronger signals than
 // accents shared by ordinary French, Spanish, or Portuguese venue names.
@@ -89,8 +91,36 @@ function hasScriptMismatch(place, results, languageCode) {
     uk: /\p{Script=Cyrillic}/u, el: /\p{Script=Greek}/u, he: /\p{Script=Hebrew}/u,
     hi: /\p{Script=Devanagari}/u};
   const script = scripts[languageCode];
-  return results.some(row => (script.test(place.name || '') && !script.test(row.name || '')) ||
-    (script.test([place.city, place.address, place.country].filter(Boolean).join(' ')) && !script.test(row.formatted_address || '')));
+  return results.some(row => {
+    const profile=geography(row);
+    // A single native-script character in a street number ("10號") or venue
+    // name says nothing about the response language of the city. Compare the
+    // geographic fields independently so mixed-script Maps rows can recover.
+    const areas=profile.groups.filter(group=>group.kind!=='country').flatMap(group=>group.originalAliases || group.aliases);
+    return (script.test(place.name || '') && !script.test(row.name || '')) ||
+      (script.test(place.city || '') && !areas.some(area=>script.test(area))) ||
+      (script.test(place.country || '') && !script.test(row.address_components?.find?.(c=>Array.isArray(c?.types) && c.types.includes('country'))?.long_name || row.formatted_address || '')) ||
+      (script.test(place.address || '') && !script.test(row.formatted_address || ''));
+  });
+}
+
+function hasVietnameseNameRecovery(place, results) {
+  // Captions often romanize Vietnamese names or use unaccented handles.
+  // Two shared name words (or an explicit account clue) plus a corroborated
+  // Vietnamese city justify ONE local-language lookup, not an identity claim.
+  // Country alone and unrelated names do not trigger this extra paid search.
+  if (!place.city) return false;
+  const wanted=new Set(normalizePlaceName(place.name).split(' ').filter(Boolean));
+  return results.some(row=>{
+    const profile=geography(row);
+    if (profile.countryCode!=='VN' || !matchesGeography(place.city,profile.groups)) return false;
+    if (!matchesCountry(place.country,profile) || addressEvidence(place.address,profile).reasons.includes('country_conflict')) return false;
+    if (VI_DISTINCTIVE.test(nfc(row.name)) || /[ăđ]/iu.test(nfc(row.name))) return false;
+    if (place.source==='handle' && typeof place.handle==='string' && place.handle.trim()) return true;
+    const actual=new Set(normalizePlaceName(row.name).split(' ').filter(Boolean));
+    const common=[...wanted].filter(word=>actual.has(word) && word.length>=3);
+    return common.length>=2 && common.length/Math.max(wanted.size,actual.size)>=0.3;
+  });
 }
 
 function createPlaceMatcher(search, {maxLocalizedLookups = 6} = {}) {
@@ -98,8 +128,9 @@ function createPlaceMatcher(search, {maxLocalizedLookups = 6} = {}) {
   return async function matchPlace(results, evidence, extractedPlace, query) {
     const primary = rankPlaces(results, evidence, extractedPlace);
     if (primary.place || !results.length) return primary;
-    const languageCode = matchingLanguage(extractedPlace, results);
-    if (!languageCode || !hasScriptMismatch(extractedPlace, results, languageCode)) return primary;
+    const vietnameseNameRecovery=hasVietnameseNameRecovery(extractedPlace,results);
+    const languageCode = matchingLanguage(extractedPlace, results) || (vietnameseNameRecovery ? 'vi' : null);
+    if (!languageCode || (!hasScriptMismatch(extractedPlace, results, languageCode) && !(languageCode==='vi' && vietnameseNameRecovery))) return primary;
     const key = JSON.stringify([query, languageCode]);
     if (!localizedSearches.has(key)) {
       if (localizedSearches.size >= maxLocalizedLookups) return primary;

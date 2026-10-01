@@ -27,13 +27,14 @@ setGlobalOptions({ region: 'us-central1', maxInstances: 10 });
 //  - Status filter (data.status === 'pending') skips legacy direct-POST docs
 //    (server creates those with status:'processing'), so we never double-
 //    trigger enrichment for old client versions still in the wild.
-//  - Age cap (MAX_AGE_MS): jobs older than 30 min are marked failed without
-//    further retry. Beyond that, the user has moved on.
+//  - Age cap (MAX_AGE_MS): unadmitted pending jobs older than 30 min are
+//    marked failed without further retry. Admitted jobs use the engine's
+//    queue/execution deadlines, which may outlive this create event's cap.
 //  - All "mark failed" writes go through markFailedIfStillPending, a
 //    transactional CAS that only writes 'failed' if the doc's current status
-//    is still 'pending'. Prevents clobbering state that a concurrent actor
-//    (legacy direct-POST claim, sweeper) may have advanced.
-//  - 4xx from /enrich is terminal (mark failed, return null) EXCEPT 429:
+//    is still 'pending' and it is not engineQueued. Prevents clobbering state
+//    that a concurrent actor (admission, legacy claim, sweeper) now owns.
+//  - 4xx from /enrich is terminal for unadmitted pending jobs EXCEPT 429:
 //    all Cloud Function dispatches egress from GCP's shared IP pool, so a
 //    burst of jobs across many users' devices can land in the same
 //    per-IP rate-limit bucket on the server and get 429'd. That's not this
@@ -41,11 +42,11 @@ setGlobalOptions({ region: 'us-central1', maxInstances: 10 });
 //    exponential backoff — rather than terminal. Safe because /enrich's
 //    transactional claim is idempotent, so re-dispatch on retry is a no-op
 //    if another attempt already won the claim.
-//  - Other 4xx is terminal (mark failed); network errors and 5xx throw to
-//    trigger Firebase exponential backoff.
+//  - Other 4xx returns without retry, failing only unadmitted pending jobs;
+//    network errors and 5xx throw to trigger Firebase exponential backoff.
 //  - /enrich is fire-and-forget: it returns 202 immediately after the
-//    transactional claim (~100ms warm), then runs runEnrichment async.
-//    So the 90s HTTP timeout only covers TCP+TLS+claim, not enrichment.
+//    transactional admission, then a worker claims the pending queued job.
+//    So the 90s HTTP timeout only covers TCP+TLS+admission, not enrichment.
 //    A cold Render dyno takes 30-60s to start serving; 90s is generous.
 function createEnrichOnPendingJobHandler({
   firestore,
@@ -60,7 +61,11 @@ function createEnrichOnPendingJobHandler({
     await firestore.runTransaction(async (txn) => {
       const fresh = await txn.get(jobRef);
       if (!fresh.exists) return;
-      if (fresh.data().status !== 'pending') return; // someone else advanced it
+      const current = fresh.data();
+      // Admission keeps status pending while transferring ownership to the
+      // engine. Recheck it transactionally: the create snapshot (or a lost
+      // 202 response) may predate admission, even on an age-capped retry.
+      if (current.status !== 'pending' || current.engineQueued) return;
       txn.update(jobRef, {
         status: 'failed',
         error,

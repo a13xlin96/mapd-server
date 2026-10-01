@@ -1,0 +1,22 @@
+{
+  "provenance": "Normalized from the approved Google Places response google-tamvi.json, checked 2026-10-01T20:55:57.837Z; all test variants are synthetic.",
+  "source": {
+    "name": "Tầm Vị",
+    "city": "Hanoi",
+    "address": "4B Yên Thế, Đống Đa, Hà Nội",
+    "source": "caption"
+  },
+  "google": {
+    "place_id": "ChIJq43P62mrNTERNsxL8Wjpvjs",
+    "name": "Nhà hàng Tầm Vị",
+    "formatted_address": "4b P. Yên Thế, Văn Miếu - Quốc Tử Giám, Hà Nội, Việt Nam",
+    "geometry": {"location": {"lat": 21.0290273, "lng": 105.83945560000001}},
+    "address_components": [
+      {"long_name": "4b", "short_name": "4b", "types": ["street_number"]},
+      {"long_name": "Phố Yên Thế", "short_name": "P. Yên Thế", "types": ["route"]},
+      {"long_name": "Văn Miếu - Quốc Tử Giám", "short_name": "Văn Miếu - Quốc Tử Giám", "types": ["administrative_area_level_2", "political"]},
+      {"long_name": "Hà Nội", "short_name": "Hà Nội", "types": ["administrative_area_level_1", "political"]},
+      {"long_name": "Việt Nam", "short_name": "VN", "types": ["country", "political"]}
+    ]
+  }
+}

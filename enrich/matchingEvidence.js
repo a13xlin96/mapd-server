@@ -83,6 +83,11 @@ function stripPostal(value,country,components=[]) {
 }
 function areaAliases(values,kind,country) {
   const aliases = unique(values.map(normalize));
+  // 台 / 臺 are alternative spellings in Taiwan's administrative names.
+  // Scope this equivalence to geography; do not rewrite business identities.
+  if (country==='TW' && /^(?:locality|postal_town|administrative_area_level_\d+|sublocality(?:_level_\d+)?|fallback)$/.test(kind)) {
+    for (const value of [...aliases]) if (/[市縣區鄉鎮里]$/u.test(value)) aliases.push(value.replace(/臺/g,'台'),value.replace(/台/g,'臺'));
+  }
   if (kind==='locality' || kind==='fallback') {
     for (const [short,long] of [['nyc','new york'],['sf','san francisco'],['la','los angeles']]) {
       if (aliases.includes(short) || aliases.includes(long)) aliases.push(short,long);
@@ -135,7 +140,7 @@ function fallbackGeography(value,name,country,components=[]) {
     // Retain CJK administrative prefixes before the street begins.
     const prefix = part.match(/^(?:[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]+?[市縣県都府區区郡里])+/u)?.[0];
     if (prefix) {
-      for (const area of prefix.match(/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]+?[市縣県都府區区郡里]/gu)) groups.push({kind:'fallback',aliases:[area]});
+      for (const area of prefix.match(/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]+?[市縣県都府區区郡里]/gu)) groups.push(areaGroup([area],'fallback',country));
       continue;
     }
     if (/\d/.test(part) || STREET_MARKER.test(part)) continue;
@@ -218,6 +223,46 @@ function streetText(value,profile) {
   }
   return text.replace(/\b(?:no|number)\b/g,' ').replace(/\s+/g,' ').trim();
 }
+function vietnamStreetEvidence(hint,profile) {
+  if (profile.countryCode!=='VN') return null;
+  const values=kind=>unique(profile.components.filter(c=>Array.isArray(c?.types) && c.types.includes(kind))
+    .flatMap(c=>[c.long_name,c.short_name]).filter(v=>typeof v==='string' && v.trim()));
+  const numbers=unique(values('street_number').map(v=>v.trim().toLowerCase()));
+  const routes=values('route');
+  // Only compare complete Vietnamese routes with a single simple house
+  // number. Keep the existing international street-comparison policy.
+  if (numbers.length!==1 || !/^\d+[a-z]?$/.test(numbers[0]) || !routes.length || routes.some(v=>STREET_MARKER.test(v))) return null;
+  const route=value=>normalize(value).replace(/^(?:pho|p|đuong|duong|đ|d)\s+/u,'');
+  const normalizedRoutes=unique(routes.map(route));
+  if (normalizedRoutes.length!==1) return null;
+  const parse=value=>{
+    const first=String(value || '').split(/[,，;\n]/)[0].trim();
+    // Preserve compound number punctuation: 4B/1 and 4B-1 are not 4B.
+    const match=first.match(/^(\d+\S*)\s+(.+)$/u);
+    return match && {number:match[1].toLowerCase(),route:route(match[2])};
+  };
+  const wanted=parse(hint),actual=parse(profile.rawAddress);
+  if (!wanted || !actual || actual.number!==numbers[0] || actual.route!==normalizedRoutes[0]) return null;
+  // A mismatch provides no new evidence: route translations and unfamiliar
+  // formats retain the existing comparison policy rather than a new veto.
+  return {matches:wanted.number===numbers[0] && wanted.route===normalizedRoutes[0]};
+}
+function vietnamLowerAreaRecovery(regions,unmatched,profile,street) {
+  if (!street?.matches || !unmatched.length) return false;
+  // This incident's bare Đống Đa label is known to be below Hanoi. Do not
+  // infer that any unfamiliar component before a city is a district: it
+  // could be a different city. No equivalence to Google's newer ward is
+  // asserted; the unresolved lower area must still require confirmation.
+  const outer=profile.fallback.filter(g=>g.kind!=='country').at(-1);
+  const city=profile.groups.find(g=>(g.kind==='locality' || (g.kind==='administrative_area_level_1' &&
+    VIETNAM_LOCALITIES.some(names=>names.some(name=>g.aliases.includes(name))))) &&
+    regions.at(-1)?.aliases.some(a=>g.aliases.includes(a)) && outer?.aliases.some(a=>g.aliases.includes(a)));
+  if (!city) return false;
+  const lowerArea=value=>/^(?:quan|phuong|district|ward) [\p{L}\p{N}][\p{L}\p{N}\s]*$|^[\p{L}\p{N}][\p{L}\p{N}\s]* (?:district|ward)$/u.test(value) ||
+    (city.aliases.includes('ha noi') && /^(?:đong đa|dong da)$/u.test(value));
+  return unmatched.every(g=>g!==regions.at(-1) && g.aliases.some(lowerArea)) &&
+    profile.groups.some(g=>/^(?:sublocality(?:_level_\d+)?|administrative_area_level_[2345])$/.test(g.kind));
+}
 function addressEvidence(hint,profile) {
   if (!hint) return {matches:false,conflict:false,status:'not_provided',reasons:[],requiresSelection:false};
   const hintGroups = fallbackGeography(hint,undefined,profile.countryCode,profile.components);
@@ -229,6 +274,8 @@ function addressEvidence(hint,profile) {
   const aliasRecovery=regions.some(g=>g.aliases.some(a=>matchesGeography(a,profile.groups)) &&
     !(g.originalAliases || g.aliases).some(a=>matchesGeography(a,originals)));
   const uncorroborated=unmatched.filter(g=>!g.aliases.some(a=>matchesGeography(a,profile.fallback)));
+  const structuredStreet=vietnamStreetEvidence(hint,profile);
+  const lowerAreaRecovery=vietnamLowerAreaRecovery(regions,unmatched,profile,structuredStreet);
   // In addresses anchored by a country or matching outer region, compare
   // geographic positions inward. A city mismatch before a matching state is a
   // contradiction. Additional missing inner wards have no comparable slot and
@@ -246,7 +293,7 @@ function addressEvidence(hint,profile) {
       if (group.aliases.some(a=>actualRegions[i].aliases.includes(a))) {anchor=i;break;}
     }
     if (anchor>=0) {actualIndex=anchor-1;anchored=true;}
-    else if (uncorroborated.includes(group) && anchored && actualIndex>=0) regionConflict=true;
+    else if (uncorroborated.includes(group) && anchored && actualIndex>=0 && !lowerAreaRecovery) regionConflict=true;
   }
   const wanted = streetText(hint,profile), actual = streetText(profile.rawAddress,profile);
   const numbers = text => text.match(/\d+[a-z]?(?![a-z])/g) || [];
@@ -257,12 +304,13 @@ function addressEvidence(hint,profile) {
   const meaningful = /\p{L}/u.test(wanted) && wanted.length>=3;
   const conflict=countryConflict || regionConflict || numberConflict;
   const matches = !conflict && meaningful &&
-    (compact(wanted)===compact(actual) || hasPhrase(profile.address,normalize(hint)));
+    (lowerAreaRecovery || compact(wanted)===compact(actual) || hasPhrase(profile.address,normalize(hint)));
   const reasons=[];
   if (countryConflict) reasons.push('country_conflict');
   if (regionConflict) reasons.push('address_region_conflict');
   if (numberConflict) reasons.push('street_number_conflict');
   if (unmatched.length) reasons.push('geography_components_missing');
+  if (lowerAreaRecovery) reasons.push('lower_area_unverified');
   if (aliasRecovery) reasons.push('locality_alias');
   if (countryHint && !profile.country) reasons.push('country_unverified');
   if (!matches && !conflict) reasons.push('street_unverified');
@@ -276,6 +324,22 @@ function nameEvidence(wanted,actual,profile,similarity) {
   const a=normalize(wanted), b=normalize(actual);
   if (!a || !b) return {score:0,partial:false};
   if (a===b) return {score:1,partial:false};
+  if (profile.countryCode==='VN') {
+    const withoutDescriptor=value=>value.replace(/^nha hang(?:\s+|$)/u,'');
+    const left=withoutDescriptor(a),right=withoutDescriptor(b);
+    if (left!==a || right!==b) {
+      // Nhà hàng is a business descriptor, never shared identity evidence.
+      // An exact remaining name can include short words (Tầm Vị), but this
+      // descriptor recovery alone must never authorize an automatic save.
+      if (!left || !right) return {score:0,partial:false};
+      if (left===right) {
+        const distinctive=left.split(' ').some(word=>word.length>=3 && !GENERIC_NAME.has(word) &&
+          !profile.groups.some(g=>g.aliases.some(alias=>hasPhrase(alias,word))));
+        return {score:distinctive?0.9:0,partial:distinctive};
+      }
+      return nameEvidence(left,right,profile,similarity);
+    }
+  }
   // A contiguous CJK suffix may describe a branch or venue type. It is never
   // equivalent to the complete name and cannot authorize automatic saving.
   const [short,long]=[a,b].sort((x,y)=>x.length-y.length);
