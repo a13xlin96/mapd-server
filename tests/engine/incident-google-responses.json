@@ -1,0 +1,361 @@
+{
+  "taipei": {
+    "provenance": "Google Places Text Search, vi/zh-TW responses captured 2026-10-01; public place fields only. Replayed offline, not a claim about live extraction.",
+    "query": "清河鵝肉 臺北市",
+    "languageCode": "zh-TW",
+    "results": [
+      {
+        "place_id": "ChIJKzvJMZuuQjQRcbNb7kebMXM",
+        "name": "清河鵝肉",
+        "formatted_address": "111台灣臺北市士林區三玉里德行東路129巷10號",
+        "geometry": {
+          "location": {
+            "lat": 25.108449999999998,
+            "lng": 121.52924379999999
+          }
+        },
+        "address_components": [
+          {
+            "long_name": "10號",
+            "short_name": "10號",
+            "types": [
+              "street_number"
+            ]
+          },
+          {
+            "long_name": "德行東路129巷",
+            "short_name": "德行東路129巷",
+            "types": [
+              "route"
+            ]
+          },
+          {
+            "long_name": "三玉里",
+            "short_name": "三玉里",
+            "types": [
+              "administrative_area_level_3",
+              "political"
+            ]
+          },
+          {
+            "long_name": "士林區",
+            "short_name": "士林區",
+            "types": [
+              "administrative_area_level_2",
+              "political"
+            ]
+          },
+          {
+            "long_name": "臺北市",
+            "short_name": "臺北市",
+            "types": [
+              "administrative_area_level_1",
+              "political"
+            ]
+          },
+          {
+            "long_name": "台灣",
+            "short_name": "TW",
+            "types": [
+              "country",
+              "political"
+            ]
+          },
+          {
+            "long_name": "111",
+            "short_name": "111",
+            "types": [
+              "postal_code"
+            ]
+          }
+        ],
+        "types": [
+          "taiwanese_restaurant",
+          "restaurant",
+          "food",
+          "point_of_interest",
+          "establishment"
+        ]
+      }
+    ]
+  },
+  "tamvi": {
+    "provenance": "Google Places Text Search, vi/zh-TW responses captured 2026-10-01; public place fields only. Replayed offline, not a claim about live extraction.",
+    "query": "Tầm Vị Hanoi",
+    "languageCode": "vi",
+    "results": [
+      {
+        "place_id": "ChIJq43P62mrNTERNsxL8Wjpvjs",
+        "name": "Nhà hàng Tầm Vị",
+        "formatted_address": "4b P. Yên Thế, Văn Miếu - Quốc Tử Giám, Hà Nội, Việt Nam",
+        "geometry": {
+          "location": {
+            "lat": 21.0290273,
+            "lng": 105.83945560000001
+          }
+        },
+        "address_components": [
+          {
+            "long_name": "4b",
+            "short_name": "4b",
+            "types": [
+              "street_number"
+            ]
+          },
+          {
+            "long_name": "Phố Yên Thế",
+            "short_name": "P. Yên Thế",
+            "types": [
+              "route"
+            ]
+          },
+          {
+            "long_name": "Văn Miếu - Quốc Tử Giám",
+            "short_name": "Văn Miếu - Quốc Tử Giám",
+            "types": [
+              "administrative_area_level_2",
+              "political"
+            ]
+          },
+          {
+            "long_name": "Hà Nội",
+            "short_name": "Hà Nội",
+            "types": [
+              "administrative_area_level_1",
+              "political"
+            ]
+          },
+          {
+            "long_name": "Việt Nam",
+            "short_name": "VN",
+            "types": [
+              "country",
+              "political"
+            ]
+          }
+        ],
+        "types": [
+          "vietnamese_restaurant",
+          "restaurant",
+          "food",
+          "point_of_interest",
+          "establishment"
+        ]
+      }
+    ]
+  },
+  "banhcuon": {
+    "provenance": "Google Places Text Search, vi/zh-TW responses captured 2026-10-01; public place fields only. Replayed offline, not a claim about live extraction.",
+    "query": "Banh Cuon Hong Kong 189 Ho Chi Minh City",
+    "languageCode": "vi",
+    "results": [
+      {
+        "place_id": "ChIJUUu_VjIvdTER7U1rPfFBa7s",
+        "name": "Bánh Cuốn Hong Kong",
+        "formatted_address": "189/1 Đ. Phùng Hưng, Chợ Lớn, Hồ Chí Minh, Việt Nam",
+        "geometry": {
+          "location": {
+            "lat": 10.753485999999999,
+            "lng": 106.65709299999999
+          }
+        },
+        "address_components": [
+          {
+            "long_name": "189/1",
+            "short_name": "189/1",
+            "types": [
+              "street_number"
+            ]
+          },
+          {
+            "long_name": "Đường Phùng Hưng",
+            "short_name": "Đ. Phùng Hưng",
+            "types": [
+              "route"
+            ]
+          },
+          {
+            "long_name": "Thành phố Hồ Chí Minh",
+            "short_name": "Thành phố Hồ Chí Minh",
+            "types": [
+              "locality",
+              "political"
+            ]
+          },
+          {
+            "long_name": "Hồ Chí Minh",
+            "short_name": "Hồ Chí Minh",
+            "types": [
+              "administrative_area_level_1",
+              "political"
+            ]
+          },
+          {
+            "long_name": "Việt Nam",
+            "short_name": "VN",
+            "types": [
+              "country",
+              "political"
+            ]
+          }
+        ],
+        "types": [
+          "breakfast_restaurant",
+          "restaurant",
+          "food",
+          "point_of_interest",
+          "establishment"
+        ]
+      }
+    ]
+  },
+  "ruemiche": {
+    "provenance": "Google Places Text Search, vi/zh-TW responses captured 2026-10-01; public place fields only. Replayed offline, not a claim about live extraction.",
+    "query": "ruemiche Ho Chi Minh City",
+    "languageCode": "vi",
+    "results": [
+      {
+        "place_id": "ChIJf3A3LNIvdTERYuaNqNunXEQ",
+        "name": "Rue Miche",
+        "formatted_address": "9B Phùng Khắc Khoan, Sài Gòn, Hồ Chí Minh 700000, Việt Nam",
+        "geometry": {
+          "location": {
+            "lat": 10.7842217,
+            "lng": 106.6980123
+          }
+        },
+        "address_components": [
+          {
+            "long_name": "9B",
+            "short_name": "9B",
+            "types": [
+              "street_number"
+            ]
+          },
+          {
+            "long_name": "Phùng Khắc Khoan",
+            "short_name": "Phùng Khắc Khoan",
+            "types": [
+              "route"
+            ]
+          },
+          {
+            "long_name": "Thành phố Hồ Chí Minh",
+            "short_name": "Thành phố Hồ Chí Minh",
+            "types": [
+              "locality",
+              "political"
+            ]
+          },
+          {
+            "long_name": "Hồ Chí Minh",
+            "short_name": "Hồ Chí Minh",
+            "types": [
+              "administrative_area_level_1",
+              "political"
+            ]
+          },
+          {
+            "long_name": "Việt Nam",
+            "short_name": "VN",
+            "types": [
+              "country",
+              "political"
+            ]
+          },
+          {
+            "long_name": "700000",
+            "short_name": "700000",
+            "types": [
+              "postal_code"
+            ]
+          }
+        ],
+        "types": [
+          "clothing_store",
+          "store",
+          "point_of_interest",
+          "establishment"
+        ]
+      },
+      {
+        "place_id": "ChIJw44if4wvdTERIIdYEQM87HM",
+        "name": "Rue Miche L'édition",
+        "formatted_address": "Unionsquare, tầng, hầm 3/171 Đồng Khởi, Sài Gòn, Hồ Chí Minh 70000, Việt Nam",
+        "geometry": {
+          "location": {
+            "lat": 10.7763495,
+            "lng": 106.70236430000001
+          }
+        },
+        "address_components": [
+          {
+            "long_name": "Unionsquare, tầng",
+            "short_name": "Unionsquare, tầng",
+            "types": [
+              "premise"
+            ]
+          },
+          {
+            "long_name": "171",
+            "short_name": "171",
+            "types": [
+              "street_number"
+            ]
+          },
+          {
+            "long_name": "hầm 3",
+            "short_name": "hầm 3",
+            "types": [
+              "route"
+            ]
+          },
+          {
+            "long_name": "Đường Đồng Khởi",
+            "short_name": "Đồng Khởi",
+            "types": [
+              "route"
+            ]
+          },
+          {
+            "long_name": "Thành phố Hồ Chí Minh",
+            "short_name": "Thành phố Hồ Chí Minh",
+            "types": [
+              "locality",
+              "political"
+            ]
+          },
+          {
+            "long_name": "Hồ Chí Minh",
+            "short_name": "Hồ Chí Minh",
+            "types": [
+              "administrative_area_level_1",
+              "political"
+            ]
+          },
+          {
+            "long_name": "Việt Nam",
+            "short_name": "VN",
+            "types": [
+              "country",
+              "political"
+            ]
+          },
+          {
+            "long_name": "70000",
+            "short_name": "70000",
+            "types": [
+              "postal_code"
+            ]
+          }
+        ],
+        "types": [
+          "clothing_store",
+          "store",
+          "point_of_interest",
+          "establishment"
+        ]
+      }
+    ]
+  }
+}

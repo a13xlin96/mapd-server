@@ -16,6 +16,7 @@ const ai=require('../enrich/ai'),places=require('../enrich/places'),source=requi
 // has a real localized response obtained during verification.
 const fixtures=require('./engine/matching-google-results.json');
 const localizedChicken=require('./engine/matching-localized-google.json');
+const incidentGoogle=require('./engine/incident-google-responses.json');
 const url='https://www.instagram.com/reel/MatchingRegression/';
 const run=()=>runEnrichment('job',url,'u','');
 const ogPlace={place_id:'tai-sushi',name:'Tai Sushi',formatted_address:'1 Main Street, Kyoto, Japan',geometry:{location:{lat:35,lng:135}},types:['restaurant']};
@@ -31,6 +32,27 @@ beforeEach(()=>{
   ai.aiExtractPlaces.mockResolvedValue({places:[]});
   ai.aiVerifyPlace.mockResolvedValue({match:false});
   places.searchGooglePlaces.mockImplementation(async query=>fixtures.find(f=>f.query===query)?.results || []);
+});
+
+test.each([
+  ['taipei',{name:'清河鵝肉',city:'臺北市',source:'caption'}],
+  ['tamvi',{name:'Tầm Vị',city:'Hanoi',address:'4B Yên Thế, Đống Đa, Hà Nội',source:'caption'}],
+  ['banhcuon',{name:'Banh Cuon Hong Kong 189',city:'Ho Chi Minh City',address:'189/1 Đường Phùng Hưng, Chợ Lớn, Ho Chi Minh City',source:'caption'}],
+  ['ruemiche',{name:'ruemiche',handle:'ruemiche',city:'Ho Chi Minh City',source:'handle'}],
+])('incident %s: captured Maps result reaches a choice and saves once only after confirmation',async(key,p)=>{
+  source.extractPublicPost.mockResolvedValue({title:p.name,description:[p.name,p.address,p.city].filter(Boolean).join(' '),webpage_url:url});
+  ai.aiExtractPlaces.mockResolvedValue({places:[{...p,requiresSelection:true}]});
+  places.searchGooglePlaces.mockResolvedValue(incidentGoogle[key].results);
+  await run();
+  const job=db.read('enrichmentJobs','job');
+  expect(job.status).toBe('needs_selection');
+  expect(job.candidates).toHaveLength(1);
+  expect(job.candidates[0].placeId).toBe(incidentGoogle[key].results[0].place_id);
+  expect((await db.collection('pins').get()).size).toBe(0);
+  await saveSelectedPlaces('job','u',[job.candidates[0].placeId]);
+  await saveSelectedPlaces('job','u',[job.candidates[0].placeId]);
+  expect(db.read('enrichmentJobs','job')).toMatchObject({status:'complete',progress:{saved:1,total:1}});
+  expect((await db.collection('pins').get()).size).toBe(1);
 });
 
 test('reported Tokyo names reach selection, English/Japanese aliases count once, with no new Google-language calls',async()=>{

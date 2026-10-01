@@ -3,7 +3,7 @@ jest.mock('../lib/firestore',()=>{
 });
 const {firestore:db}=require('../lib/firestore');
 const {FakeTimestamp}=require('./helpers/fakeFirestore');
-const {admitEnrichmentJob}=require('../lib/enrichAdmission');
+const {admitEnrichmentJob,USER_LIMIT}=require('../lib/enrichAdmission');
 const {createWorker}=require('../lib/enrichmentWorker');
 const context=require('../lib/jobContext');
 const input=id=>({jobId:id,userId:'u',url:'https://www.instagram.com/reel/TEST/',captionText:'Dinner'});
@@ -21,9 +21,9 @@ test('accepted job survives the response/worker handoff gap; duplicate nudges cl
   await one.tick();await one.idle();expect(run).toHaveBeenCalledTimes(1);
 });
 test('unique burst is bounded per user and excess requests become durable failures',async()=>{
-  await Promise.all(Array.from({length:12},(_,i)=>admitEnrichmentJob(db,input('burst'+i))));
+  await Promise.all(Array.from({length:USER_LIMIT+7},(_,i)=>admitEnrichmentJob(db,input('burst'+i))));
   const jobs=await db.collection('enrichmentJobs').get();
-  expect(jobs.docs.filter(d=>d.data().status==='pending')).toHaveLength(5);
+  expect(jobs.docs.filter(d=>d.data().status==='pending')).toHaveLength(USER_LIMIT);
   expect(jobs.docs.filter(d=>d.data().failure?.code==='queue_full')).toHaveLength(7);
   const reports=await db.collection('engineMetrics').get();
   expect(reports.docs).toHaveLength(7);

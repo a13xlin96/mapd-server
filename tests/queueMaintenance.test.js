@@ -1,16 +1,18 @@
 const { FakeFirestore, FakeTimestamp, makeAdmin } = require('./helpers/fakeFirestore');
 jest.mock('../lib/firestore', () => ({ admin: require('./helpers/fakeFirestore').makeAdmin() }));
 const { createQueueMaintenance } = require('../lib/queueMaintenance');
+const { QUEUE_MS } = require('../lib/enrichAdmission');
 const stamp = FakeTimestamp.fromMillis;
 
 test('expires pending work independently of busy workers, repairs missing fields, and never restarts terminal jobs', async () => {
   const db = new FakeFirestore(), push = jest.fn();
+  const now = QUEUE_MS + 100000;
   db.seed('enrichmentJobs', 'expired', { userId: 'u', status: 'pending', engineQueued: true, queueDeadline: stamp(1) });
   db.seed('enrichmentJobs', 'missing', { userId: 'u', status: 'pending', engineQueued: true, admittedAt: stamp(1) });
   db.seed('enrichmentJobs', 'no-admission', { userId: 'u', status: 'pending', engineQueued: true });
-  db.seed('enrichmentJobs', 'future', { userId: 'u', status: 'pending', engineQueued: true, queueDeadline: stamp(200000) });
+  db.seed('enrichmentJobs', 'future', { userId: 'u', status: 'pending', engineQueued: true, queueDeadline: stamp(now + QUEUE_MS) });
   db.seed('enrichmentJobs', 'done', { userId: 'u', status: 'failed', engineQueued: true });
-  const service = createQueueMaintenance({ db, admin: makeAdmin(), push, now: () => 100000 });
+  const service = createQueueMaintenance({ db, admin: makeAdmin(), push, now: () => now });
   await service.sweep(); await service.sweep();
   for (const id of ['expired', 'missing', 'no-admission', 'done']) expect(db.read('enrichmentJobs', id)).toMatchObject({ status: 'failed', engineQueued: false });
   expect(db.read('enrichmentJobs', 'future').status).toBe('pending');

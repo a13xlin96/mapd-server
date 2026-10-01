@@ -2,7 +2,7 @@ jest.mock('../lib/firestore', () => ({admin: require('./helpers/fakeFirestore').
 const {FakeFirestore, FakeTimestamp, makeAdmin} = require('./helpers/fakeFirestore');
 const {getRetryContext} = require('../lib/retryContext');
 const {reviewDetections} = require('../lib/detectionReview');
-const {admitEnrichmentJob} = require('../lib/enrichAdmission');
+const {admitEnrichmentJob, USER_LIMIT} = require('../lib/enrichAdmission');
 const {createQueueMaintenance} = require('../lib/queueMaintenance');
 const {createEngineFeatures} = require('../lib/engineFeatures');
 const {RECOVERY} = require('../lib/media/analysisRecovery');
@@ -34,7 +34,7 @@ test.each(['queue_full', 'admission_paused', 'invalid_configuration', 'queue_exp
   'real %s receipt preserves reviewed evidence, remaining branch and recovery without writes', async kind => {
     const request = {jobId: 'blocked', userId: 'u', url, retryOf: 'original', retryKind: 'places'};
     let features = createEngineFeatures();
-    if (kind === 'queue_full') db.seed('engineAdmission', 'u', {active: Array.from({length: 5}, (_, i) => ({id: `busy-${i}`, expires: Date.now() + 60000}))});
+    if (kind === 'queue_full') db.seed('engineAdmission', 'u', {active: Array.from({length: USER_LIMIT}, (_, i) => ({id: `busy-${i}`, expires: Date.now() + 60000}))});
     if (kind === 'admission_paused') features = createEngineFeatures({admission: {stopNewJobs: true}});
     if (kind === 'invalid_configuration') features = {forJob: () => {throw new Error('Invalid configuration');}};
     await admitEnrichmentJob(db, request, {features});

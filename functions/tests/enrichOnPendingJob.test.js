@@ -2,8 +2,38 @@
 // firebase-functions-test, no real firebase-admin) so the handler can be
 // exercised in pure node without booting the Functions runtime.
 
+jest.mock('firebase-admin', () => {
+  const { getSharedFirestore, makeAdmin } = require('../../tests/helpers/fakeFirestore');
+  return {
+    apps: [],
+    initializeApp: jest.fn(),
+    firestore: Object.assign(() => getSharedFirestore(), makeAdmin().firestore),
+  };
+});
+jest.mock('firebase-functions/v2/firestore', () => ({
+  onDocumentCreated: (_options, handler) => handler,
+  onDocumentWritten: (_options, handler) => handler,
+  onDocumentDeleted: (_options, handler) => handler,
+}));
+jest.mock('firebase-functions/params', () => ({
+  defineSecret: () => ({ value: () => 'fake-token' }),
+}));
+jest.mock('firebase-functions/v2', () => ({ setGlobalOptions: jest.fn() }));
+jest.mock('axios', () => ({ post: jest.fn(() => { throw new Error('Unexpected HTTP call'); }) }));
+jest.mock('../../lib/firestore', () => {
+  const { getSharedFirestore, makeAdmin } = require('../../tests/helpers/fakeFirestore');
+  return { firestore: getSharedFirestore(), admin: makeAdmin() };
+});
+jest.mock('../../lib/cache', () => ({ redis: null }));
+
 const { _internal } = require('..');
 const { createEnrichOnPendingJobHandler } = _internal;
+const { firestore: queueDb } = require('../../lib/firestore');
+const { admitEnrichmentJob, QUEUE_MS } = require('../../lib/enrichAdmission');
+const { createEngineFeatures } = require('../../lib/engineFeatures');
+const { createWorker } = require('../../lib/enrichmentWorker');
+
+afterEach(() => jest.restoreAllMocks());
 
 // Tiny fake Firestore supporting just enough for markFailedIfStillPending:
 // docs are a Map<id, data|null>; runTransaction calls fn({get, update})
@@ -70,6 +100,9 @@ function makeFakeFirestore() {
 function makeEvent({ jobId, data, time }) {
   const fs = makeFakeFirestore();
   if (data !== null) fs.seed(jobId, data);
+  // A retried create event retains its original snapshot even when the live
+  // document has since been admitted, claimed, completed, or deleted.
+  const createdData = data === null ? null : { ...data };
 
   // The snap.ref needs to point to our fake so markFailedIfStillPending
   // can talk to the same docs map.
@@ -82,7 +115,7 @@ function makeEvent({ jobId, data, time }) {
   };
 
   const snap = {
-    data: () => fs.read(jobId),
+    data: () => ({ ...createdData }),
     ref,
   };
 
@@ -171,12 +204,12 @@ describe('enrichOnPendingJob handler', () => {
     expect(fs.read('j_bad2').status).toBe('failed');
   });
 
-  test('age cap: event.time > 30 min old → mark failed, no throw, no POST', async () => {
+  test.each([undefined, false])('age cap: unadmitted pending (engineQueued=%s) → failed, no POST', async (engineQueued) => {
     const axiosPost = jest.fn();
     const oldTime = new Date(Date.now() - 31 * 60 * 1000).toISOString();
     const { event, fs } = makeEvent({
       jobId: 'j_old',
-      data: { status: 'pending', userId: 'u1', url: 'https://x/' },
+      data: { status: 'pending', userId: 'u1', url: 'https://x/', engineQueued },
       time: oldTime,
     });
     const handler = buildHandler({ axiosPost, maxAgeMs: 30 * 60 * 1000 })(fs);
@@ -229,11 +262,11 @@ describe('enrichOnPendingJob handler', () => {
     expect(axiosPost).toHaveBeenCalledTimes(1);
   });
 
-  test('4xx from /enrich → mark failed + return null (no throw)', async () => {
+  test.each([undefined, false])('4xx: unadmitted pending (engineQueued=%s) → failed, no throw', async (engineQueued) => {
     const axiosPost = jest.fn().mockResolvedValue({ status: 403, data: { error: 'forbidden' } });
     const { event, fs } = makeEvent({
       jobId: 'j_403',
-      data: { status: 'pending', userId: 'u1', url: 'https://x/' },
+      data: { status: 'pending', userId: 'u1', url: 'https://x/', engineQueued },
       time: new Date().toISOString(),
     });
     const handler = buildHandler({ axiosPost })(fs);
@@ -242,6 +275,22 @@ describe('enrichOnPendingJob handler', () => {
     expect(result).toBeNull();
     expect(fs.read('j_403').status).toBe('failed');
     expect(fs.read('j_403').error).toBe('enrich_http_403');
+  });
+
+  test.each([undefined, false, true])('429 stays retryable (engineQueued=%s) without any writes', async (engineQueued) => {
+    const axiosPost = jest.fn().mockResolvedValue({ status: 429, data: {} });
+    const { event, fs } = makeEvent({
+      jobId: 'j_429',
+      data: { status: 'pending', userId: 'u1', url: 'https://x/', engineQueued },
+      time: new Date().toISOString(),
+    });
+    const before = fs.read('j_429');
+    const handler = buildHandler({ axiosPost })(fs);
+
+    await expect(handler(event)).rejects.toThrow('/enrich returned 429');
+    expect(axiosPost).toHaveBeenCalledTimes(1);
+    expect(fs.read('j_429')).toEqual(before);
+    expect(fs.transactionLog).toEqual([]);
   });
 
   test('5xx from /enrich → throws (Firebase retries)', async () => {
@@ -273,6 +322,89 @@ describe('enrichOnPendingJob handler', () => {
 });
 
 describe('markFailedIfStillPending guard (Codex P1 from §2.4a)', () => {
+  const failurePaths = [
+    { name: 'age cap', ageMs: 31 * 60 * 1000, postCalls: 0 },
+    { name: '4xx', ageMs: 0, postCalls: 1 },
+    { name: 'malformed create snapshot', ageMs: 0, postCalls: 0, malformed: true },
+  ];
+
+  test.each(failurePaths)('$name: admission before the transaction read protects a still-pending job', async ({ ageMs, postCalls, malformed }) => {
+    const now = Date.now();
+    const { event, fs } = makeEvent({
+      jobId: 'j_admitted',
+      data: { status: 'pending', userId: 'u1', ...(malformed ? {} : { url: 'https://x/' }) },
+      time: new Date(now - ageMs).toISOString(),
+    });
+    const admitted = {
+      ...fs.read('j_admitted'), url: 'https://x/', engineQueued: true,
+      admittedAt: now - 60_000, queueDeadline: now + 4 * 60_000, updatedAt: now - 60_000,
+    };
+    const runTransaction = fs.runTransaction;
+    jest.spyOn(fs, 'runTransaction').mockImplementation(async (fn) => {
+      // Admission can commit after the trigger has read the create snapshot,
+      // including while its HTTP dispatch is in flight.
+      fs.seed('j_admitted', admitted);
+      return runTransaction(fn);
+    });
+    const axiosPost = jest.fn().mockResolvedValue({ status: 403, data: {} });
+
+    await expect(buildHandler({ axiosPost })(fs)(event)).resolves.toBeNull();
+
+    expect(event.data.data().engineQueued).toBeUndefined();
+    expect(fs.read('j_admitted')).toEqual(admitted);
+    expect(axiosPost).toHaveBeenCalledTimes(postCalls);
+    expect(fs.transactionLog).toEqual([[expect.objectContaining({ op: 'get', data: admitted })]]);
+  });
+
+  test('a transaction retry rechecks admission before committing a failure', async () => {
+    const { event, fs } = makeEvent({
+      jobId: 'j_txn_retry',
+      data: { status: 'pending', userId: 'u1', url: 'https://x/' },
+      time: new Date(Date.now() - 31 * 60_000).toISOString(),
+    });
+    const admitted = { ...fs.read('j_txn_retry'), engineQueued: true, queueDeadline: Date.now() + 60_000 };
+    const runTransaction = fs.runTransaction;
+    const discardedUpdate = jest.fn();
+    jest.spyOn(fs, 'runTransaction').mockImplementation(async (fn) => {
+      // Firestore discards this attempt if admission changes the document
+      // after its read, then retries the callback with the admitted state.
+      const beforeAdmission = { ...fs.read('j_txn_retry') };
+      await fn({ get: async () => ({ exists: true, data: () => beforeAdmission }), update: discardedUpdate });
+      fs.seed('j_txn_retry', admitted);
+      return runTransaction(fn);
+    });
+    const axiosPost = jest.fn();
+
+    await expect(buildHandler({ axiosPost })(fs)(event)).resolves.toBeNull();
+
+    expect(discardedUpdate).toHaveBeenCalledTimes(1);
+    expect(fs.read('j_txn_retry')).toEqual(admitted);
+    expect(fs.transactionLog).toEqual([[expect.objectContaining({ op: 'get', data: admitted })]]);
+    expect(axiosPost).not.toHaveBeenCalled();
+  });
+
+  test.each(failurePaths.flatMap(path => ['processing', 'complete', 'duplicate', 'needs_selection', 'failed']
+    .map(status => ({ ...path, status }))))('$name: stale pending event cannot overwrite $status', async ({ ageMs, postCalls, malformed, status }) => {
+    const { event, fs } = makeEvent({
+      jobId: 'j_immutable',
+      data: { status: 'pending', userId: 'u1', ...(malformed ? {} : { url: 'https://x/' }) },
+      time: new Date(Date.now() - ageMs).toISOString(),
+    });
+    const advanced = {
+      ...fs.read('j_immutable'), status, engineQueued: false,
+      error: 'existing_result', updatedAt: FIXED_TS, result: { pinId: 'saved-pin' },
+    };
+    fs.seed('j_immutable', advanced);
+    const axiosPost = jest.fn().mockResolvedValue({ status: 403, data: {} });
+
+    await expect(buildHandler({ axiosPost })(fs)(event)).resolves.toBeNull();
+
+    expect(event.data.data().status).toBe('pending');
+    expect(fs.read('j_immutable')).toEqual(advanced);
+    expect(axiosPost).toHaveBeenCalledTimes(postCalls);
+    expect(fs.transactionLog).toEqual([[expect.objectContaining({ op: 'get', data: advanced })]]);
+  });
+
   test('does NOT clobber doc that was already advanced to processing', async () => {
     // Construct an event for a doc that's STILL pending when the handler fires
     // (e.g. it's a 4xx return path), but a concurrent actor advanced it
@@ -334,5 +466,76 @@ describe('markFailedIfStillPending guard (Codex P1 from §2.4a)', () => {
     await handler(event);
     expect(fs.read('j_normal_fail').status).toBe('failed');
     expect(fs.read('j_normal_fail').error).toBe('enrich_http_400');
+  });
+});
+
+describe('late engine admission with a lost 202 response', () => {
+  beforeEach(() => {
+    queueDb.reset();
+    queueDb.strictReadOrder = true;
+  });
+
+  test.each(['legacy', 'fair-queue-v1'].flatMap(policy => [
+    { policy, redelivery: 'age cap', retryMinutes: 31, expectedPosts: 1 },
+    { policy, redelivery: '4xx', retryMinutes: 21, expectedPosts: 2 },
+  ]))('$policy: $redelivery preserves admitted work and the worker executes it once', async ({ policy, retryMinutes, expectedPosts }) => {
+    const createdAt = Date.parse('2026-10-01T12:00:00Z');
+    let now = createdAt;
+    jest.spyOn(Date, 'now').mockImplementation(() => now);
+    const jobId = 'late_admission';
+    const initial = {
+      status: 'pending', userId: 'u1', url: 'https://www.instagram.com/reel/offline/', captionText: 'Dinner',
+    };
+    queueDb.seed('enrichmentJobs', jobId, initial);
+    queueDb.seed('engineControl', 'queueRollout', { schemaVersion: 1, policy });
+    const ref = queueDb.collection('enrichmentJobs').doc(jobId);
+    const event = {
+      time: new Date(createdAt).toISOString(), params: { jobId },
+      data: { ref, data: () => ({ ...initial }) },
+    };
+    const features = createEngineFeatures({}, { queuePolicy: policy });
+    const lostResponse = new Error('Lost 202 after committed admission');
+    const axiosPost = jest.fn()
+      .mockImplementationOnce(async (_url, body) => {
+        const response = await admitEnrichmentJob(queueDb, { ...body, adminBypass: true }, { features });
+        expect(response).toMatchObject({ code: 202, body: { jobId, status: 'pending' } });
+        throw lostResponse;
+      })
+      .mockResolvedValue({ status: 403, data: { error: 'forbidden' } });
+    const handler = buildHandler({ axiosPost })(queueDb);
+
+    // The event is twenty minutes old when the server finally admits it.
+    // The HTTP response is lost, leaving Firebase to redeliver the old event.
+    now = createdAt + 20 * 60_000;
+    await expect(handler(event)).rejects.toBe(lostResponse);
+    const admitted = queueDb.read('enrichmentJobs', jobId);
+    const quota = queueDb.read('engineAdmission', initial.userId);
+    expect(admitted).toMatchObject({ status: 'pending', engineQueued: true });
+    expect(admitted.admittedAt.toMillis()).toBe(now);
+    expect(admitted.queueDeadline.toMillis()).toBe(now + QUEUE_MS);
+
+    now = createdAt + retryMinutes * 60_000;
+    expect(admitted.queueDeadline.toMillis()).toBeGreaterThan(now);
+    await expect(handler(event)).resolves.toBeNull();
+    expect(axiosPost).toHaveBeenCalledTimes(expectedPosts);
+    expect(queueDb.read('enrichmentJobs', jobId)).toEqual(admitted);
+    expect(queueDb.read('engineAdmission', initial.userId)).toEqual(quota);
+    expect(queueDb.read('engineMetrics', jobId)).toBeUndefined();
+
+    // Exercise the real worker handoff; all enrichment/provider work is mocked.
+    const runEnrichment = jest.fn(async () => { await ref.update({ status: 'complete', pinIds: ['saved-pin'] }); });
+    const worker = createWorker({ db: queueDb, policy, runEnrichment, push: jest.fn() });
+    await worker.tick();
+    await worker.idle();
+    expect(runEnrichment).toHaveBeenCalledTimes(1);
+    expect(runEnrichment).toHaveBeenCalledWith(jobId, initial.url, initial.userId, initial.captionText,
+      expect.objectContaining({ leaseOwner: expect.any(String), queueMs: now - admitted.admittedAt.toMillis() }));
+    const completed = queueDb.read('enrichmentJobs', jobId);
+    expect(completed).toMatchObject({ status: 'complete', engineQueued: false, pinIds: ['saved-pin'] });
+    await handler(event);
+    await worker.tick();
+    await worker.idle();
+    expect(queueDb.read('enrichmentJobs', jobId)).toEqual(completed);
+    expect(runEnrichment).toHaveBeenCalledTimes(1);
   });
 });
