@@ -149,6 +149,26 @@ and concurrency bounds still apply. The collector skips frame selection,
 frame encoding and video-vision calls. Audio acquisition/transcription and
 text fusion remain enabled; a media container may still be downloaded and
 probed, and existing subtitles/caches may avoid new transcription calls.
+Audio-only v2 fusion uses the existing Anthropic model with one forced
+`submit_places` tool declaration (`disable_parallel_tool_use:true`). This is
+data output only: no external tool executes and no tool-result loop runs.
+Only one correctly named `tool_use` block with `stop_reason:'tool_use'` is
+accepted. Refusal, truncation, mixed/extra blocks, non-JSON objects, excessive
+size/depth, and invalid evidence/schema still fail closed. Existing literal
+grounding rules apply; empty places/contradictions are a valid result when the
+evidence supports no venue. There is no text fallback or paid repair request.
+
+Default v1 fusion retains its text request/parser. The audio-only fusion
+format has separate `optionsVersion` and input identity (`submit-places-tool-v1`)
+because its physical request now differs; identical ASR identities remain
+unchanged. The budget descriptor includes the serialized tool schema and
+request overhead. Existing consumed tickets and failed-operation fences are
+not reset or automatically retried by this change.
+
+This prevents prose-framing failures for future authorized audio-only requests;
+it is not a confirmed repair of the lost live response. The exact failed text
+was not retained. The forced-tool behavior follows Anthropic's
+[tool definition contract](https://platform.claude.com/docs/en/agents-and-tools/tool-use/define-tools).
 There is no job ID, job lease, admission, enrichment, place matching or save
 entrypoint. Existing source/media/provider/FFmpeg bounds, shared-operation
 fences, cooldowns and observation-only accounting remain in force. There are

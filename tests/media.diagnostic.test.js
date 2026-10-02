@@ -302,6 +302,28 @@ test('nonempty audio coverage persists under Firestore nested-array constraints'
   expect(f.collect).toHaveBeenCalledTimes(1);
 });
 
+test.each([0.125, 0.6895])('diagnostic preserves the real facade submillisecond tail reason and %s ms gap', async gap => {
+  const {createTranscriptionService} = require('../lib/media/transcriptionService');
+  const transcription = createTranscriptionService({providers:{openai:{id:'openai',
+    model:'gpt-4o-mini-transcribe-2025-12-15', version:'diagnostic-tail-fixture-v1',
+    transcribeChunk:jest.fn(async () => ({text:'Cafe'}))}},
+    sharedOperation:async (_options, work) => work(), providerCall:async (_provider, work) => work()});
+  const durationMs = 20000, endMs = durationMs - gap;
+  const f = setup({ticket:audioOnlyTicket, collect:jest.fn(async () => {
+    const transcript = await transcription.transcribe({durationMs, mediaDigest:'a'.repeat(64),
+      chunks:[{audioBytes:Buffer.from('RIFF0000WAVEdiagnostic-fixture'), startMs:0, endMs}]});
+    expect(transcript.coverage).toEqual({status:'complete', reason:'submillisecond_tail', intervals:[[0, endMs]]});
+    return {...emptyResult(), coverage:{audio:transcript.coverage,
+      visual:{status:'unavailable', reason:'disabled_by_policy'}, fusion:{status:'complete'}}};
+  })});
+  await f.send(); await f.router.whenIdle();
+  expect(f.read()).toMatchObject({status:'completed', result:{incomplete:false, coverage:{audio:{
+    status:'complete', reason:'submillisecond_tail', intervals:[{startMs:0, endMs}],
+  }}}});
+  expect((await f.send()).body).toEqual({status:'completed'});
+  expect(f.collect).toHaveBeenCalledTimes(1);
+});
+
 test('crashed running ticket remains consumed past its execution deadline and ticket expiry', async () => {
   const now = Date.now();
   const f = setup({now:() => now, ticket:{status:'running', claimId:'crashed', deadlineMs:now - 1,

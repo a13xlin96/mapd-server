@@ -33,6 +33,146 @@ function setup({raw=rawVideo(),sharedOperation}={}){
   return {vision:createVideoVision(deps),fusion:createEvidenceFusion(deps),createMessage,providerCall,run,writes};
 }
 const opts={scope:SERVER_PUBLIC_SCOPE};
+const audioOnlyOpts={...opts,policy:{policyVersion:'media-v2',analysisMode:'audio-only'}};
+const fusionData=()=>({places:[{name:'ngâm CAFE',evidenceRefs:[ref('audio:1','ngâm CAFE')]}],contradictions:[]});
+const toolMessage=(input=fusionData())=>({stop_reason:'tool_use',content:[{type:'tool_use',id:'toolu_test',name:'submit_places',input}]});
+
+test('audio-only fusion forces one data tool on the existing model, counts schema overhead and preserves grounding',async()=>{
+  const f=setup();f.createMessage.mockResolvedValue(toolMessage());
+  const result=await f.fusion({...base,textEvidence:[audio]},audioOnlyOpts);
+  expect(result.places[0]).toMatchObject({name:'ngâm CAFE',source:'transcript',requiresSelection:true});
+  expect(result.grounding).toEqual({omittedClaims:0,omittedCandidates:0});
+  const [request,settings]=f.createMessage.mock.calls[0];
+  expect(request).toMatchObject({model:'claude-haiku-4-5-20251001',max_tokens:4000,
+    tool_choice:{type:'tool',name:'submit_places',disable_parallel_tool_use:true}});
+  expect(request.tools).toHaveLength(1);
+  expect(request.tools[0]).toMatchObject({name:'submit_places',input_schema:{type:'object',additionalProperties:false,
+    required:['places'],properties:{places:{type:'array',maxItems:40},contradictions:{type:'array',maxItems:40}}}});
+  expect(request.tools[0].input_schema.properties.places.items).toMatchObject({additionalProperties:false,
+    required:['name','evidenceRefs'],properties:{evidenceRefs:{maxItems:16,minItems:1,items:{additionalProperties:false}}}});
+  expect(settings.maxRetries).toBe(0);expect(f.createMessage).toHaveBeenCalledTimes(1);
+  expect(f.providerCall.mock.calls[0][0]).toBe('anthropic');
+  expect(f.providerCall.mock.calls[0][3].descriptor).toMatchObject({
+    maxInputTokens:Buffer.byteLength(JSON.stringify(request))+1024,maxImageTokens:0,maxOutputTokens:4000,cacheEnabled:false});
+});
+
+test('audio-only food-only evidence may produce a valid empty tool result without another call',async()=>{
+  const f=setup();f.createMessage.mockResolvedValue(toolMessage({places:[],contradictions:[]}));
+  await expect(f.fusion({...base,textEvidence:[{...audio,text:'The soup is warm and spicy.'}]},audioOnlyOpts))
+    .resolves.toEqual({places:[],contradictions:[],grounding:{omittedClaims:0,omittedCandidates:0}});
+  expect(f.createMessage).toHaveBeenCalledTimes(1);
+  expect(f.run.mock.calls[0][0].ttlSeconds({places:[],contradictions:[]})).toBe(300);
+});
+
+test.each([
+  ['missing message',()=>null,'envelope'],
+  ['truncated',()=>({...toolMessage(),stop_reason:'max_tokens'}),'stop_max_tokens'],
+  ['refusal stop',()=>({...toolMessage(),stop_reason:'refusal'}),'stop_refusal'],
+  ['text stop',()=>({...toolMessage(),stop_reason:'end_turn'}),'stop_other'],
+  ['empty blocks',()=>({...toolMessage(),content:[]}),'envelope'],
+  ['nonarray blocks',()=>({...toolMessage(),content:{}}),'envelope'],
+  ['parallel tools',()=>({...toolMessage(),content:[...toolMessage().content,...toolMessage().content]}),'envelope'],
+  ['prose before tool',()=>({...toolMessage(),content:[{type:'text',text:'PRIVATE prose'},...toolMessage().content]}),'envelope'],
+  ['prose after tool',()=>({...toolMessage(),content:[...toolMessage().content,{type:'text',text:'PRIVATE prose'}]}),'envelope'],
+  ['refusal block',()=>({...toolMessage(),content:[{type:'refusal',text:'PRIVATE refusal'}]}),'refusal'],
+  ['wrong tool',()=>({...toolMessage(),content:[{...toolMessage().content[0],name:'other_tool'}]}),'envelope'],
+  ['wrong block type',()=>({...toolMessage(),content:[{...toolMessage().content[0],type:'text'}]}),'envelope'],
+  ['missing tool id',()=>({...toolMessage(),content:[{...toolMessage().content[0],id:undefined}]}),'envelope'],
+  ['extra tool field',()=>({...toolMessage(),content:[{...toolMessage().content[0],extra:'PRIVATE'}]}),'envelope'],
+  ['JSON encoded input',()=>toolMessage(JSON.stringify(fusionData())),'envelope'],
+  ['array input',()=>toolMessage([]),'envelope'],
+  ['null input',()=>toolMessage(null),'envelope'],
+  ['class input',()=>toolMessage(new (class Input {constructor(){this.places=[];}})()),'envelope'],
+  ['inherited input',()=>toolMessage(Object.create({places:[]})),'envelope'],
+  ['nested nonplain',()=>toolMessage({places:[],contradictions:new Date()}),'envelope'],
+  ['accessor',()=>toolMessage({places:[],get contradictions(){throw Error('PRIVATE getter');}}),'envelope'],
+  ['hidden toJSON',()=>toolMessage(Object.defineProperty({places:[]},'toJSON',{value:()=>fusionData()})),'envelope'],
+  ['deep input',()=>toolMessage({places:[],extra:Array.from({length:17}).reduce(value=>({value}),{})}),'format_depth'],
+  ['cyclic input',()=>{const value={places:[]};value.extra=value;return toolMessage(value);},'format_depth'],
+  ['oversize input',()=>toolMessage({places:[],extra:'x'.repeat(65537)}),'response_too_large'],
+  ['aggregate oversize',()=>toolMessage({places:[],extra:['x'.repeat(33000),'x'.repeat(33000)]}),'response_too_large'],
+  ['escaped oversize',()=>toolMessage({places:[],extra:'\u0000'.repeat(12000)}),'response_too_large'],
+])('audio-only tool rejects %s without text fallback, repair or raw disclosure',async(_name,make,reason)=>{
+  const f=setup();f.createMessage.mockResolvedValue(make());
+  const error=await f.fusion({...base,textEvidence:[audio]},audioOnlyOpts).catch(e=>e);
+  expect(error).toMatchObject({code:'invalid_response',stage:'media_fusion',aiResponseReason:reason});
+  expect(JSON.stringify(error)).not.toContain('PRIVATE');
+  expect(f.createMessage).toHaveBeenCalledTimes(1);expect(f.writes).toEqual([]);
+});
+
+test.each([
+  ()=>({places:[],extra:true}), ()=>({contradictions:[]}),
+  ()=>({places:[{...fusionData().places[0],city:12}]}),
+  ()=>({places:[{name:'ngâm CAFE',evidenceRefs:[ref('unknown:1','ngâm CAFE')]}]}),
+  ()=>({places:[{name:'ngâm CAFE',evidenceRefs:[ref('audio:1','invented quote')]}]}),
+  ()=>({places:[],contradictions:[{name:'Unknown baseline',evidenceRefs:[{evidenceId:'audio:1',quote:'ngâm CAFE'}]}]}),
+])('audio-only tool data still passes through strict schema/references %#',async make=>{
+  const f=setup();f.createMessage.mockResolvedValue(toolMessage(make()));
+  await expect(f.fusion({...base,textEvidence:[audio]},audioOnlyOpts)).rejects.toMatchObject({code:'invalid_response'});
+  expect(f.createMessage).toHaveBeenCalledTimes(1);expect(f.writes).toEqual([]);
+});
+
+test('audio-only tool keeps literal-claim omission rules and baseline contradiction checks',async()=>{
+  const f=setup(),denial={evidenceId:'audio:2',modality:'transcript',text:'Not Cafe A; this is ngâm CAFE.'};
+  f.createMessage.mockResolvedValue(toolMessage({places:[{...fusionData().places[0],city:'Unsupported City'},
+    {name:'Unsupported Venue',evidenceRefs:[ref('audio:1','ngâm CAFE')]}],
+    contradictions:[{name:'Cafe A',evidenceRefs:[{evidenceId:'audio:2',quote:denial.text}]}]}));
+  const result=await f.fusion({...base,textEvidence:[audio,denial],baselinePlaces:[{name:'Cafe A'}]},audioOnlyOpts);
+  expect(result.places).toHaveLength(1);expect(result.places[0]).toMatchObject({name:'ngâm CAFE',city:''});
+  expect(result.grounding).toEqual({omittedClaims:2,omittedCandidates:1});
+  expect(result.contradictions).toEqual([{name:'Cafe A',evidenceRefs:[{evidenceId:'audio:2',quote:denial.text}]}]);
+  const forged=structuredClone(result);forged.places[0].city='Unsupported City';
+  expect(f.run.mock.calls[0][0].validate(forged)).toBe(false);
+});
+
+test('fusion request identity separates tool/text formats, preserves v1 and reuses unchanged tool work',async()=>{
+  const {identity}=require('../lib/sharedAiIdentity'),f=setup(),input={...base,textEvidence:[audio]};
+  f.createMessage.mockImplementation(async request=>request.tools?toolMessage():message(fusionData()));
+  const legacy=await f.fusion(input,opts),modern=await f.fusion(input,audioOnlyOpts);
+  await f.fusion(input,{...audioOnlyOpts,policy:{...audioOnlyOpts.policy,providerSlots:1}});
+  expect(modern).toEqual(legacy);expect(f.createMessage).toHaveBeenCalledTimes(2);
+  const [oldOptions,newOptions,reusedOptions]=f.run.mock.calls.map(([options])=>options);
+  expect(oldOptions.optionsVersion).toBe('literal-evidence-v2');expect(oldOptions.input.responseFormat).toBeUndefined();
+  expect(newOptions).toMatchObject({optionsVersion:'submit-places-tool-v1',input:{responseFormat:'submit-places-tool-v1'}});
+  expect(identity(oldOptions).key).not.toBe(identity(newOptions).key);
+  expect(identity(newOptions).key).toBe(identity(reusedOptions).key);
+  const oldRequest=f.createMessage.mock.calls[0][0];
+  expect(oldRequest.tools).toBeUndefined();expect(oldRequest.tool_choice).toBeUndefined();
+  expect(oldRequest.messages[0].content).toContain('Return JSON only');
+  expect(f.providerCall.mock.calls[0][3].descriptor.maxInputTokens).toBe(Buffer.byteLength(oldRequest.messages[0].content)+1024);
+});
+
+test.each([false,true])('fusion cannot switch response formats as a fallback (audio-only=%s)',async audioOnly=>{
+  const f=setup();f.createMessage.mockResolvedValue(audioOnly?message(fusionData()):toolMessage());
+  await expect(f.fusion({...base,textEvidence:[audio]},audioOnly?audioOnlyOpts:opts))
+    .rejects.toMatchObject({code:'invalid_response',aiResponseReason:'stop_other'});
+  expect(f.createMessage).toHaveBeenCalledTimes(1);expect(f.writes).toEqual([]);
+});
+
+test('text-format retry authority does not attach to an audio-only tool operation',async()=>{
+  let failure,first=true;
+  const f=setup({sharedOperation:async(_options,work)=>{
+    if (first) {first=false;throw Object.assign(new EngineError('dependency_timeout'),{retryGeneration:3});}
+    return work();
+  }});
+  try {await f.fusion({...base,textEvidence:[audio]},opts);} catch(error) {failure=error;}
+  expect(failure.retryOperations).toHaveLength(1);expect(f.createMessage).not.toHaveBeenCalled();
+  f.createMessage.mockResolvedValue(toolMessage());
+  await f.fusion({...base,textEvidence:[audio]},{...audioOnlyOpts,retryOperations:failure.retryOperations});
+  expect(f.run.mock.calls[1][0].retryGeneration).toBeUndefined();expect(f.createMessage).toHaveBeenCalledTimes(1);
+});
+
+test('failed forced tool output remains fenced across shared-operation replays',async()=>{
+  const {FakeFirestore}=require('./helpers/fakeFirestore');
+  const db=new FakeFirestore(),operations=createSharedAiOperations({firestore:db});
+  const f=setup({sharedOperation:operations.runSharedAiOperation});
+  f.createMessage.mockResolvedValue({...toolMessage(),content:[{type:'text',text:'PRIVATE response'}]});
+  for (let i=0;i<2;i++) await expect(f.fusion({...base,textEvidence:[audio]},audioOnlyOpts))
+    .rejects.toMatchObject({code:'invalid_response',aiResponseReason:'envelope'});
+  expect(f.createMessage).toHaveBeenCalledTimes(1);
+  expect(JSON.stringify([...db.collections.values()].map(docs=>[...docs.values()]))).not.toContain('PRIVATE response');
+});
+
 test('local frame bytes, literal quote and region become grounded confirmation-only evidence',async()=>{
   const {vision,createMessage,providerCall}=setup();const result=await vision(base,opts);
   expect(result.places[0]).toMatchObject({name:'鯛寿司',requiresSelection:true,evidenceRefs:[{evidenceId:frameId(base.frames[0]),quote:'鯛寿司',region}]});
