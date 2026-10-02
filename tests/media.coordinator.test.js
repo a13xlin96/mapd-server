@@ -259,6 +259,73 @@ test('private notes alone do not add an ASR context or alter the no-context requ
 const audioFeatures=createEngineFeatures({snapshotVersion:2,internalUids:['u'],flags:{mediaEvidence:true},
  mediaPolicy:{policyVersion:'media-v2',analysisMode:'audio-only'}}).forJob('u',undefined,['mediaRecoveryV1']);
 const runAudio=(f,extra={})=>jobContext.run({...context(),features:audioFeatures},()=>createVideoEvidence(f.deps)({url:'x',...extra}));
+test.each([
+ ['submillisecond tail',32719,[[0,20000],[19000,32718.3125]],false,'complete','submillisecond_tail',[[32718.3125,32719]]],
+ ['measured crab container tail',32806.939,[[0,20000],[19000,32718.312500000004]],false,'partial','audio_unread',[[32718.312500000004,32806.939]]],
+ ['larger container duration',33000,[[0,20000],[19000,32718.3125]],false,'partial','audio_unread',[[32718.3125,33000]]],
+ ['one millisecond tail',32719.3125,[[0,20000],[19000,32718.3125]],false,'partial','audio_unread',[[32718.3125,32719.3125]]],
+ ['initial gap',3000,[[0.125,3000]],false,'partial','audio_unread',[[0,0.125]]],
+ ['internal gap',3000,[[0,1000],[1000.125,3000]],false,'partial','audio_unread',[[1000,1000.125]]],
+ ['provider failure',3000,[[0,2999.875]],true,'failed','audio_chunk_failed',[[0,3000]]],
+])('numeric timing records %s without changing the real facade decision',async(_name,durationMs,ranges,fail,status,reason,gaps)=>{
+ const {createTranscriptionService}=require('../lib/media/transcriptionService');
+ const provider=jest.fn(async()=>{if(fail)throw new EngineError('dependency_timeout');return {text:'Cafe A'};});
+ const service=createTranscriptionService({providers:{openai:{id:'openai',model:'gpt-4o-mini-transcribe-2025-12-15',
+  version:'timing-fixture-v1',transcribeChunk:provider}},
+  sharedOperation:async(_options,work)=>work(),providerCall:async(_provider,work)=>work()});
+ const chunks=ranges.map(([startMs,endMs])=>({startMs,endMs,audioBytes:Buffer.from('RIFF0000WAVEtiming-fixture')}));
+ const probeTiming={containerDurationMs:durationMs,videoDurationMs:durationMs,audioDurationMs:ranges.at(-1)[1]};
+ const writeManifest=jest.fn(),f=fixture({writeManifest,
+  probe:jest.fn(async()=>({durationMs,hasAudio:true,audioStartMs:0,timing:probeTiming})),
+  audio:jest.fn(async()=>chunks),transcribe:jest.fn((...args)=>service.transcribe(...args))});
+ const result=await runAudio(f);
+ expect(result.coverage.audio).toMatchObject({status,reason});
+ expect(result.timing).toEqual({durationMs,probe:probeTiming,audioStartMs:0,preparedChunkCount:chunks.length,
+  preparedIntervals:ranges.map(([startMs,endMs])=>({startMs,endMs})),coverageGapCount:gaps.length,
+  coverageGaps:gaps.map(([startMs,endMs])=>({startMs,endMs}))});
+ expect(f.deps.transcribe.mock.calls[0][0].chunks).toBe(chunks);
+ expect(f.deps.transcribe.mock.calls[0][0].mediaDigest).toBe('a'.repeat(64));
+ expect(f.deps.transcribe.mock.calls[0][0]).not.toHaveProperty('timing');
+ if(f.deps.fusion.mock.calls.length)expect(f.deps.fusion.mock.calls[0][0]).not.toHaveProperty('timing');
+ expect(provider).toHaveBeenCalledTimes(chunks.length);
+ expect(f.deps.frames).not.toHaveBeenCalled();expect(f.deps.vision).not.toHaveBeenCalled();
+ if(status==='complete') {
+  expect(result.coverage.audio.intervals).toEqual([[0,ranges.at(-1)[1]]]);
+  expect(writeManifest).toHaveBeenCalledTimes(1);
+  expect(writeManifest.mock.calls[0][1]).not.toHaveProperty('timing');
+ } else expect(writeManifest).not.toHaveBeenCalled();
+});
+test('legacy completed manifest returns unchanged without probing or new work for timing',async()=>{
+ const cached={attempted:true,incomplete:false,places:[],coverage:{audio:{status:'complete',intervals:[[0,3000]]},
+  visual:{status:'unavailable',reason:'disabled_by_policy'},fusion:{status:'complete'}},retryOperations:[]};
+ const f=fixture({readManifest:jest.fn(async()=>cached),writeManifest:jest.fn()});
+ expect(await runAudio(f)).toBe(cached);
+ expect(cached).not.toHaveProperty('timing');
+ for(const name of ['discover','acquire','probe','audio','transcribe','fusion','writeManifest'])expect(f.deps[name]).not.toHaveBeenCalled();
+});
+test('timing records zero prepared chunks without inferring a decode and leaves no-track gaps absent',async()=>{
+ const f=fixture(),result=await runAudio(f);
+ expect(result.timing).toEqual({durationMs:3000,preparedChunkCount:0,preparedIntervals:[],coverageGapCount:0,coverageGaps:[]});
+ f.deps.probe.mockResolvedValue({durationMs:3000,hasAudio:false});
+ const noAudio=await runAudio(f);
+ expect(noAudio.timing).toEqual({durationMs:3000});
+});
+test('decoder failure retains probed timing without inventing prepared chunks',async()=>{
+ const f=fixture({audio:jest.fn(async()=>{throw new EngineError('invalid_response',{stage:'audio_timeline'});})});
+ const result=await runAudio(f);
+ expect(result.coverage.audio.status).toBe('failed');
+ expect(result.timing).toEqual({durationMs:3000,coverageGapCount:1,coverageGaps:[{startMs:0,endMs:3000}]});
+ expect(f.deps.transcribe).not.toHaveBeenCalled();
+});
+test('separate-audio timing keeps the video comparison duration and each probe distinct',async()=>{
+ const f=separateFixture(),probe=f.deps.probe.getMockImplementation();
+ f.deps.probe.mockImplementation(async input=>({...await probe(input),timing:input.audioForVideo
+  ? {containerDurationMs:3090,audioDurationMs:3090} : {containerDurationMs:3000,videoDurationMs:3000}}));
+ const result=await runAudio(f);
+ expect(result.timing).toMatchObject({durationMs:3000,audioStartMs:0,
+  probe:{containerDurationMs:3000,videoDurationMs:3000},separateAudioProbe:{containerDurationMs:3090,audioDurationMs:3090}});
+ expect(f.deps.transcribe.mock.calls[0][0].durationMs).toBe(3000);
+});
 test('audio-only performs transcription/fusion but no frame decoding, visual requests or false recovery',async()=>{
  const writeManifest=jest.fn(),f=fixture({writeManifest});
  const result=await runAudio(f);
