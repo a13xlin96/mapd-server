@@ -77,6 +77,63 @@ describe('registered shipped-media replay adapters', () => {
   let dir, t;
   beforeEach(() => {dir = fs.mkdtempSync(path.join(os.tmpdir(), 'runtime-replay-test-')); t = integrationFixture(dir);});
   afterEach(() => fs.rmSync(dir, {recursive: true, force: true}));
+  test.each([0.125, 0.6895, 0.999])('keeps a %s ms planned gap while honoring the real facade tail classification', async gap => {
+    const endMs = 30000 - gap;
+    t.chunks.at(-1).endMs = endMs;
+    const service = require('../lib/media/transcriptionService'), makeService = service.createTranscriptionService;
+    const transcripts = [];
+    const spy = jest.spyOn(service, 'createTranscriptionService').mockImplementation(deps => {
+      const real = makeService(deps);
+      return {transcribe:async (...args) => {const result = await real.transcribe(...args); transcripts.push(result); return result;}};
+    });
+    try {
+      const stages = createRuntimeReplayAdapters({providers:t.providers, processing:t.processing});
+      const [p] = await replayMultimodal({...t.options, stages, arms:['audio']});
+      expect(transcripts[0].coverage).toEqual({status:'complete', reason:'submillisecond_tail', intervals:[[0, endMs]]});
+      expect(transcripts[0].segments.at(-1).endMs).toBe(endMs);
+      const bridge = createCaptureEvidenceBridge(t.part.row.assets), assetId = t.part.row.assets[1].assetId;
+      const observed = bridge.audioRef(assetId, 0, endMs), missing = bridge.audioRef(assetId, endMs, 30000);
+      expect(p.results[0].failure).toBeNull();
+      expect(p.results[0].analysis.audio).toEqual({status:'complete', reason:'submillisecond_tail',
+        observedRefs:[observed], plannedRefs:[observed, missing]});
+      expect(p.results[0].analysis.audio.observedRefs).not.toContainEqual(missing);
+      expect(validatePredictions(p, t.f.corpus, t.f.seal)).toBe(p);
+      expect(t.providers.openaiFetch).toHaveBeenCalledTimes(2);
+    } finally {spy.mockRestore();}
+  });
+  test.each([
+    ['initial gap', [[0.125, 20000], [19000, 30000]]],
+    ['internal gap', [[0, 15000], [15000.125, 30000]]],
+    ['one millisecond tail', [[0, 20000], [19000, 29999]]],
+    ['larger tail', [[0, 20000], [19000, 29900]]],
+    ['initial and trailing gaps', [[0.125, 20000], [19000, 29999.875]]],
+  ])('%s remains partial through the real transcription facade', async (_label, intervals) => {
+    t.chunks.forEach((chunk, i) => {chunk.startMs = intervals[i][0]; chunk.endMs = intervals[i][1];});
+    const stages = createRuntimeReplayAdapters({providers:t.providers, processing:t.processing});
+    const [p] = await replayMultimodal({...t.options, stages, arms:['audio']});
+    expect(p.results[0].analysis.audio).toMatchObject({status:'partial', reason:'audio_unread'});
+    expect(validatePredictions(p, t.f.corpus, t.f.seal)).toBe(p);
+    const forged = copy(p);
+    Object.assign(forged.results[0].analysis.audio, {status:'complete', reason:'submillisecond_tail'});
+    expect(() => validatePredictions(forged, t.f.corpus, t.f.seal)).toThrow();
+  });
+  test.each(['rate_limited', 'dependency_timeout', 'invalid_response'])('an overlapping provider %s still leaves the tiny-tail replay partial', async code => {
+    t.chunks.at(-1).endMs = 29999.875;
+    const audioBytes = Buffer.from('RIFF0000WAVEfailed-overlap-fixture');
+    t.chunks.push({audioBytes, audioSha256:hash(audioBytes), startMs:1000, endMs:2000});
+    const original = t.providers.openaiFetch.getMockImplementation();
+    t.providers.openaiFetch.mockImplementation(async (url, init) => {
+      if ((await init.body.get('file').text()).includes('failed-overlap-fixture')) {
+        throw new (require('../lib/engineError').EngineError)(code);
+      }
+      return original(url, init);
+    });
+    const stages = createRuntimeReplayAdapters({providers:t.providers, processing:t.processing});
+    const [p] = await replayMultimodal({...t.options, stages, arms:['audio']});
+    expect(p.results[0].analysis.audio).toMatchObject({status:'partial', reason:'audio_unread'});
+    expect(t.providers.openaiFetch).toHaveBeenCalledTimes(3);
+    expect(validatePredictions(p, t.f.corpus, t.f.seal)).toBe(p);
+  });
   test('executes shipped ASR HTTP adapter, text fusion, vision, grounding and matcher on local captures', async () => {
     const network = jest.spyOn(global, 'fetch').mockImplementation(() => {throw new Error('Unexpected network');});
     try {

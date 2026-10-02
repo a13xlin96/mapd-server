@@ -37,6 +37,39 @@ test('fake second provider works with native timestamps and absent usage',async(
   const {transcribe}=setup({adapter});const result=await transcribe();
   expect(result).toMatchObject({provider:'fake',model:'speech-v2',language:'vi',segments:[{timing:'native',startMs:500,endMs:1500}]});
 });
+test.each([0.125,0.6895,0.999])('a sole decoded tail of %s ms does not request an unhelpful retry or invent coverage',async gap=>{
+  const {transcribe,provider}=setup();
+  const end=20000-gap,result=await transcribe([chunk(0,end)]);
+  expect(result.coverage).toEqual({status:'complete',reason:'submillisecond_tail',intervals:[[0,end]]});
+  expect(result.segments[0].endMs).toBe(end);
+  expect(result.retryOperations).toEqual([]);
+  await transcribe([chunk(0,end)]);
+  expect(provider.transcribeChunk).toHaveBeenCalledTimes(1);
+});
+test.each([
+  ['one millisecond tail',[[0,19999]]],
+  ['truncated tail',[[0,19900]]],
+  ['initial gap',[[0.125,20000]]],
+  ['internal gap',[[0,10000],[10000.125,20000]]],
+  ['initial plus tiny tail',[[0.125,19999.875]]],
+  ['no audio',[]],
+])('%s remains incomplete',async(_label,intervals)=>{
+  const {transcribe}=setup();
+  const result=await transcribe(intervals.map(([lo,hi])=>chunk(lo,hi)));
+  expect(result.coverage.status).not.toBe('complete');
+  expect(result.coverage.reason).toBe('audio_unread');
+  expect(result.coverage.intervals).toEqual(intervals);
+});
+test('a failed overlapping chunk is not hidden by the submillisecond tail classification',async()=>{
+  const {transcribe,provider}=setup();
+  provider.transcribeChunk.mockImplementation(async({startMs})=>{
+    if(startMs>0)throw new EngineError('rate_limited');
+    return {text:'Cafe'};
+  });
+  const result=await transcribe([chunk(0,19999.875),chunk(19000,20000,'failed')]);
+  expect(result.coverage).toEqual({status:'partial',reason:'audio_chunk_failed',intervals:[[0,19999.875]]});
+  expect(result.failures).toHaveLength(1);
+});
 test('reordered persisted transcription maps remain reusable without accepting forged timing',async()=>{
   const sorted=value=>Array.isArray(value)?value.map(sorted):value && typeof value==='object'
     ? Object.fromEntries(Object.keys(value).sort().map(k=>[k,sorted(value[k])])):value;

@@ -22,9 +22,12 @@ New policies must be completely serialized; missing fields are rejected on
 execution rather than filled with today's defaults.
 
 Whole-result manifests include the complete policy and therefore separate the
-two modes. Identical physical ASR/fusion requests retain their original shared
-identities, cached results and spend fences. A mode change must not become an
-excuse to repeat a paid operation or reset an uncertain outcome.
+two modes. Identical physical ASR requests retain their original shared
+identities, cached results and spend fences. Following live qualification,
+audio-only fusion now declares a forced structured data output; this genuinely
+different request has an explicit format identity. Legacy text fusion keeps
+its existing identity. Neither change resets a receipt or authorizes automatic
+reprocessing. See `audio-only-live-findings-2026-10-01.md` for measured limits.
 
 ## Downstream behavior
 

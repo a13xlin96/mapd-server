@@ -4,6 +4,7 @@ const {createVideoEvidence}=require('../../lib/media/videoEvidence');
 const {createEngineFeatures}=require('../../lib/engineFeatures');
 const {processMedia}=require('../../lib/media/mediaProcess');
 const {prepareAudioChunks}=require('../../lib/media/audioDecode');
+const {createTranscriptionService}=require('../../lib/media/transcriptionService');
 const jobContext=require('../../lib/jobContext');
 
 // Exercise the real coordinator, probing and audio decode with the shipped
@@ -12,6 +13,10 @@ module.exports=async function audioOnlySmoke(media,deps) {
   const features=createEngineFeatures({snapshotVersion:2,internalUids:['fixture'],flags:{mediaEvidence:true},
     mediaPolicy:{policyVersion:'media-v2',analysisMode:'audio-only'}}).forJob('fixture',undefined,['mediaRecoveryV1']);
   let chunks=0,disposed=false;
+  const transcription=createTranscriptionService({providers:{openai:{id:'openai',
+    model:'gpt-4o-mini-transcribe-2025-12-15',version:'offline-smoke-v1',
+    transcribeChunk:async()=>({text:'Fixture Cafe'})}},
+    sharedOperation:async(_options,work)=>work(),providerCall:async(_provider,work)=>work()});
   const release=media.retain();
   const collector=createVideoEvidence({
     discover:async()=>({availability:'available'}),
@@ -20,20 +25,22 @@ module.exports=async function audioOnlySmoke(media,deps) {
     readManifest:async()=>null,writeManifest:async()=>{},
     frames:async()=>assert.fail('audio-only must not decode frames'),
     vision:async()=>assert.fail('audio-only must not make a vision request'),
-    transcribe:async input=>{
+    transcribe:async (input,options)=>{
       chunks=input.chunks.length;assert(chunks>0,'audio was not decoded');
       for(const chunk of input.chunks) {
         const pcm=chunk.audioBytes.subarray(44);let energy=0;
         for(let i=0;i<pcm.length;i+=2)energy+=pcm.readInt16LE(i)**2;
         assert(pcm.length>0 && Math.sqrt(energy/(pcm.length/2))>100,'audio samples are silent');
       }
-      return {segments:[{text:'Fixture Cafe',evidenceId:'audio:fixture',origin:'audio',startMs:0,endMs:input.durationMs}],
-        coverage:{status:'complete',intervals:[[0,input.durationMs]]},retryOperations:[]};
+      // Exercise the real interval accounting instead of fabricating full
+      // coverage, which concealed the live AAC/container tail discrepancy.
+      return transcription.transcribe(input,options);
     },
     fusion:async input=>{
-      assert.equal(input.textEvidence.filter(e=>e.modality==='transcript').length,1);
+      const spoken=input.textEvidence.filter(e=>e.modality==='transcript');
+      assert(spoken.length>0);
       assert.equal(input.textEvidence.filter(e=>e.modality==='visual').length,0);
-      return {places:[{name:'Fixture Cafe',evidenceRefs:[{evidenceId:'audio:fixture',quote:'Fixture Cafe',supports:'name'}]}]};
+      return {places:[{name:'Fixture Cafe',evidenceRefs:[{evidenceId:spoken[0].evidenceId,quote:'Fixture Cafe',supports:'name'}]}]};
     },
   });
   try {
