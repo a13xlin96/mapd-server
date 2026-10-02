@@ -50,3 +50,46 @@ test('invalid resource and provider configuration fails rather than enabling ano
   for(const bad of [{model:'gpt-4o'},{provider:'unknown'},{maxDurationMs:999999},{audioOverlapMs:20000},{maxFrames:2},{maxSpend:0}]) expect(()=>validateMediaConfig(bad)).toThrow();
   expect(()=>createEngineFeatures({flags:{mediaEvidence:true}})).toThrow();
 });
+
+const audioPolicy={policyVersion:'media-v2',analysisMode:'audio-only'};
+test('audio mode requires explicit version and never changes v1 defaults',()=>{
+  expect(validateMediaConfig()).toEqual(DEFAULT_MEDIA_CONFIG);
+  expect(validateMediaConfig()).not.toHaveProperty('analysisMode');
+  expect(validateMediaConfig(audioPolicy)).toMatchObject(audioPolicy);
+  for(const policy of [{analysisMode:'audio-only'},{policyVersion:'media-v2'},
+    {policyVersion:'media-v2',analysisMode:'audio-video'},
+    {policyVersion:'media-v2',analysisMode:false},{...audioPolicy,model:'other'},
+    {...audioPolicy,mediaTimeoutMs:120000}])expect(()=>validateMediaConfig(policy)).toThrow();
+});
+test('recorded modes survive both directions of live rollback without filling omitted fields',()=>{
+  const audio=createEngineFeatures({...options,mediaPolicy:audioPolicy});
+  const both=createEngineFeatures(options);
+  const a=audio.forJob('staff',undefined,['mediaRecoveryV1']);
+  const b=both.forJob('staff',undefined,['mediaRecoveryV1']);
+  expect(audio.forJob('staff',b)).toEqual(b);
+  expect(both.forJob('staff',a)).toEqual(a);
+  expect(forExecution(JSON.parse(JSON.stringify(a)))).toEqual(a);
+  expect(()=>{a.media.policy.analysisMode='audio-video';}).toThrow();
+  for(const field of ['analysisMode','provider','policyVersion','requestTimeoutMs']) {
+    const broken=JSON.parse(JSON.stringify(a));delete broken.media.policy[field];
+    expect(()=>forExecution(broken)).toThrow();
+  }
+});
+test('audio-only still requires cohort and client capability and cannot upgrade admitted legacy work',()=>{
+  const audio=createEngineFeatures({...options,mediaPolicy:audioPolicy});
+  expect(mediaConfigForFeatures(audio.forJob('outsider',undefined,['mediaRecoveryV1']))).toBeNull();
+  expect(mediaConfigForFeatures(audio.forJob('staff'))).toBeNull();
+  const legacy=createEngineFeatures().forJob('staff');
+  expect(audio.forJob('staff',legacy,['mediaRecoveryV1'])).toEqual(legacy);
+});
+test('audio-only requires a policy-reader fence while old modes retain the original contract',async()=>{
+  const a=createEngineFeatures({...options,mediaPolicy:audioPolicy}).forJob('staff',undefined,['mediaRecoveryV1']);
+  const b=createEngineFeatures(options).forJob('staff',undefined,['mediaRecoveryV1']);
+  const db={collection:()=>({doc:()=>({})})};
+  const base={schemaVersion:1,writersEnabled:true,minimumReaderVersion:2};
+  const txn=control=>({get:async()=>({data:()=>control})});
+  for(const marker of [undefined,1,'2',3])await expect(assertMediaFleet(txn({...base,minimumMediaPolicyVersion:marker}),db,a)).rejects.toMatchObject({code:'dependency_error',stage:'media_configuration'});
+  await expect(assertMediaFleet(txn({...base,minimumMediaPolicyVersion:2}),db,a)).resolves.toBeUndefined();
+  await expect(assertMediaFleet(txn(base),db,b)).resolves.toBeUndefined();
+  await expect(assertMediaFleet(txn({...base,minimumMediaPolicyVersion:2}),db,b)).resolves.toBeUndefined();
+});

@@ -244,6 +244,14 @@ test('capacity and timeout changes reuse identical evidence; stricter artifact f
   expect(provider.transcribeChunk).toHaveBeenCalledTimes(2);
   expect(run.mock.calls[2][0].input.policy).toEqual({schemaVersion:1,policyVersion:'media-v1',artifactTtlSeconds:120});
 });
+
+test('audio-only reuses identical existing transcription instead of paying again for a mode change',async()=>{
+  const f=setup();
+  const first=await f.transcribe();
+  const second=await f.transcribe(undefined,{policy:{policyVersion:'media-v2',analysisMode:'audio-only'}});
+  expect(second).toEqual(first);expect(f.provider.transcribeChunk).toHaveBeenCalledTimes(1);
+  expect(identity(f.run.mock.calls[0][0]).key).toBe(identity(f.run.mock.calls[1][0]).key);
+});
 test('invalid policy or chunks exceeding recorded audio bounds dispatch nothing',async()=>{
   const {transcribe,provider,run}=setup();
   for(const policy of [{audioConcurrency:3},{providerSlots:0},{requestTimeoutMs:20001},{audioChunkMs:10000}]) {

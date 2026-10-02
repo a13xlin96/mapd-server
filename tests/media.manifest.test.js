@@ -43,3 +43,14 @@ test('exact transcription context partitions manifests while absent context keep
  expect(manifestKey({...base,transcriptionContext:one,userId:'another'})).toBe(manifestKey({...base,transcriptionContext:one}));
  expect(()=>manifestKey({...base,transcriptionContext:{...one,prompt:'override'}})).toThrow();
 });
+
+test('audio-only manifests cannot hide visual work when full media mode is enabled',async()=>{
+ const {validateMediaConfig}=require('../lib/media/mediaConfig');
+ const audioKey=manifestKey({...base,config:validateMediaConfig({policyVersion:'media-v2',analysisMode:'audio-only'})});
+ const fullKey=manifestKey(base);expect(audioKey).not.toBe(fullKey);
+ const audioResult={...result,coverage:{...result.coverage,visual:{status:'unavailable',reason:'disabled_by_policy',intervals:[]}}};
+ const cache=new Map(),writer=async(k,v)=>cache.set(k,v),reader=async k=>cache.get(k);
+ await writeManifest(audioKey,audioResult,{writer,now:()=>100});
+ expect(await readManifest(audioKey,{reader,now:()=>200})).toEqual(audioResult);
+ expect(await readManifest(fullKey,{reader,now:()=>200})).toBeNull();
+});

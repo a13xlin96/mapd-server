@@ -23,3 +23,20 @@ test('invalid retry and forged capability shape rejected before job creation',as
  expect(await admitEnrichmentJob(db,{...request,...fields},{features})).toMatchObject({code:400});
  expect(db.read('enrichmentJobs','new')).toBeUndefined();
 });
+
+test('audio-only admission requires upgraded policy readers and records the mode from the server',async()=>{
+ const audio=createEngineFeatures({snapshotVersion:2,internalUids:['u'],flags:{mediaEvidence:true},
+   mediaPolicy:{policyVersion:'media-v2',analysisMode:'audio-only'}});
+ const contract={schemaVersion:1,minimumReaderVersion:2,writersEnabled:true};
+ db.seed('engineControl','mediaFleet',contract);
+ await admitEnrichmentJob(db,{...request,clientCapabilities:['mediaRecoveryV1']},{features:audio});
+ expect(db.read('enrichmentJobs','new')).toMatchObject({status:'failed',failure:{code:'dependency_error'}});
+ db.seed('engineControl','mediaFleet',{...contract,minimumMediaPolicyVersion:2});
+ await admitEnrichmentJob(db,{...request,jobId:'compatible',clientCapabilities:['mediaRecoveryV1']},{features:audio});
+ expect(db.read('enrichmentJobs','compatible')).toMatchObject({status:'pending',engineQueued:true,
+   engineFeatures:{media:{policy:{policyVersion:'media-v2',analysisMode:'audio-only'}}}});
+ // A settings change must not revive the already rejected receipt.
+ const replay=await admitEnrichmentJob(db,{...request,clientCapabilities:['mediaRecoveryV1']},{features:audio});
+ expect(replay.body.status).toBe('failed');
+ expect(db.read('enrichmentJobs','new').engineQueued).not.toBe(true);
+});
