@@ -255,3 +255,47 @@ test('private notes alone do not add an ASR context or alter the no-context requ
  await jobContext.run(context(),()=>createVideoEvidence(f.deps)({url:'x',ogData:{shareText:'PrivateDiary',description:'PrivateDiary'}}));
  expect(f.deps.transcribe.mock.calls[0][0]).not.toHaveProperty('context');
 });
+
+const audioFeatures=createEngineFeatures({snapshotVersion:2,internalUids:['u'],flags:{mediaEvidence:true},
+ mediaPolicy:{policyVersion:'media-v2',analysisMode:'audio-only'}}).forJob('u',undefined,['mediaRecoveryV1']);
+const runAudio=(f,extra={})=>jobContext.run({...context(),features:audioFeatures},()=>createVideoEvidence(f.deps)({url:'x',...extra}));
+test('audio-only performs transcription/fusion but no frame decoding, visual requests or false recovery',async()=>{
+ const writeManifest=jest.fn(),f=fixture({writeManifest});
+ const result=await runAudio(f);
+ expect(result).toMatchObject({attempted:true,incomplete:false,coverage:{audio:{status:'complete'},
+  visual:{status:'unavailable',reason:'disabled_by_policy'},fusion:{status:'complete'}},retryOperations:[]});
+ expect(f.deps.frames).not.toHaveBeenCalled();expect(f.deps.vision).not.toHaveBeenCalled();
+ expect(f.deps.transcribe).toHaveBeenCalledTimes(1);expect(f.deps.fusion).toHaveBeenCalledTimes(1);
+ expect(f.deps.fusion.mock.calls[0][0].textEvidence.some(e=>e.modality==='visual')).toBe(false);
+ expect(writeManifest).toHaveBeenCalledTimes(1);
+ expect((await f.deps.acquire.mock.results[0].value).dispose).toHaveBeenCalledTimes(1);
+});
+test('audio-only propagates partial transcript evidence and targets no disabled visual retry',async()=>{
+ const retryOperations=[{kind:'asr_chunk',retryKey:'a'.repeat(64),generation:null}];
+ const f=fixture({transcribe:jest.fn(async()=>({segments:[{text:'Cafe A',evidenceId:'a:1',origin:'audio'}],
+  coverage:{status:'partial',intervals:[[0,1000]],reason:'audio_chunk_failed'},retryOperations})),writeManifest:jest.fn()});
+ const result=await runAudio(f);
+ expect(result).toMatchObject({incomplete:true,retryOperations,coverage:{audio:{status:'partial'},visual:{reason:'disabled_by_policy'}}});
+ expect(result.places.length).toBeGreaterThan(0);expect(f.deps.writeManifest).not.toHaveBeenCalled();
+ expect(f.deps.frames).not.toHaveBeenCalled();expect(f.deps.vision).not.toHaveBeenCalled();
+});
+test.each(['source','audio','fusion'])('audio-only %s failure preserves disabled status and does not invoke visual fallback',async stage=>{
+ const f=fixture({writeManifest:jest.fn()});
+ f.deps[{source:'discover',audio:'transcribe',fusion:'fusion'}[stage]].mockRejectedValue(new EngineError('dependency_timeout'));
+ const result=await runAudio(f);
+ expect(result.incomplete).toBe(true);expect(result.coverage.visual).toMatchObject({status:'unavailable',reason:'disabled_by_policy'});
+ expect(f.deps.frames).not.toHaveBeenCalled();expect(f.deps.vision).not.toHaveBeenCalled();
+ expect(f.deps.writeManifest).not.toHaveBeenCalled();
+});
+test('audio-only no-track case is unavailable, does not invent speech, and skips paid media requests',async()=>{
+ const f=fixture({probe:jest.fn(async()=>({durationMs:3000,hasAudio:false}))});
+ const result=await runAudio(f);
+ expect(result).toMatchObject({places:[],incomplete:false,coverage:{audio:{status:'unavailable',reason:'no_audio_track'},visual:{reason:'disabled_by_policy'}}});
+ for(const name of ['audio','transcribe','frames','vision','fusion'])expect(f.deps[name]).not.toHaveBeenCalled();
+});
+test('audio-only retains existing bounded separate-audio acquisition and cleanup',async()=>{
+ const f=separateFixture(),result=await runAudio(f);
+ expect(result.incomplete).toBe(false);expect(f.deps.acquireAudio).toHaveBeenCalledTimes(1);
+ expect(f.deps.transcribe).toHaveBeenCalledTimes(1);expect(f.deps.frames).not.toHaveBeenCalled();
+ expect((await f.deps.acquireAudio.mock.results[0].value).dispose).toHaveBeenCalledTimes(1);
+});

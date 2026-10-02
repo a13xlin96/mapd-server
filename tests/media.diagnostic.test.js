@@ -13,6 +13,8 @@ const {EngineError} = require('../lib/engineError');
 const job = require('../lib/jobContext');
 const metrics = require('../lib/engineMetrics');
 const {createVideoEvidence} = require('../lib/media/videoEvidence');
+const {DEFAULT_MEDIA_CONFIG} = require('../lib/media/mediaConfig');
+const audioOnlyTicket = Object.freeze({schemaVersion:2, analysisMode:'audio-only'});
 const gate = () => {let resolve;return {promise:new Promise(r => {resolve = r;}), resolve};};
 const emptyResult = () => ({attempted:true, incomplete:false, places:[],
   coverage:{audio:{status:'complete', intervals:[[0, 1000]]}, visual:{status:'complete'}, fusion:{status:'complete'}}});
@@ -64,6 +66,36 @@ test('body/query cannot change URL, UID, features, retry policy or token; parser
   expect(f.extract).not.toHaveBeenCalled(); expect(f.read().status).toBe('pending');
 });
 
+test.each([{}, audioOnlyTicket])('HTTP body/query cannot select or override analysis mode (%j)', async ticket => {
+  const f = setup({ticket});
+  expect((await f.send().send({analysisMode:'audio-only'})).body).toEqual({error:'empty_request_required'});
+  expect((await f.send().query({analysisMode:'audio-only'})).body).toEqual({error:'empty_request_required'});
+  expect((await f.send().send({mediaPolicy:{policyVersion:'media-v2', analysisMode:'audio-only'}})).status).toBe(400);
+  expect(f.extract).not.toHaveBeenCalled(); expect(f.collect).not.toHaveBeenCalled();
+  expect(f.read().status).toBe('pending'); expect(f.read().claimId).toBeUndefined();
+});
+
+test.each([undefined, null, '', 'audio-video', 'audio-only ', 'AUDIO-ONLY', false, 1, [], {}, ['audio-only']]
+  .flatMap(value => [[1, value], [2, value]]))(
+  'server claim rejects an explicit malformed trusted mode (schema=%s, mode=%j)', async (schemaVersion, analysisMode) => {
+    const f = setup({ticket:{schemaVersion, analysisMode}});
+    const response = await f.send(); await f.router.whenIdle();
+    expect(response.status).toBe(404); expect(response.body).toEqual({error:'not_found'});
+    expect(f.read().status).toBe('pending'); expect(f.read().claimId).toBeUndefined();
+    expect(f.extract).not.toHaveBeenCalled(); expect(f.collect).not.toHaveBeenCalled();
+  });
+
+test.each([
+  {schemaVersion:1, analysisMode:'audio-only'}, {schemaVersion:2},
+  {schemaVersion:3, analysisMode:'audio-only'}, {schemaVersion:'2', analysisMode:'audio-only'},
+])('server claim rejects incompatible remote ticket version/mode without work (%j)', async ticket => {
+  const f = setup({ticket});
+  const response = await f.send(); await f.router.whenIdle();
+  expect(response.status).toBe(404); expect(response.body).toEqual({error:'not_found'});
+  expect(f.read().status).toBe('pending'); expect(f.read().claimId).toBeUndefined();
+  expect(f.extract).not.toHaveBeenCalled(); expect(f.collect).not.toHaveBeenCalled();
+});
+
 test('limiter rejects repeated unauthenticated attempts before database access', async () => {
   const f = setup(), transactions = jest.spyOn(f.db, 'runTransaction');
   for (let i = 0; i < 6; i++) expect((await request(f.app).post(`${ROUTE}/${f.id}`)).status).toBe(401);
@@ -72,9 +104,9 @@ test('limiter rejects repeated unauthenticated attempts before database access',
   expect(transactions).not.toHaveBeenCalled();
 });
 
-test('two independent server routers atomically claim once; running and completed replays never redispatch', async () => {
+test.each([{}, audioOnlyTicket])('two independent server routers atomically claim once; replays never redispatch (%j)', async ticket => {
   const started = gate(), finish = gate();
-  const f = setup({collect:jest.fn(async () => {started.resolve(); await finish.promise; return emptyResult();})});
+  const f = setup({ticket, collect:jest.fn(async () => {started.resolve(); await finish.promise; return emptyResult();})});
   const secondRouter = createMediaDiagnosticRouter({db:f.db, extract:f.extract, collect:f.collect});
   const secondApp = express(); secondApp.use(ROUTE, secondRouter);
   const responses = await Promise.all([f.send(), request(secondApp).post(`${ROUTE}/${f.id}`).set('x-media-diagnostic-token', f.token)]);
@@ -112,7 +144,7 @@ test('missing control permits execution, schema2 authority uses stored UID/URL a
     await job.assertActive(); await captured.validateProviderDispatch();
     metrics.current().providerCall({provider:'openai', rateKey:'openai_mini_transcribe', stage:'transcription',
       outcome:'success', tokens:{textInput:0, audioInput:20, output:10}, submittedAudioSeconds:1});
-    return {...emptyResult(), places:[{name:'Cafe', city:'Kyoto', evidenceRefs:[{quote:'raw transcript'}],
+    return {...emptyResult(), analysisMode:'audio-only', places:[{name:'Cafe', city:'Kyoto', evidenceRefs:[{quote:'raw transcript'}],
       transcript:'raw transcript', frame:Buffer.from('frame'), address:'https://cdn.test/signed?secret=abc'}],
       raw:'secret', retryOperations:[{kind:'asr_chunk', generation:1}]};
   })});
@@ -120,11 +152,16 @@ test('missing control permits execution, schema2 authority uses stored UID/URL a
   expect(captured).toMatchObject({userId:'operator-selected-user', features:{schemaVersion:2,
     versions:{mediaEvidence:'media-evidence-v1', languageRouting:'multilingual-v1'}}});
   expect(captured.jobId).toBeUndefined(); expect(captured.leaseOwner).toBeUndefined();
+  expect(captured.features.media.policy).toEqual(DEFAULT_MEDIA_CONFIG);
+  expect(f.read().schemaVersion).toBe(1);
+  expect(Object.hasOwn(f.read(), 'analysisMode')).toBe(false);
+  expect(Object.hasOwn(captured.features.media.policy, 'analysisMode')).toBe(false);
   expect(captured.deadline - f.read().claimedAtMs).toBe(EXECUTION_MS);
   expect(f.extract).toHaveBeenCalledWith(f.read().url);
   expect([...f.db.collections].filter(([, docs]) => docs.size).map(([name]) => name)).toEqual([COLLECTION]);
   expect(f.db.collections.has('pins')).toBe(false); expect(f.db.collections.has('enrichmentJobs')).toBe(false);
   const report = f.read().result;
+  expect(Object.hasOwn(report, 'analysisMode')).toBe(false); // Ignore any collector-supplied mode.
   expect(report.places).toEqual([{name:'Cafe', city:'Kyoto', country:'', address:'[redacted]', source:'unknown'}]);
   expect(report.metrics.providerCalls).toHaveLength(1);
   expect(report.metrics.providerCalls[0].tokens.audioInput).toBe(20);
@@ -133,8 +170,92 @@ test('missing control permits execution, schema2 authority uses stored UID/URL a
   expect(JSON.stringify(f.read())).not.toContain(f.token);
 });
 
-test('claim commit acknowledgement failure is never followed by execution or reclaim', async () => {
-  const f = setup();
+test('only the trusted audio-only ticket selects an immutable v2 policy and sanitized result mode', async () => {
+  let captured;
+  const f = setup({ticket:audioOnlyTicket, collect:jest.fn(async input => {
+    captured = job.current();
+    expect(input).toMatchObject({retryOperations:[], baselinePlaces:[]});
+    expect(Object.hasOwn(input, 'analysisMode')).toBe(false);
+    await captured.validateProviderDispatch();
+    return {...emptyResult(), analysisMode:'https://secret.test', raw:'private transcript'};
+  })});
+  const response = await f.send().set('x-media-analysis-mode', 'audio-video');
+  expect(response.status).toBe(202);
+  expect(response.body).toEqual({status:'running', executionExpired:false});
+  await f.router.whenIdle();
+  expect(captured.features.media.policy).toEqual({...DEFAULT_MEDIA_CONFIG, policyVersion:'media-v2', analysisMode:'audio-only'});
+  expect(Object.isFrozen(captured.features)).toBe(true);
+  expect(Object.isFrozen(captured.features.media)).toBe(true);
+  expect(Object.isFrozen(captured.features.media.policy)).toBe(true);
+  expect(captured.jobId).toBeUndefined(); expect(captured.leaseOwner).toBeUndefined();
+  expect(f.read()).toMatchObject({schemaVersion:2, status:'completed', analysisMode:'audio-only', result:{analysisMode:'audio-only'}});
+  expect(JSON.stringify(f.read().result)).not.toMatch(/secret|private transcript/);
+  expect([...f.db.collections].filter(([, docs]) => docs.size).map(([name]) => name)).toEqual([COLLECTION]);
+});
+
+test('mode headers cannot enable audio-only on a default ticket', async () => {
+  const f = setup({collect:jest.fn(async () => {
+    expect(job.current().features.media.policy).toEqual(DEFAULT_MEDIA_CONFIG);
+    return emptyResult();
+  })});
+  await f.send().set('x-media-analysis-mode', 'audio-only'); await f.router.whenIdle();
+  expect(f.collect).toHaveBeenCalledTimes(1);
+  expect(Object.hasOwn(f.read().result, 'analysisMode')).toBe(false);
+});
+
+test.each([
+  [{}, {analysisMode:'audio-only'}], [audioOnlyTicket, {}],
+  [audioOnlyTicket, {analysisMode:'audio-video'}], [{}, {analysisMode:undefined}],
+])('changing mode after claim prevents further work and result publication (%j -> %j)', async (ticket, replacement) => {
+  const f = setup({ticket, extract:jest.fn(async () => {
+    const updated = {...f.read()}; delete updated.analysisMode;
+    f.db.seed(COLLECTION, f.id, {...updated, ...replacement});
+    return {};
+  })});
+  await f.send(); await f.router.whenIdle();
+  expect(f.extract).toHaveBeenCalledTimes(1); expect(f.collect).not.toHaveBeenCalled();
+  expect(f.read().result).toBeUndefined();
+  // A mode edit never restores a consumed claim, even if status is reset.
+  await f.db.collection(COLLECTION).doc(f.id).update({status:'pending'});
+  await f.send(); await f.router.whenIdle();
+  expect(f.extract).toHaveBeenCalledTimes(1); expect(f.collect).not.toHaveBeenCalled();
+});
+
+test.each(['mode', 'schema'])('changing audio-only ticket %s during collection fences shared dispatch and publication', async field => {
+  let dispatchError, capturedPolicy;
+  const f = setup({ticket:audioOnlyTicket, collect:jest.fn(async () => {
+    const updated = {...f.read()};
+    if (field === 'mode') delete updated.analysisMode;
+    else updated.schemaVersion = 1;
+    f.db.seed(COLLECTION, f.id, updated);
+    try {await job.current().validateProviderDispatch();} catch (error) {dispatchError = error;}
+    capturedPolicy = job.current().features.media.policy;
+    return emptyResult();
+  })});
+  await f.send(); await f.router.whenIdle(); await f.send();
+  expect(dispatchError).toMatchObject({code:'attempt_stopped'});
+  expect(capturedPolicy.analysisMode).toBe('audio-only');
+  expect(f.collect).toHaveBeenCalledTimes(1); expect(f.read().result).toBeUndefined();
+});
+
+test.each([[audioOnlyTicket, 1], [audioOnlyTicket, 3], [{}, 2]])(
+  'changing schema after claim prevents collection/publication and never renews authority (%j -> %s)', async (ticket, schemaVersion) => {
+    const f = setup({ticket, extract:jest.fn(async () => {
+      await f.db.collection(COLLECTION).doc(f.id).update({schemaVersion});
+      return {};
+    })});
+    await f.send(); await f.router.whenIdle();
+    expect(f.extract).toHaveBeenCalledTimes(1); expect(f.collect).not.toHaveBeenCalled();
+    expect(f.read().result).toBeUndefined();
+    expect(f.read().analysisMode).toBe(ticket.analysisMode);
+    // Restoring a valid schema and resetting status cannot clear paid fences.
+    await f.db.collection(COLLECTION).doc(f.id).update({schemaVersion:ticket.schemaVersion || 1, status:'pending'});
+    expect((await f.send()).status).toBe(410); await f.router.whenIdle();
+    expect(f.extract).toHaveBeenCalledTimes(1); expect(f.collect).not.toHaveBeenCalled();
+  });
+
+test.each([{}, audioOnlyTicket])('claim commit acknowledgement failure never executes or reclaims (%j)', async ticket => {
+  const f = setup({ticket});
   const transact = f.db.runTransaction.bind(f.db); let once = true;
   f.db.runTransaction = async work => {
     const outcome = await transact(work);
@@ -189,14 +310,15 @@ test('crashed running ticket remains consumed past its execution deadline and ti
   expect(f.extract).not.toHaveBeenCalled();
 });
 
-test('execution expiry aborts, records timeout and ignores late source completion forever', async () => {
+test.each([{}, audioOnlyTicket])('execution expiry aborts and ignores late source completion forever (%j)', async ticket => {
   const source = gate(), began = gate(); let context;
-  const f = setup({ticket:{expiresAtMs:Date.now() + 250}, extract:jest.fn(async () => {
+  const f = setup({ticket:{...ticket, expiresAtMs:Date.now() + 250}, extract:jest.fn(async () => {
     context = job.current(); began.resolve(); return source.promise;
   })});
   await f.send(); await began.promise; await f.router.whenIdle();
   expect(context.signal.aborted).toBe(true); expect(f.read().status).toBe('timed_out');
   expect(f.read().result.errors).toEqual(['dependency_timeout']);
+  expect(f.read().result.analysisMode).toBe(ticket.analysisMode);
   source.resolve({title:'late'}); await new Promise(resolve => setImmediate(resolve));
   await f.send(); expect(f.collect).not.toHaveBeenCalled(); expect(f.extract).toHaveBeenCalledTimes(1);
 });
@@ -272,7 +394,49 @@ test('real coordinator preserves partial places when fusion is stopped, without 
   expect([...f.db.collections.keys()].sort()).toEqual([COLLECTION, MEDIA_CONTROL.collection].sort());
 });
 
-test.each([false, true])('real shared dispatch uses diagnostic authority/accounting and never resends (late stop=%s)', async lateStop => {
+test.each([{}, audioOnlyTicket])('real coordinator obeys the ticket policy with measured zero frame/vision work for audio-only (%j)', async ticket => {
+  const recordCall = stage => metrics.current().providerCall({provider:stage === 'transcription' ? 'openai' : 'anthropic',
+    rateKey:stage === 'transcription' ? 'openai_mini_transcribe' : 'unknown', stage, outcome:'success'});
+  const audio = jest.fn(async () => [{startMs:0, endMs:1000}]);
+  const transcribe = jest.fn(async () => {
+    recordCall('transcription');
+    return {segments:[{evidenceId:'asr:0', text:'Cafe Kyoto', startMs:0, endMs:1000}],
+      coverage:{status:'complete', intervals:[[0,1000]]}};
+  });
+  const frames = jest.fn(async () => ({scannedFrames:1,
+    frames:[{digest:'b'.repeat(64), timestampMs:0, width:2, height:2}]}));
+  const vision = jest.fn(async () => {recordCall('video_vision'); return {places:[], observations:[]};});
+  const fusion = jest.fn(async () => {recordCall('media_fusion'); return {places:[{name:'Cafe Kyoto', source:'transcript'}]};});
+  const dispose = jest.fn(async () => {});
+  const collect = createVideoEvidence({
+    readManifest:async () => null, writeManifest:jest.fn(),
+    discover:async () => ({availability:'available'}),
+    acquire:async () => ({contentDigest:'a'.repeat(64), bytes:50, dispose}),
+    probe:async () => ({durationMs:1000, hasAudio:true}), audio, transcribe, frames, vision, fusion,
+  });
+  const f = setup({ticket, collect});
+  await f.send(); await f.router.whenIdle(); await f.send();
+  const audioOnly = ticket.analysisMode === 'audio-only', report = f.read().result;
+  expect(f.read().status).toBe('completed');
+  expect(audio).toHaveBeenCalledTimes(1); expect(transcribe).toHaveBeenCalledTimes(1);
+  expect(frames).toHaveBeenCalledTimes(audioOnly ? 0 : 1); expect(vision).toHaveBeenCalledTimes(audioOnly ? 0 : 1);
+  expect(fusion).toHaveBeenCalledTimes(1); expect(dispose).toHaveBeenCalledTimes(1);
+  expect(report.analysisMode).toBe(ticket.analysisMode);
+  expect(report.coverage.audio).toEqual({status:'complete', reason:null, intervals:[{startMs:0, endMs:1000}]});
+  expect(report.coverage.visual).toEqual({status:audioOnly ? 'unavailable' : 'complete',
+    reason:audioOnly ? 'disabled_by_policy' : 'sampled_frames_only', intervals:[]});
+  expect(report.metrics.providerCalls.filter(call => call.stage === 'video_vision')).toHaveLength(audioOnly ? 0 : 1);
+  expect(report.metrics.providerCalls.filter(call => call.stage === 'transcription')).toHaveLength(1);
+  expect(report.metrics.providerCalls.filter(call => call.stage === 'media_fusion')).toHaveLength(1);
+  if (audioOnly) {
+    expect(report.metrics.operations.framesDecoded).toBeUndefined();
+    expect(report.metrics.operations.framesSelected).toBeUndefined();
+  }
+  expect(f.db.collections.has('pins')).toBe(false); expect(f.db.collections.has('enrichmentJobs')).toBe(false);
+});
+
+test.each([[false, {}], [true, {}], [false, audioOnlyTicket], [true, audioOnlyTicket]])(
+  'real shared dispatch uses diagnostic authority/accounting and never resends (late stop=%s, ticket=%j)', async (lateStop, ticket) => {
   const {createSharedAiOperations, SERVER_PUBLIC_SCOPE} = require('../lib/sharedAiOperation');
   const {withProvider} = require('../lib/providerRuntime');
   const {beginProviderObservation} = require('../lib/engineBudget');
@@ -283,7 +447,7 @@ test.each([false, true])('real shared dispatch uses diagnostic authority/account
     expect(job.current().jobId).toBeUndefined();
     return {ok:true, usage:{input_tokens:2, output_tokens:1}};
   });
-  const f = setup({db, collect:jest.fn(async () => {
+  const f = setup({db, ticket, collect:jest.fn(async () => {
     const result = emptyResult();
     try {
       await operations.runSharedAiOperation({kind:'asr_chunk', provider:'openai', stage:'transcription',

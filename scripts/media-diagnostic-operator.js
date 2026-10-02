@@ -32,9 +32,11 @@ async function readLocal(file) {
     return value;
   } finally {await handle.close();}
 }
-async function createTicket({db, userId, url, server, file, now = Date.now}) {
+async function createTicket(input) {
+  const {db, userId, url, server, file, analysisMode, now = Date.now} = input;
   if (!db || typeof userId !== 'string' || !userId.length || userId.length > 128
-      || typeof url !== 'string' || url.length > 2048 || !isAllowedExtractUrl(url) || !classifyContentProvider(url)) throw invalid();
+      || typeof url !== 'string' || url.length > 2048 || !isAllowedExtractUrl(url) || !classifyContentProvider(url)
+      || (Object.hasOwn(input, 'analysisMode') && analysisMode !== 'audio-only')) throw invalid();
   const origin = serverOrigin(server);
   const id = randomBytes(16).toString('hex'), token = randomBytes(32).toString('hex');
   const createdAtMs = now();
@@ -42,8 +44,11 @@ async function createTicket({db, userId, url, server, file, now = Date.now}) {
   // Firestore acknowledgement is lost, this same local file can still invoke
   // the existing ticket; create() cannot overwrite any consumed ticket.
   await saveLocal(file, {schemaVersion:1, id, token, server:origin});
-  await db.collection(COLLECTION).doc(id).create({schemaVersion:1, status:'pending',
+  // Old diagnostic readers reject remote v2 capabilities before doing work.
+  // The local secret file is unchanged; it never chooses the execution mode.
+  await db.collection(COLLECTION).doc(id).create({schemaVersion:analysisMode === 'audio-only' ? 2 : 1, status:'pending',
     tokenHash:createHash('sha256').update(token, 'utf8').digest('hex'), userId, url,
+    ...(analysisMode === 'audio-only' ? {analysisMode} : {}),
     createdAtMs, expiresAtMs:createdAtMs + MAX_TICKET_MS});
   return {status:'pending'}; // Deliberately return/print neither token nor hash.
 }
@@ -76,11 +81,12 @@ async function main(argv) {
   const [command, ...args] = argv;
   const options = {};
   for (let i = 0; i < args.length; i += 2) {
-    if (!/^--(auth-helper|project|user|url|server|file|output)$/.test(args[i]) || !args[i + 1]
+    if (!/^--(auth-helper|project|user|url|server|file|output|analysis-mode)$/.test(args[i]) || !args[i + 1]
         || Object.hasOwn(options, args[i])) throw invalid();
     options[args[i]] = args[i + 1];
   }
   if (!['create', 'invoke', 'read'].includes(command) || !options['--file']) throw invalid();
+  if (Object.hasOwn(options, '--analysis-mode') && (command !== 'create' || options['--analysis-mode'] !== 'audio-only')) throw invalid();
   let db;
   if (command !== 'invoke') {
     if (!options['--auth-helper'] || !options['--project']) throw invalid();
@@ -90,7 +96,9 @@ async function main(argv) {
     db = await helper.getFirestore({projectId:options['--project']});
   }
   const result = command === 'create' ? await createTicket({db, userId:options['--user'], url:options['--url'],
-    server:options['--server'], file:options['--file']}) : command === 'invoke' ? await invokeOnce({file:options['--file']})
+    server:options['--server'], file:options['--file'],
+    ...(Object.hasOwn(options, '--analysis-mode') ? {analysisMode:options['--analysis-mode']} : {}),
+  }) : command === 'invoke' ? await invokeOnce({file:options['--file']})
     : await readResult({db, file:options['--file'], output:options['--output']});
   process.stdout.write(JSON.stringify(result) + '\n');
 }
@@ -98,4 +106,4 @@ if (require.main === module) main(process.argv.slice(2)).catch(() => {
   process.stderr.write('Diagnostic command failed; inspect private ticket state before any further action.\n');
   process.exitCode = 1;
 });
-module.exports = {createTicket, invokeOnce, readResult};
+module.exports = {createTicket, invokeOnce, readResult, main};

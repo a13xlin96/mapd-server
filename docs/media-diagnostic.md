@@ -15,11 +15,12 @@ before a live run; mocked server tests do not establish deployed rule state.
 
 ```js
 {
-  schemaVersion: 1,
+  schemaVersion: 2, // remote audio-only ticket; use 1 with no analysisMode for default audio+video
   status: 'pending',
   tokenHash: '<SHA-256 hex of the UTF-8 secret token>',
   userId: '<exact operator-authorized account UID>',
   url: 'https://www.instagram.com/reel/EXAMPLE/',
+  analysisMode: 'audio-only', // required for remote schemaVersion 2
   createdAtMs: 1790000000000, // replace with current epoch milliseconds
   expiresAtMs: 1790000900000 // <= 15 minutes after creation
 }
@@ -29,7 +30,32 @@ Generate the token with `randomBytes(32).toString('hex')`; generate the document
 ID with `randomBytes(16).toString('hex')`. The secret is 256 bits, remains local,
 and never enters Firestore, query strings, command arguments or printed output.
 Only its SHA-256 hash is stored. The UID and source URL come exclusively from
-the private ticket, never from HTTP headers or a request body.
+the private ticket, never from HTTP headers or a request body. The optional
+`analysisMode` also comes exclusively from that trusted ticket. Its only
+accepted explicit value is the exact string `audio-only`; null, empty strings,
+other modes and non-string values fail validation at both helper creation and
+server claim. Programmatic callers must omit the field rather than pass
+`undefined` for the default behavior. The remote ticket version and mode must
+match exactly:
+
+| Remote ticket version | Mode field | Execution policy |
+| --- | --- | --- |
+| `schemaVersion:1` | No own `analysisMode` field | Original audio+video, `media-v1` |
+| `schemaVersion:2` | `analysisMode:'audio-only'` | Audio-only, `media-v2` |
+
+Version 1 with any mode field and version 2 without the exact audio-only mode
+are rejected before claim. Existing version 1 tickets without the field keep
+their prior behavior, with no mode field added to their policy.
+
+**Upgrade all diagnostic readers before creating or invoking audio-only
+tickets.** Older servers accept only remote schema version 1 and therefore
+reject version 2 without dispatching work. The version boundary prevents an
+old reader from ignoring the new mode and running video. Never encode an
+audio-only ticket as version 1, downgrade a version 2 ticket, or remove its
+mode to make an old reader accept it. A rejected invocation still consumes the
+local `.invoked` marker; an upgrade does not authorize automatic retry. The
+existing media stop control remains in force; no separate live mode control
+is required.
 
 POST `/internal/media-diagnostics/<ticketId>` with
 `x-media-diagnostic-token: <local secret>`, **no body and no query parameters**.
@@ -45,6 +71,11 @@ credentials return sanitized 401; unknown tickets and wrong tokens return the
 same sanitized 404. No result, owner, URL, error message or credential is sent
 over this endpoint. The route has a 1 KiB parser limit, rejects any nonempty
 body, and limits requests to 6/IP/minute and 12/process/minute.
+The remote schema version and mode are part of the claimed authority:
+changing the version or adding, removing or changing the mode after claim
+blocks further work and publication under the old claim. It never resets the
+execution fence. Create a separate authorized ticket to select a different
+mode; do not edit a consumed ticket.
 
 ## Local operator helper
 
@@ -67,6 +98,7 @@ node scripts/media-diagnostic-operator.js create \
   --project APPROVED_PROJECT --user APPROVED_UID \
   --url https://www.instagram.com/reel/EXAMPLE/ \
   --server https://APPROVED_SERVER \
+  --analysis-mode audio-only \
   --file /private/tmp/operator-private/media-ticket.json
 
 node scripts/media-diagnostic-operator.js invoke \
@@ -79,12 +111,21 @@ node scripts/media-diagnostic-operator.js read \
   --output /private/tmp/operator-private/media-result.json
 ```
 
+`--analysis-mode audio-only` is accepted only by `create`. Omit it to retain the
+original audio+video behavior. `invoke` and `read` reject that option, and the
+invocation continues to send zero body/query parameters. The local capability
+file remains `schemaVersion:1` for both modes and contains only its existing
+ID/token/server fields and schema version. This is the local secret format,
+separate from the remote ticket version. Editing it or supplying HTTP mode
+headers cannot override the trusted ticket.
+
 Programmatic use with the already-authenticated handle avoids an adapter:
 
 ```js
 const {createTicket, invokeOnce, readResult} = require('./scripts/media-diagnostic-operator');
 // db is supplied by the existing local OAuth helper; it never leaves memory.
-await createTicket({db, userId:approvedUid, url:approvedUrl, server:approvedOrigin, file:privateTicketFile});
+await createTicket({db, userId:approvedUid, url:approvedUrl, server:approvedOrigin,
+  file:privateTicketFile, analysisMode:'audio-only'});
 await invokeOnce({file:privateTicketFile});
 // Later, inspect once with Admin SDK. Choose a fresh private output filename.
 await readResult({db, file:privateTicketFile, output:privateResultFile});
@@ -100,6 +141,14 @@ overwrite/recreate a ticket. Do not copy ticket files into task logs or uploads.
 
 Only `extractPublicPost` and `collectVideoEvidence` run, with an explicit schema
 2 media/language feature snapshot, the ticket UID and a distinct attempt ID.
+For an audio-only ticket, the server selects
+`mediaPolicy:{policyVersion:'media-v2', analysisMode:'audio-only'}` when creating
+that immutable snapshot; the resulting validated policy is in
+`features.media.policy`. Its existing duration, download, workspace, deadline
+and concurrency bounds still apply. The collector skips frame selection,
+frame encoding and video-vision calls. Audio acquisition/transcription and
+text fusion remain enabled; a media container may still be downloaded and
+probed, and existing subtitles/caches may avoid new transcription calls.
 There is no job ID, job lease, admission, enrichment, place matching or save
 entrypoint. Existing source/media/provider/FFmpeg bounds, shared-operation
 fences, cooldowns and observation-only accounting remain in force. There are
@@ -125,6 +174,18 @@ exclude evidence quotes, transcripts, frames, signed URLs, raw exceptions and
 retry tokens. These are **unverified candidates**, not saved/verified places.
 Accounting is observational and may be incomplete until background writes
 settle; unknown usage or prices are not evidence of zero cost.
+
+Audio-only results additionally include `analysisMode:'audio-only'`, taken
+from the claimed policy rather than collector output. Default reports retain
+their prior shape without a mode field. The collector reports visual coverage
+as `unavailable` with reason `disabled_by_policy`; this intentional exclusion
+does not by itself make audio-only execution partial. Check the report's
+`metrics.providerCalls` for zero `video_vision` entries, and check frame
+operations/stages for no decoding, selection or encoding work. Audio
+transcription and `media_fusion` calls may still be present. Mode and coverage
+state the selected policy; observed metrics and adapter tests provide separate
+checks of execution. Missing/dropped observations or a missing final report
+cannot prove zero physical calls.
 
 Existing production source/evidence caches and private shared-operation/
 accounting stores are still used. A diagnostic may reuse cached/subtitle
@@ -153,6 +214,13 @@ ticket report itself does not duplicate raw evidence from those stores.
   expiry, uncertain commit, deadlines, stop/revocation, partial outputs, source
   429 and sanitized reports. They do not validate live keys, installed FFmpeg,
   deployed Firestore rules or Render networking.
+- Audio-only tests cover strict helper/server mode validation, create-only CLI
+  parsing, remote v2 creation, rejection of incompatible version/mode pairs,
+  immutable v2 features, schema/mode mutation fences, default compatibility,
+  and the real collector with synthetic adapters showing zero frame/vision
+  invocations while audio and text fusion still run. Run the focused local
+  checks with existing dependencies:
+  `./node_modules/.bin/jest --runInBand --runTestsByPath tests/media.diagnostic.test.js tests/media.diagnosticOperator.test.js`.
 
 No provider credentials are loaded/exported by the local helper. No production
 call, browser action, deployment, account pilot or public rollout is part of
