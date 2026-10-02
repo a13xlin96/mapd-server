@@ -278,7 +278,9 @@ test.each(['media_reference','private transcript https://secret.test'])('respons
 });
 
 test('nonempty audio coverage persists under Firestore nested-array constraints', async () => {
-  const f = setup();
+  const timing={durationMs:1000,probe:{containerDurationMs:1000},preparedChunkCount:1,
+    preparedIntervals:[{startMs:0,endMs:1000}],coverageGapCount:0,coverageGaps:[]};
+  const f = setup({collect:jest.fn(async()=>({...emptyResult(),timing}))});
   const validate = (value, inArray = false) => {
     if (Array.isArray(value)) {
       if (inArray) throw new Error('Firestore cannot contain directly nested arrays');
@@ -296,11 +298,75 @@ test('nonempty audio coverage persists under Firestore nested-array constraints'
   });
   await f.send(); await f.router.whenIdle();
   expect(f.read()).toMatchObject({status:'completed',result:{
+    timing,
     coverage:{audio:{status:'complete',intervals:[{startMs:0,endMs:1000}]}}
   }});
   expect((await f.send()).body).toEqual({status:'completed'});
   expect(f.collect).toHaveBeenCalledTimes(1);
 });
+
+test('private diagnostics preserve exact crab timing numbers and strip every nonallowlisted field',async()=>{
+  const durationMs=32806.939,endMs=32718.312500000004;
+  const probe={containerDurationMs:durationMs,videoDurationMs:32700.000000000004,audioDurationMs:durationMs,
+    containerStartMs:0,videoStartMs:0,audioStartMs:-0.0625};
+  const expected={durationMs,probe,audioStartMs:0,preparedChunkCount:2,
+    preparedIntervals:[{startMs:0,endMs:20000},{startMs:19000,endMs}],
+    coverageGapCount:1,coverageGaps:[{startMs:endMs,endMs:durationMs}]};
+  const f=setup({ticket:audioOnlyTicket,collect:jest.fn(async()=>({...emptyResult(),incomplete:true,
+    coverage:{audio:{status:'partial',reason:'audio_unread',intervals:[[0,endMs]]},visual:{status:'unavailable'},fusion:{status:'complete'}},
+    timing:{...expected,url:'https://private.invalid',text:'private transcript',audioBytes:Buffer.from('private'),
+      probe:{...probe,stderr:'private stderr',path:'/private/media'},
+      preparedIntervals:expected.preparedIntervals.map(v=>({...v,audioSha256:'a'.repeat(64),quote:'private transcript'})),
+      coverageGaps:[{...expected.coverageGaps[0],url:'https://private.invalid'}]},
+  }))});
+  await f.send();await f.router.whenIdle();
+  const saved=f.read();
+  expect(saved).toMatchObject({schemaVersion:2,status:'partial',result:{schemaVersion:1,analysisMode:'audio-only',timing:expected}});
+  expect(saved.result.timing).toEqual(expected);
+  expect(saved.result.coverage.audio.intervals).toEqual([{startMs:0,endMs}]);
+  expect(JSON.stringify(saved.result.timing)).not.toMatch(/private|https|quote|audioBytes|audioSha256/);
+  expect((await f.send()).body).toEqual({status:'partial'});expect(f.collect).toHaveBeenCalledTimes(1);
+});
+
+test('timing numeric fields and interval output are bounded independently of untrusted extras',async()=>{
+  const interval={startMs:1.125,endMs:2.0625,url:'https://private.invalid'};
+  const invalid=[null,{},[0,1],{startMs:0,endMs:Infinity},{startMs:0,endMs:NaN},
+    {startMs:-1,endMs:2},{startMs:0,endMs:3001},{startMs:2,endMs:2},{startMs:0,endMs:'2'}];
+  const f=setup({collect:jest.fn(async()=>({...emptyResult(),timing:{durationMs:3000,audioStartMs:'0',
+    probe:{containerDurationMs:Infinity,videoDurationMs:'3',audioDurationMs:180001,containerStartMs:-180001,videoStartMs:NaN,audioStartMs:null},
+    separateAudioProbe:{containerDurationMs:3000,containerStartMs:-1,audioDurationMs:-1},
+    preparedChunkCount:33,coverageGapCount:1002,
+    preparedIntervals:[...invalid,...Array(100).fill(interval)],coverageGaps:Array(100).fill(interval)}}))});
+  await f.send();await f.router.whenIdle();
+  expect(f.read().result.timing).toEqual({durationMs:3000,separateAudioProbe:{containerDurationMs:3000,containerStartMs:-1},
+    preparedIntervals:Array(32-invalid.length).fill({startMs:1.125,endMs:2.0625}),
+    coverageGaps:Array(64).fill({startMs:1.125,endMs:2.0625})});
+});
+
+test('available-audio reason preserves the measured container gap without inventing covered speech',async()=>{
+  const durationMs=32806.939,endMs=32718.312500000004;
+  const timing={durationMs,probe:{containerDurationMs:durationMs,videoDurationMs:32700.000000000004,audioDurationMs:durationMs},
+    preparedChunkCount:2,preparedIntervals:[{startMs:0,endMs:20000},{startMs:19000,endMs}],
+    coverageGapCount:1,coverageGaps:[{startMs:endMs,endMs:durationMs}]};
+  const f=setup({ticket:audioOnlyTicket,collect:jest.fn(async()=>({...emptyResult(),timing,coverage:{
+    audio:{status:'complete',reason:'available_audio_complete',intervals:[[0,endMs]]},
+    visual:{status:'unavailable',reason:'disabled_by_policy'},fusion:{status:'complete'},
+  }}))});
+  await f.send();await f.router.whenIdle();
+  expect(f.read()).toMatchObject({status:'completed',result:{incomplete:false,timing,coverage:{audio:{
+    status:'complete',reason:'available_audio_complete',intervals:[{startMs:0,endMs}],
+  }}}});
+  expect(f.read().result.timing).toEqual(timing);
+  expect((await f.send()).body).toEqual({status:'completed'});expect(f.collect).toHaveBeenCalledTimes(1);
+});
+
+test.each([undefined,null,{}, {durationMs:'3000'}, {durationMs:NaN}, {durationMs:Infinity}, {durationMs:0}, {durationMs:180001}])(
+  'absent or invalid optional timing preserves the legacy diagnostic shape (%j)',async timing=>{
+    const f=setup({collect:jest.fn(async()=>({...emptyResult(),timing}))});
+    await f.send();await f.router.whenIdle();
+    expect(f.read().result.schemaVersion).toBe(1);expect(f.read().status).toBe('completed');
+    expect(f.read().result).not.toHaveProperty('timing');
+  });
 
 test.each([0.125, 0.6895])('diagnostic preserves the real facade submillisecond tail reason and %s ms gap', async gap => {
   const {createTranscriptionService} = require('../lib/media/transcriptionService');

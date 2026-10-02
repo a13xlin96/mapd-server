@@ -35,7 +35,9 @@ function setup({raw=rawVideo(),sharedOperation}={}){
 const opts={scope:SERVER_PUBLIC_SCOPE};
 const audioOnlyOpts={...opts,policy:{policyVersion:'media-v2',analysisMode:'audio-only'}};
 const fusionData=()=>({places:[{name:'ngâm CAFE',evidenceRefs:[ref('audio:1','ngâm CAFE')]}],contradictions:[]});
-const toolMessage=(input=fusionData())=>({stop_reason:'tool_use',content:[{type:'tool_use',id:'toolu_test',name:'submit_places',input}]});
+// Match the current official Messages ToolUseBlock, including direct caller
+// metadata. The older installed SDK's types did not declare that field.
+const toolMessage=(input=fusionData())=>({stop_reason:'tool_use',content:[{type:'tool_use',id:'toolu_test',name:'submit_places',input,caller:{type:'direct'}}]});
 
 test('audio-only fusion forces one data tool on the existing model, counts schema overhead and preserves grounding',async()=>{
   const f=setup();f.createMessage.mockResolvedValue(toolMessage());
@@ -64,21 +66,40 @@ test('audio-only food-only evidence may produce a valid empty tool result withou
   expect(f.run.mock.calls[0][0].ttlSeconds({places:[],contradictions:[]})).toBe(300);
 });
 
+test.each(['old-sdk', 'current-sdk', 'null-toolset'])('audio-only accepts documented %s envelope metadata without changing paid identity',async variant=>{
+  const f=setup();
+  const response=toolMessage();
+  if (variant==='old-sdk') delete response.content[0].caller;
+  if (variant==='null-toolset') response.content[0].toolset_name=null;
+  f.createMessage.mockResolvedValue(response);
+  const result=await f.fusion({...base,textEvidence:[audio]},audioOnlyOpts);
+  expect(result.places[0].name).toBe('ngâm CAFE');
+  expect(JSON.stringify(result)).not.toContain('caller');
+  expect(f.run.mock.calls[0][0]).toMatchObject({optionsVersion:'submit-places-tool-v1',
+    input:{responseFormat:'submit-places-tool-v1'}});
+  expect(f.createMessage).toHaveBeenCalledTimes(1);
+});
+
 test.each([
   ['missing message',()=>null,'envelope'],
   ['truncated',()=>({...toolMessage(),stop_reason:'max_tokens'}),'stop_max_tokens'],
   ['refusal stop',()=>({...toolMessage(),stop_reason:'refusal'}),'stop_refusal'],
   ['text stop',()=>({...toolMessage(),stop_reason:'end_turn'}),'stop_other'],
-  ['empty blocks',()=>({...toolMessage(),content:[]}),'envelope'],
-  ['nonarray blocks',()=>({...toolMessage(),content:{}}),'envelope'],
-  ['parallel tools',()=>({...toolMessage(),content:[...toolMessage().content,...toolMessage().content]}),'envelope'],
-  ['prose before tool',()=>({...toolMessage(),content:[{type:'text',text:'PRIVATE prose'},...toolMessage().content]}),'envelope'],
-  ['prose after tool',()=>({...toolMessage(),content:[...toolMessage().content,{type:'text',text:'PRIVATE prose'}]}),'envelope'],
+  ['empty blocks',()=>({...toolMessage(),content:[]}),'tool_blocks'],
+  ['nonarray blocks',()=>({...toolMessage(),content:{}}),'tool_blocks'],
+  ['parallel tools',()=>({...toolMessage(),content:[...toolMessage().content,...toolMessage().content]}),'tool_blocks'],
+  ['prose before tool',()=>({...toolMessage(),content:[{type:'text',text:'PRIVATE prose'},...toolMessage().content]}),'tool_blocks'],
+  ['prose after tool',()=>({...toolMessage(),content:[...toolMessage().content,{type:'text',text:'PRIVATE prose'}]}),'tool_blocks'],
   ['refusal block',()=>({...toolMessage(),content:[{type:'refusal',text:'PRIVATE refusal'}]}),'refusal'],
   ['wrong tool',()=>({...toolMessage(),content:[{...toolMessage().content[0],name:'other_tool'}]}),'envelope'],
   ['wrong block type',()=>({...toolMessage(),content:[{...toolMessage().content[0],type:'text'}]}),'envelope'],
   ['missing tool id',()=>({...toolMessage(),content:[{...toolMessage().content[0],id:undefined}]}),'envelope'],
-  ['extra tool field',()=>({...toolMessage(),content:[{...toolMessage().content[0],extra:'PRIVATE'}]}),'envelope'],
+  ['extra tool field',()=>({...toolMessage(),content:[{...toolMessage().content[0],extra:'PRIVATE'}]}),'tool_metadata'],
+  ['server caller',()=>({...toolMessage(),content:[{...toolMessage().content[0],caller:{type:'code_execution_20260120',tool_id:'PRIVATE'}}]}),'tool_caller'],
+  ['unknown caller',()=>({...toolMessage(),content:[{...toolMessage().content[0],caller:{type:'PRIVATE'}}]}),'tool_caller'],
+  ['null caller',()=>({...toolMessage(),content:[{...toolMessage().content[0],caller:null}]}),'tool_caller'],
+  ['caller extra',()=>({...toolMessage(),content:[{...toolMessage().content[0],caller:{type:'direct',extra:'PRIVATE'}}]}),'tool_caller'],
+  ['toolset caller',()=>({...toolMessage(),content:[{...toolMessage().content[0],toolset_name:'PRIVATE'}]}),'tool_metadata'],
   ['JSON encoded input',()=>toolMessage(JSON.stringify(fusionData())),'envelope'],
   ['array input',()=>toolMessage([]),'envelope'],
   ['null input',()=>toolMessage(null),'envelope'],

@@ -19,6 +19,23 @@ test('probe returns autorotated geometry and validates bounded clip offsets',asy
   expect(result).toMatchObject({width:720,height:1280,rotation:270,durationMs:30000,clipStartMs:1000,clipEndMs:9000,hasAudio:true,videoStreamIndex:0,audioStreamIndex:1});
   const args=spawn.mock.calls[0][1];expect(args).toEqual(expect.arrayContaining(['-protocol_whitelist','file','-enable_drefs','0','-use_absolute_path']));
 });
+test('probe observes distinct container/stream durations and signed origins without changing duration authority',()=>{
+  const info=parseProbe({...probe,format:{...probe.format,duration:'32.72'},streams:[
+    {...probe.streams[0],duration:'32.719',start_time:'0'},
+    {...probe.streams[1],duration:'32.7183125',start_time:'-0.0000625'},
+  ]});
+  expect(info).toMatchObject({durationMs:32720,audioStartMs:0,timing:{
+    containerDurationMs:32720,containerStartMs:0,videoDurationMs:32719,videoStartMs:0,
+    audioDurationMs:32718.312500000004,audioStartMs:-0.0625,
+  }});
+});
+test.each([undefined,null,'',' ','N/A','https://private.invalid',Infinity,-1,181,{},true])(
+  'optional invalid stream durations are omitted without rejecting accepted media (%j)',duration=>{
+    const info=parseProbe({...probe,streams:[{...probe.streams[0],duration,start_time:'not-a-time'},
+      {...probe.streams[1],duration}]});
+    expect(info.durationMs).toBe(30000);
+    expect(info.timing).toEqual({containerDurationMs:30000,containerStartMs:0});
+  });
 test.each([{format:{...probe.format,duration:'NaN'}},{format:{...probe.format,duration:'181'}},{streams:[{codec_type:'video',width:5000,height:3000}]},{format:{...probe.format,format_name:'hls'}}])('rejects unsupported/hostile probe data %p',override=>{
   expect(()=>parseProbe({...probe,...override})).toThrow();
 });
@@ -202,7 +219,11 @@ test('separate audio probe keeps video clip duration with a longer same-origin A
   const spawn=jest.fn(()=>{const p=fakeProcess();setImmediate(()=>{p.stdout.emit('data',Buffer.from(JSON.stringify(value)));p.emit('close',0);});return p;});
   const result=await processMedia({media,audioForVideo:video},{spawn});
   expect(result).toMatchObject({hasAudio:true,durationMs:3000,audioStartMs:0,audioStreamIndex:0,
+    timing:{containerDurationMs:3090,containerStartMs:0,audioDurationMs:3090,audioStartMs:0},
     separateAudio:{originMs:0,startMs:0,endMs:3090,transform:'copyts-video-origin-pcm16k-mono-v1'}});
+  expect(result.timing).not.toHaveProperty('videoDurationMs');
+  const {timing,...legacy}=result;
+  expect(audioEvidenceDigest('a'.repeat(64),'b'.repeat(64),result)).toBe(audioEvidenceDigest('a'.repeat(64),'b'.repeat(64),legacy));
   expect(spawn.mock.calls[0][1]).toEqual(expect.arrayContaining(['-protocol_whitelist','file','-enable_drefs','0']));
 });
 test.each([

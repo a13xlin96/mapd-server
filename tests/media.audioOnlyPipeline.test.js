@@ -241,8 +241,11 @@ test('successful audio-only analysis saves the caption baseline and completes a 
   });
   expect((await db.collection('pins').get()).size).toBe(1);
   expect(setCache).toHaveBeenCalledTimes(1);
+  const {timing,...reusableEvidence}=media;
+  expect(timing).toMatchObject({durationMs:3000});
   expect(setCache).toHaveBeenCalledWith(expect.stringMatching(/^media-manifest-/),
-    {version: 1, createdAt: expect.any(Number), result: media}, features.media.policy.manifestTtlSeconds);
+    {version: 1, createdAt: expect.any(Number), result: reusableEvidence}, features.media.policy.manifestTtlSeconds);
+  expect(setCache.mock.calls[0][1].result).not.toHaveProperty('timing');
   expect(db.read('engineMetrics', 'job').outcome).toBe('success');
   expectNoVisualWork();
   expect(dispose).toHaveBeenCalledTimes(1);
