@@ -137,10 +137,37 @@ test.each([7, 8])('a chain with %i admission receipts respects the eight ancesto
   expect(reads).toHaveLength(9); // current job plus at most eight ancestors
 });
 
-test('missing ancestry after an admission receipt fails closed without changing direct legacy fallback', async () => {
-  receipt('blocked', 'missing'); child();
-  await expect(context()).rejects.toMatchObject({code: 'invalid_response'});
-  child('missing'); expect(await context()).toEqual({bypassCache: true});
+test.each([0, 1, 3])('ordinary retry with %i unstarted admission receipts and missing history starts fresh', async count => {
+  for (let i = 0; i < count; i++) receipt(`hop-${i}`, i + 1 < count ? `hop-${i + 1}` : 'missing');
+  child(count ? 'hop-0' : 'missing');
+  db.setWriteFailure(() => new Error('Retry context must only read'));
+  // No selected identity, saved/dismissed outcome or media retry authority may
+  // be invented from a deleted record. The normal pipeline must read the post
+  // again and retain its existing per-place dedup and confirmation checks.
+  expect(await context()).toEqual({bypassCache: true});
+});
+
+test.each([0, 1, 3])('analysis retry with %i receipts still rejects missing recovery authority', async count => {
+  for (let i = 0; i < count; i++) receipt(`hop-${i}`, i + 1 < count ? `hop-${i + 1}` : 'missing', {retryKind: 'analysis'});
+  child(count ? 'hop-0' : 'missing', 'analysis');
+  await expect(context()).rejects.toMatchObject({code: 'invalid_response', stage: 'retry'});
+});
+
+test.each(['userId', 'url'])('missing history cannot bypass a receipt with mismatched %s', async field => {
+  receipt('blocked', 'missing', {[field]: 'other'}); child();
+  await expect(context()).rejects.toMatchObject({code: 'access_blocked', stage: 'retry'});
+});
+
+test('an unreadable ancestor is not treated as an absent ancestor', async () => {
+  receipt('blocked', 'unreadable'); child();
+  const prototype = Object.getPrototypeOf(db.collection('enrichmentJobs').doc('next'));
+  const originalGet = prototype.get;
+  const failure = Object.assign(new Error('Read failed'), {code: 'permission-denied'});
+  jest.spyOn(prototype, 'get').mockImplementation(function () {
+    if (this.id === 'unreadable') return Promise.reject(failure);
+    return originalGet.call(this);
+  });
+  await expect(context()).rejects.toBe(failure);
 });
 
 test('explicit analysis ancestry and its null-recovery boundary retain their existing semantics', async () => {
