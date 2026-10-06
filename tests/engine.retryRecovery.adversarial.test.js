@@ -30,6 +30,23 @@ beforeEach(()=>{
  searchGooglePlaces.mockResolvedValue([]);
 });
 
+test('ordinary retry past a missing original reanalyzes and confirms without duplicating an existing pin',async()=>{
+ db.seed('enrichmentJobs','parent',{userId:'u',url,status:'failed',retryOf:'expired-original',
+  engineQueued:false,failure:{code:'dependency_timeout',stage:'admission'}});child();
+ db.seed('pins','already-saved',{...pin('known','Known Cafe'),sources:[]});
+ collectVideoEvidence.mockResolvedValue(collected([{name:'Known Cafe',city:'Kyoto',source:'transcript',requiresSelection:true}]));
+ searchGooglePlaces.mockResolvedValue([google('known','Known Cafe')]);
+ await run(media);
+ expect(aiExtractPlaces).toHaveBeenCalledTimes(1);
+ expect(aiExtractPlaces.mock.calls[0][1].bypassCache).toBe(true);
+ expect(collectVideoEvidence).toHaveBeenCalledTimes(1);
+ expect(db.read('enrichmentJobs','child')).toMatchObject({status:'needs_selection',candidates:[{placeId:'known'}]});
+ expect((await db.collection('pins').get()).size).toBe(1);
+ await saveSelectedPlaces('child','u',['known']);
+ expect((await db.collection('pins').get()).size).toBe(1);
+ expect(db.read('enrichmentJobs','child')).toMatchObject({status:'complete',progress:{saved:1,total:1}});
+});
+
 test('distinct selected IDs with identical evidence must both survive retry',async()=>{
  const candidates=[pin('branch-a','Same Cafe'),{...pin('branch-b','Same Cafe'),latitude:35.02,longitude:135.03}];
  db.seed('enrichmentJobs','parent',{userId:'u',url,status:'failed',selectedPlaceIds:['branch-a','branch-b'],candidates,
