@@ -98,3 +98,18 @@ test('only structured country components may translate otherwise ambiguous short
 test.each(['Paris, France\n', 'Paris, France,', ',Paris, France', 'France, Paris,'])('empty address segments do not displace the city: %s', address => {
   expect(extractLocation(address)).toEqual({country:'France', city:'Paris', region:null});
 });
+
+
+test('partial Details text cannot hide complete Search geography', () => {
+  expect(extractPlaceLocation({formatted_address:'10 Main Street, Springfield'}, {formatted_address:'10 Main Street, Springfield, IL, USA'}))
+    .toEqual({country:'United States',city:'Springfield',region:'IL'});
+});
+test('country-only components never promote a numbered street to city', () => {
+  expect(extractPlaceLocation({address_components:[{long_name:'Germany',short_name:'DE',types:['country']}],formatted_address:'Unter den Linden 77, 10117 Berlin, Germany'}))
+    .toEqual({country:'Germany',city:null,region:null});
+});
+test('structured numeric city names stay intact; conflicting fallback countries are not mixed', () => {
+  expect(extractPlaceLocation({address_components:[{long_name:'District 1',short_name:'District 1',types:['locality']},{long_name:'Vietnam',short_name:'VN',types:['country']}]}).city).toBe('District 1');
+  expect(extractPlaceLocation({address_components:[{long_name:'Germany',short_name:'DE',types:['country']}]},{formatted_address:'Paris, France'}))
+    .toEqual({country:'Germany',city:null,region:null});
+});

@@ -33,6 +33,7 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
       - run: npm ci
+      # Includes international geography fixtures and country write-boundary regressions.
       - name: Root tests, compatibility contracts, offline regression and local load
         # No egress, including accidental unmocked providers; loopback supports
         # Supertest and the two-process simulated Redis service.

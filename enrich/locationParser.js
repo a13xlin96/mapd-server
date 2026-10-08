@@ -145,6 +145,10 @@ function extractLocation(formattedAddress) {
       region = part.replace(/\s+\d+.*$/, '');
       continue;
     }
+    // Printed addresses have no universal order. Numbered streets, floors
+    // and postal-address fragments are not reliable city names. This does
+    // not affect structured localities such as District 1.
+    if (/\p{N}/u.test(part)) continue;
     if (!city) city = part;
     else if (!region) region = part;
   }
@@ -159,13 +163,17 @@ function extractPlaceLocation(details, searchResult) {
     Array.isArray(place?.address_components) ? place.address_components : []);
   const location = extractLocationFromComponents(components);
   if (location.country && location.city) return location;
-  const fallback = extractLocation(details?.formatted_address || searchResult?.formatted_address || '');
+  const fallbacks = [details, searchResult].map(place => extractLocation(place?.formatted_address || ''));
+  const country = location.country || fallbacks.find(value => value.country)?.country || null;
+  // A partial Details address must not hide complete Search geography. Do
+  // not supplement a known country using an explicitly different country.
+  const compatible = fallbacks.filter(value => !value.country || value.country === country);
+  const cityFallback = compatible.find(value => value.city);
   return {
-    country: location.country || fallback.country,
-    city: location.city || fallback.city,
-    // A structured city may be a promoted admin area; keep its intentional
-    // null region. Country-only components must not erase cached geography.
-    region: location.city ? location.region : (location.region || fallback.region),
+    country,
+    city: location.city || cityFallback?.city || null,
+    // Structured cities can be promoted admin areas with intentional null region.
+    region: location.city ? location.region : (location.region || cityFallback?.region || compatible.find(value => value.region)?.region || null),
   };
 }
 

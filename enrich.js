@@ -36,6 +36,7 @@ const {
   extractPinMarker,
 } = require('./enrich/locationParser');
 const { calculateConfidence } = require('./enrich/confidence');
+const { resolvePinCountry } = require('./enrich/countryNormalization');
 const { mapToCategory } = require('./enrich/categories');
 
 // Combines (de-duped, string-only) the candidate type arrays from multiple
@@ -462,7 +463,7 @@ async function buildPinFromDetails({ url, userId, ogData, details, topResult, ca
   // return null (no city/country, no homeLocation, transaction failure)
   // — pin construction proceeds with null Phase 1 fields in those cases.
   const city = (location && location.city) || null;
-  const country = (location && location.country) || null;
+  const country = resolvePinCountry(location?.country, details?.formatted_address || topResult?.formatted_address);
   const [tripContext, homeLocation] = await Promise.all([
     serverLookupOrCreateTripSignal({ userId, city, country }),
     getUserHomeLocation(userId),
@@ -632,6 +633,8 @@ async function appendSourceToExistingPin(pinId, source) {
 // when alreadyExists is true.
 async function writePinTransactional(pin, _ogData) {
   if (!firestore) return null;
+  // Cached candidates and every future caller pass the same write guard.
+  pin = { ...pin, country: resolvePinCountry(pin.country, pin.formattedAddress) };
   const source = {
     url: pin.url,
     ogTitle: pin.ogTitle,

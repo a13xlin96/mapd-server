@@ -187,3 +187,26 @@ test('cancelled initial task retains original generation and cannot authorize a 
   await expect(service.retry('pin','u',1,originalTaskId)).rejects.toMatchObject({code:'access_blocked'});
   expect(fetch).not.toHaveBeenCalled();
 });
+
+
+test('deferred partial components retain formatted city and valid country', async () => {
+  await seed();time+=1;
+  fetch.mockImplementationOnce(async()=>{
+    await context.current().beforeProviderDispatch();
+    return {...details(),formatted_address:'München, Germany',address_components:[{long_name:'Deutschland',short_name:'DE',types:['country']}]};
+  });
+  expect(await service.process('pin')).toBe('complete');
+  expect(db.read('pins','pin')).toMatchObject({country:'Germany',city:'München'});
+  expect(fetch).toHaveBeenCalledTimes(1);
+});
+
+
+test('country-only Details never persists a numbered street as city', async () => {
+  await seed();time+=1;
+  fetch.mockImplementationOnce(async()=>{
+    await context.current().beforeProviderDispatch();
+    return {...details(),formatted_address:'Unter den Linden 77, 10117 Berlin, Germany',address_components:[{long_name:'Deutschland',short_name:'DE',types:['country']}]};
+  });
+  expect(await service.process('pin')).toBe('complete');
+  expect(db.read('pins','pin')).toMatchObject({country:'Germany',city:null});
+});

@@ -51,7 +51,12 @@ function normalizeCountryValue(raw, names) {
   if (direct) return direct;
   // Postal suffixes must be plausible codes, not floors such as 1F/B1F.
   // Use the address-name map here: "CA 90210" is not evidence for Canada.
-  const tokens = text.replace(/(\p{L})(〒?\d[\d-]*)$/u, '$1 $2').split(/\s+/);
+  // Only split an attached numeric suffix after a recognized country name.
+  // A generic letter/digit split corrupts Canada H2X1Y4 and Ireland D02X285.
+  const attached = text.match(/^(.*?)(〒?\d[\d-]*)$/u);
+  const separated = attached && !/\s$/.test(attached[1]) && addressCountryByName.has(key(attached[1]))
+    ? `${attached[1]} ${attached[2]}` : text;
+  const tokens = separated.split(/\s+/);
   for (let split = tokens.length - 1; split > 0; split--) {
     const country = addressCountryByName.get(key(tokens.slice(0, split).join(' ')));
     if (!country) continue;
@@ -60,6 +65,7 @@ function normalizeCountryValue(raw, names) {
       || (country === 'Poland' && /^\d{2}-\d{3}$/.test(suffix))
       || (['Sweden', 'Slovakia', 'Czechia'].includes(country) && /^\d{3} \d{2}$/.test(suffix))
       || (country === 'United Kingdom' && /^(?:GIR\s?0AA|[A-Z]{1,2}\d[A-Z\d]?\s?\d[A-Z]{2})$/i.test(suffix))
+      || (country === 'Argentina' && /^[A-Z]\d{4}[A-Z]{3}$/i.test(suffix))
       || (country === 'Canada' && /^[A-Z]\d[A-Z]\s?\d[A-Z]\d$/i.test(suffix))
       || (country === 'Netherlands' && /^\d{4}\s?[A-Z]{2}$/i.test(suffix))
       || (country === 'Ireland' && /^[A-Z\d]{3}\s?[A-Z\d]{4}$/i.test(suffix))) return country;

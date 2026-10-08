@@ -1,0 +1,3390 @@
+{
+  "description": "Synthetic representative geography contract fixtures. Addresses are hand-authored examples, not verified real addresses or recorded provider/API responses. Trusted country identities pin the local checked-in catalog. No network required.",
+  "trustedCountries": [
+    {
+      "code": "AC",
+      "country": "Ascension Island"
+    },
+    {
+      "code": "AD",
+      "country": "Andorra"
+    },
+    {
+      "code": "AE",
+      "country": "United Arab Emirates"
+    },
+    {
+      "code": "AF",
+      "country": "Afghanistan"
+    },
+    {
+      "code": "AG",
+      "country": "Antigua and Barbuda"
+    },
+    {
+      "code": "AI",
+      "country": "Anguilla"
+    },
+    {
+      "code": "AL",
+      "country": "Albania"
+    },
+    {
+      "code": "AM",
+      "country": "Armenia"
+    },
+    {
+      "code": "AO",
+      "country": "Angola"
+    },
+    {
+      "code": "AQ",
+      "country": "Antarctica"
+    },
+    {
+      "code": "AR",
+      "country": "Argentina"
+    },
+    {
+      "code": "AS",
+      "country": "American Samoa"
+    },
+    {
+      "code": "AT",
+      "country": "Austria"
+    },
+    {
+      "code": "AU",
+      "country": "Australia"
+    },
+    {
+      "code": "AW",
+      "country": "Aruba"
+    },
+    {
+      "code": "AX",
+      "country": "Åland Islands"
+    },
+    {
+      "code": "AZ",
+      "country": "Azerbaijan"
+    },
+    {
+      "code": "BA",
+      "country": "Bosnia and Herzegovina"
+    },
+    {
+      "code": "BB",
+      "country": "Barbados"
+    },
+    {
+      "code": "BD",
+      "country": "Bangladesh"
+    },
+    {
+      "code": "BE",
+      "country": "Belgium"
+    },
+    {
+      "code": "BF",
+      "country": "Burkina Faso"
+    },
+    {
+      "code": "BG",
+      "country": "Bulgaria"
+    },
+    {
+      "code": "BH",
+      "country": "Bahrain"
+    },
+    {
+      "code": "BI",
+      "country": "Burundi"
+    },
+    {
+      "code": "BJ",
+      "country": "Benin"
+    },
+    {
+      "code": "BL",
+      "country": "Saint Barthélemy"
+    },
+    {
+      "code": "BM",
+      "country": "Bermuda"
+    },
+    {
+      "code": "BN",
+      "country": "Brunei"
+    },
+    {
+      "code": "BO",
+      "country": "Bolivia"
+    },
+    {
+      "code": "BQ",
+      "country": "Caribbean Netherlands"
+    },
+    {
+      "code": "BR",
+      "country": "Brazil"
+    },
+    {
+      "code": "BS",
+      "country": "Bahamas"
+    },
+    {
+      "code": "BT",
+      "country": "Bhutan"
+    },
+    {
+      "code": "BV",
+      "country": "Bouvet Island"
+    },
+    {
+      "code": "BW",
+      "country": "Botswana"
+    },
+    {
+      "code": "BY",
+      "country": "Belarus"
+    },
+    {
+      "code": "BZ",
+      "country": "Belize"
+    },
+    {
+      "code": "CA",
+      "country": "Canada"
+    },
+    {
+      "code": "CC",
+      "country": "Cocos (Keeling) Islands"
+    },
+    {
+      "code": "CD",
+      "country": "Democratic Republic of the Congo"
+    },
+    {
+      "code": "CF",
+      "country": "Central African Republic"
+    },
+    {
+      "code": "CG",
+      "country": "Republic of the Congo"
+    },
+    {
+      "code": "CH",
+      "country": "Switzerland"
+    },
+    {
+      "code": "CI",
+      "country": "Côte d'Ivoire"
+    },
+    {
+      "code": "CK",
+      "country": "Cook Islands"
+    },
+    {
+      "code": "CL",
+      "country": "Chile"
+    },
+    {
+      "code": "CM",
+      "country": "Cameroon"
+    },
+    {
+      "code": "CN",
+      "country": "China"
+    },
+    {
+      "code": "CO",
+      "country": "Colombia"
+    },
+    {
+      "code": "CP",
+      "country": "Clipperton Island"
+    },
+    {
+      "code": "CQ",
+      "country": "Sark"
+    },
+    {
+      "code": "CR",
+      "country": "Costa Rica"
+    },
+    {
+      "code": "CU",
+      "country": "Cuba"
+    },
+    {
+      "code": "CV",
+      "country": "Cape Verde"
+    },
+    {
+      "code": "CW",
+      "country": "Curaçao"
+    },
+    {
+      "code": "CX",
+      "country": "Christmas Island"
+    },
+    {
+      "code": "CY",
+      "country": "Cyprus"
+    },
+    {
+      "code": "CZ",
+      "country": "Czechia"
+    },
+    {
+      "code": "DE",
+      "country": "Germany"
+    },
+    {
+      "code": "DG",
+      "country": "Diego Garcia"
+    },
+    {
+      "code": "DJ",
+      "country": "Djibouti"
+    },
+    {
+      "code": "DK",
+      "country": "Denmark"
+    },
+    {
+      "code": "DM",
+      "country": "Dominica"
+    },
+    {
+      "code": "DO",
+      "country": "Dominican Republic"
+    },
+    {
+      "code": "DZ",
+      "country": "Algeria"
+    },
+    {
+      "code": "EA",
+      "country": "Ceuta and Melilla"
+    },
+    {
+      "code": "EC",
+      "country": "Ecuador"
+    },
+    {
+      "code": "EE",
+      "country": "Estonia"
+    },
+    {
+      "code": "EG",
+      "country": "Egypt"
+    },
+    {
+      "code": "EH",
+      "country": "Western Sahara"
+    },
+    {
+      "code": "ER",
+      "country": "Eritrea"
+    },
+    {
+      "code": "ES",
+      "country": "Spain"
+    },
+    {
+      "code": "ET",
+      "country": "Ethiopia"
+    },
+    {
+      "code": "FI",
+      "country": "Finland"
+    },
+    {
+      "code": "FJ",
+      "country": "Fiji"
+    },
+    {
+      "code": "FK",
+      "country": "Falkland Islands"
+    },
+    {
+      "code": "FM",
+      "country": "Micronesia"
+    },
+    {
+      "code": "FO",
+      "country": "Faroe Islands"
+    },
+    {
+      "code": "FR",
+      "country": "France"
+    },
+    {
+      "code": "GA",
+      "country": "Gabon"
+    },
+    {
+      "code": "GB",
+      "country": "United Kingdom"
+    },
+    {
+      "code": "GD",
+      "country": "Grenada"
+    },
+    {
+      "code": "GE",
+      "country": "Georgia"
+    },
+    {
+      "code": "GF",
+      "country": "French Guiana"
+    },
+    {
+      "code": "GG",
+      "country": "Guernsey"
+    },
+    {
+      "code": "GH",
+      "country": "Ghana"
+    },
+    {
+      "code": "GI",
+      "country": "Gibraltar"
+    },
+    {
+      "code": "GL",
+      "country": "Greenland"
+    },
+    {
+      "code": "GM",
+      "country": "Gambia"
+    },
+    {
+      "code": "GN",
+      "country": "Guinea"
+    },
+    {
+      "code": "GP",
+      "country": "Guadeloupe"
+    },
+    {
+      "code": "GQ",
+      "country": "Equatorial Guinea"
+    },
+    {
+      "code": "GR",
+      "country": "Greece"
+    },
+    {
+      "code": "GS",
+      "country": "South Georgia and South Sandwich Islands"
+    },
+    {
+      "code": "GT",
+      "country": "Guatemala"
+    },
+    {
+      "code": "GU",
+      "country": "Guam"
+    },
+    {
+      "code": "GW",
+      "country": "Guinea-Bissau"
+    },
+    {
+      "code": "GY",
+      "country": "Guyana"
+    },
+    {
+      "code": "HK",
+      "country": "Hong Kong"
+    },
+    {
+      "code": "HM",
+      "country": "Heard and McDonald Islands"
+    },
+    {
+      "code": "HN",
+      "country": "Honduras"
+    },
+    {
+      "code": "HR",
+      "country": "Croatia"
+    },
+    {
+      "code": "HT",
+      "country": "Haiti"
+    },
+    {
+      "code": "HU",
+      "country": "Hungary"
+    },
+    {
+      "code": "IC",
+      "country": "Canary Islands"
+    },
+    {
+      "code": "ID",
+      "country": "Indonesia"
+    },
+    {
+      "code": "IE",
+      "country": "Ireland"
+    },
+    {
+      "code": "IL",
+      "country": "Israel"
+    },
+    {
+      "code": "IM",
+      "country": "Isle of Man"
+    },
+    {
+      "code": "IN",
+      "country": "India"
+    },
+    {
+      "code": "IO",
+      "country": "British Indian Ocean Territory"
+    },
+    {
+      "code": "IQ",
+      "country": "Iraq"
+    },
+    {
+      "code": "IR",
+      "country": "Iran"
+    },
+    {
+      "code": "IS",
+      "country": "Iceland"
+    },
+    {
+      "code": "IT",
+      "country": "Italy"
+    },
+    {
+      "code": "JE",
+      "country": "Jersey"
+    },
+    {
+      "code": "JM",
+      "country": "Jamaica"
+    },
+    {
+      "code": "JO",
+      "country": "Jordan"
+    },
+    {
+      "code": "JP",
+      "country": "Japan"
+    },
+    {
+      "code": "KE",
+      "country": "Kenya"
+    },
+    {
+      "code": "KG",
+      "country": "Kyrgyzstan"
+    },
+    {
+      "code": "KH",
+      "country": "Cambodia"
+    },
+    {
+      "code": "KI",
+      "country": "Kiribati"
+    },
+    {
+      "code": "KM",
+      "country": "Comoros"
+    },
+    {
+      "code": "KN",
+      "country": "Saint Kitts and Nevis"
+    },
+    {
+      "code": "KP",
+      "country": "North Korea"
+    },
+    {
+      "code": "KR",
+      "country": "South Korea"
+    },
+    {
+      "code": "KW",
+      "country": "Kuwait"
+    },
+    {
+      "code": "KY",
+      "country": "Cayman Islands"
+    },
+    {
+      "code": "KZ",
+      "country": "Kazakhstan"
+    },
+    {
+      "code": "LA",
+      "country": "Laos"
+    },
+    {
+      "code": "LB",
+      "country": "Lebanon"
+    },
+    {
+      "code": "LC",
+      "country": "Saint Lucia"
+    },
+    {
+      "code": "LI",
+      "country": "Liechtenstein"
+    },
+    {
+      "code": "LK",
+      "country": "Sri Lanka"
+    },
+    {
+      "code": "LR",
+      "country": "Liberia"
+    },
+    {
+      "code": "LS",
+      "country": "Lesotho"
+    },
+    {
+      "code": "LT",
+      "country": "Lithuania"
+    },
+    {
+      "code": "LU",
+      "country": "Luxembourg"
+    },
+    {
+      "code": "LV",
+      "country": "Latvia"
+    },
+    {
+      "code": "LY",
+      "country": "Libya"
+    },
+    {
+      "code": "MA",
+      "country": "Morocco"
+    },
+    {
+      "code": "MC",
+      "country": "Monaco"
+    },
+    {
+      "code": "MD",
+      "country": "Moldova"
+    },
+    {
+      "code": "ME",
+      "country": "Montenegro"
+    },
+    {
+      "code": "MF",
+      "country": "Saint Martin"
+    },
+    {
+      "code": "MG",
+      "country": "Madagascar"
+    },
+    {
+      "code": "MH",
+      "country": "Marshall Islands"
+    },
+    {
+      "code": "MK",
+      "country": "North Macedonia"
+    },
+    {
+      "code": "ML",
+      "country": "Mali"
+    },
+    {
+      "code": "MM",
+      "country": "Myanmar"
+    },
+    {
+      "code": "MN",
+      "country": "Mongolia"
+    },
+    {
+      "code": "MO",
+      "country": "Macao"
+    },
+    {
+      "code": "MP",
+      "country": "Northern Mariana Islands"
+    },
+    {
+      "code": "MQ",
+      "country": "Martinique"
+    },
+    {
+      "code": "MR",
+      "country": "Mauritania"
+    },
+    {
+      "code": "MS",
+      "country": "Montserrat"
+    },
+    {
+      "code": "MT",
+      "country": "Malta"
+    },
+    {
+      "code": "MU",
+      "country": "Mauritius"
+    },
+    {
+      "code": "MV",
+      "country": "Maldives"
+    },
+    {
+      "code": "MW",
+      "country": "Malawi"
+    },
+    {
+      "code": "MX",
+      "country": "Mexico"
+    },
+    {
+      "code": "MY",
+      "country": "Malaysia"
+    },
+    {
+      "code": "MZ",
+      "country": "Mozambique"
+    },
+    {
+      "code": "NA",
+      "country": "Namibia"
+    },
+    {
+      "code": "NC",
+      "country": "New Caledonia"
+    },
+    {
+      "code": "NE",
+      "country": "Niger"
+    },
+    {
+      "code": "NF",
+      "country": "Norfolk Island"
+    },
+    {
+      "code": "NG",
+      "country": "Nigeria"
+    },
+    {
+      "code": "NI",
+      "country": "Nicaragua"
+    },
+    {
+      "code": "NL",
+      "country": "Netherlands"
+    },
+    {
+      "code": "NO",
+      "country": "Norway"
+    },
+    {
+      "code": "NP",
+      "country": "Nepal"
+    },
+    {
+      "code": "NR",
+      "country": "Nauru"
+    },
+    {
+      "code": "NU",
+      "country": "Niue"
+    },
+    {
+      "code": "NZ",
+      "country": "New Zealand"
+    },
+    {
+      "code": "OM",
+      "country": "Oman"
+    },
+    {
+      "code": "PA",
+      "country": "Panama"
+    },
+    {
+      "code": "PE",
+      "country": "Peru"
+    },
+    {
+      "code": "PF",
+      "country": "French Polynesia"
+    },
+    {
+      "code": "PG",
+      "country": "Papua New Guinea"
+    },
+    {
+      "code": "PH",
+      "country": "Philippines"
+    },
+    {
+      "code": "PK",
+      "country": "Pakistan"
+    },
+    {
+      "code": "PL",
+      "country": "Poland"
+    },
+    {
+      "code": "PM",
+      "country": "Saint Pierre and Miquelon"
+    },
+    {
+      "code": "PN",
+      "country": "Pitcairn Islands"
+    },
+    {
+      "code": "PR",
+      "country": "Puerto Rico"
+    },
+    {
+      "code": "PS",
+      "country": "Palestinian Territories"
+    },
+    {
+      "code": "PT",
+      "country": "Portugal"
+    },
+    {
+      "code": "PW",
+      "country": "Palau"
+    },
+    {
+      "code": "PY",
+      "country": "Paraguay"
+    },
+    {
+      "code": "QA",
+      "country": "Qatar"
+    },
+    {
+      "code": "RE",
+      "country": "Réunion"
+    },
+    {
+      "code": "RO",
+      "country": "Romania"
+    },
+    {
+      "code": "RS",
+      "country": "Serbia"
+    },
+    {
+      "code": "RU",
+      "country": "Russia"
+    },
+    {
+      "code": "RW",
+      "country": "Rwanda"
+    },
+    {
+      "code": "SA",
+      "country": "Saudi Arabia"
+    },
+    {
+      "code": "SB",
+      "country": "Solomon Islands"
+    },
+    {
+      "code": "SC",
+      "country": "Seychelles"
+    },
+    {
+      "code": "SD",
+      "country": "Sudan"
+    },
+    {
+      "code": "SE",
+      "country": "Sweden"
+    },
+    {
+      "code": "SG",
+      "country": "Singapore"
+    },
+    {
+      "code": "SH",
+      "country": "Saint Helena"
+    },
+    {
+      "code": "SI",
+      "country": "Slovenia"
+    },
+    {
+      "code": "SJ",
+      "country": "Svalbard and Jan Mayen"
+    },
+    {
+      "code": "SK",
+      "country": "Slovakia"
+    },
+    {
+      "code": "SL",
+      "country": "Sierra Leone"
+    },
+    {
+      "code": "SM",
+      "country": "San Marino"
+    },
+    {
+      "code": "SN",
+      "country": "Senegal"
+    },
+    {
+      "code": "SO",
+      "country": "Somalia"
+    },
+    {
+      "code": "SR",
+      "country": "Suriname"
+    },
+    {
+      "code": "SS",
+      "country": "South Sudan"
+    },
+    {
+      "code": "ST",
+      "country": "São Tomé and Príncipe"
+    },
+    {
+      "code": "SV",
+      "country": "El Salvador"
+    },
+    {
+      "code": "SX",
+      "country": "Sint Maarten"
+    },
+    {
+      "code": "SY",
+      "country": "Syria"
+    },
+    {
+      "code": "SZ",
+      "country": "Eswatini"
+    },
+    {
+      "code": "TA",
+      "country": "Tristan da Cunha"
+    },
+    {
+      "code": "TC",
+      "country": "Turks and Caicos Islands"
+    },
+    {
+      "code": "TD",
+      "country": "Chad"
+    },
+    {
+      "code": "TF",
+      "country": "French Southern Territories"
+    },
+    {
+      "code": "TG",
+      "country": "Togo"
+    },
+    {
+      "code": "TH",
+      "country": "Thailand"
+    },
+    {
+      "code": "TJ",
+      "country": "Tajikistan"
+    },
+    {
+      "code": "TK",
+      "country": "Tokelau"
+    },
+    {
+      "code": "TL",
+      "country": "Timor-Leste"
+    },
+    {
+      "code": "TM",
+      "country": "Turkmenistan"
+    },
+    {
+      "code": "TN",
+      "country": "Tunisia"
+    },
+    {
+      "code": "TO",
+      "country": "Tonga"
+    },
+    {
+      "code": "TR",
+      "country": "Türkiye"
+    },
+    {
+      "code": "TT",
+      "country": "Trinidad and Tobago"
+    },
+    {
+      "code": "TV",
+      "country": "Tuvalu"
+    },
+    {
+      "code": "TW",
+      "country": "Taiwan"
+    },
+    {
+      "code": "TZ",
+      "country": "Tanzania"
+    },
+    {
+      "code": "UA",
+      "country": "Ukraine"
+    },
+    {
+      "code": "UG",
+      "country": "Uganda"
+    },
+    {
+      "code": "UK",
+      "country": "United Kingdom"
+    },
+    {
+      "code": "UM",
+      "country": "U.S. Outlying Islands"
+    },
+    {
+      "code": "US",
+      "country": "United States"
+    },
+    {
+      "code": "UY",
+      "country": "Uruguay"
+    },
+    {
+      "code": "UZ",
+      "country": "Uzbekistan"
+    },
+    {
+      "code": "VA",
+      "country": "Vatican City"
+    },
+    {
+      "code": "VC",
+      "country": "Saint Vincent and the Grenadines"
+    },
+    {
+      "code": "VE",
+      "country": "Venezuela"
+    },
+    {
+      "code": "VG",
+      "country": "British Virgin Islands"
+    },
+    {
+      "code": "VI",
+      "country": "U.S. Virgin Islands"
+    },
+    {
+      "code": "VN",
+      "country": "Vietnam"
+    },
+    {
+      "code": "VU",
+      "country": "Vanuatu"
+    },
+    {
+      "code": "WF",
+      "country": "Wallis and Futuna"
+    },
+    {
+      "code": "WS",
+      "country": "Samoa"
+    },
+    {
+      "code": "XK",
+      "country": "Kosovo"
+    },
+    {
+      "code": "YE",
+      "country": "Yemen"
+    },
+    {
+      "code": "YT",
+      "country": "Mayotte"
+    },
+    {
+      "code": "ZA",
+      "country": "South Africa"
+    },
+    {
+      "code": "ZM",
+      "country": "Zambia"
+    },
+    {
+      "code": "ZW",
+      "country": "Zimbabwe"
+    }
+  ],
+  "regions": [
+    {
+      "code": "US",
+      "country": "United States",
+      "countryInputs": [
+        "United States",
+        "USA",
+        "u.s.a.",
+        "美国",
+        "United States 90210-1234"
+      ],
+      "addresses": [
+        "41 Example Street, Berkeley, CA 94704, USA",
+        "United States; California; Berkeley; 41 Example Street"
+      ],
+      "components": [
+        {
+          "long_name": "Synthetic County",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_2"
+          ]
+        },
+        {
+          "long_name": "Synthetic District",
+          "short_name": "",
+          "types": [
+            "sublocality_level_1"
+          ]
+        },
+        {
+          "long_name": "Berkeley",
+          "short_name": "",
+          "types": [
+            "locality"
+          ]
+        },
+        {
+          "long_name": "California",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_1"
+          ]
+        },
+        {
+          "long_name": "USA",
+          "short_name": "US",
+          "types": [
+            "country"
+          ]
+        }
+      ],
+      "expectedLocation": {
+        "country": "United States",
+        "city": "Berkeley",
+        "region": "California"
+      }
+    },
+    {
+      "code": "CA",
+      "country": "Canada",
+      "countryInputs": [
+        "Canada",
+        "加拿大",
+        "Canada K1A 0B1",
+        "Canada H2X1Y4"
+      ],
+      "addresses": [
+        "21 Example Street, Montréal, QC, Canada H2X 1Y4",
+        "Canada K1A 0B1; Ottawa; 21 Example Street"
+      ],
+      "components": [
+        {
+          "long_name": "Synthetic County",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_2"
+          ]
+        },
+        {
+          "long_name": "Synthetic District",
+          "short_name": "",
+          "types": [
+            "sublocality_level_1"
+          ]
+        },
+        {
+          "long_name": "Montréal",
+          "short_name": "",
+          "types": [
+            "locality"
+          ]
+        },
+        {
+          "long_name": "Québec",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_1"
+          ]
+        },
+        {
+          "long_name": "加拿大",
+          "short_name": "CA",
+          "types": [
+            "country"
+          ]
+        }
+      ],
+      "expectedLocation": {
+        "country": "Canada",
+        "city": "Montréal",
+        "region": "Québec"
+      }
+    },
+    {
+      "code": "MX",
+      "country": "Mexico",
+      "countryInputs": [
+        "Mexico",
+        "墨西哥",
+        "Mexico 06000"
+      ],
+      "addresses": [
+        "31 Calle Ejemplo, Ciudad de México, Mexico 06000",
+        "Mexico, 06000 Ciudad de México, 31 Calle Ejemplo"
+      ],
+      "components": [
+        {
+          "long_name": "Synthetic County",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_2"
+          ]
+        },
+        {
+          "long_name": "Synthetic District",
+          "short_name": "",
+          "types": [
+            "sublocality_level_1"
+          ]
+        },
+        {
+          "long_name": "Ciudad de México",
+          "short_name": "",
+          "types": [
+            "locality"
+          ]
+        },
+        {
+          "long_name": "Ciudad de México",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_1"
+          ]
+        },
+        {
+          "long_name": "墨西哥",
+          "short_name": "MX",
+          "types": [
+            "country"
+          ]
+        }
+      ],
+      "expectedLocation": {
+        "country": "Mexico",
+        "city": "Ciudad de México",
+        "region": "Ciudad de México"
+      }
+    },
+    {
+      "code": "BR",
+      "country": "Brazil",
+      "countryInputs": [
+        "Brazil",
+        "巴西",
+        "Brazil 01310-100"
+      ],
+      "addresses": [
+        "41 Rua Exemplo, São Paulo, Brazil 01310-100",
+        "Brazil; São Paulo; 41 Rua Exemplo"
+      ],
+      "components": [
+        {
+          "long_name": "Synthetic County",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_2"
+          ]
+        },
+        {
+          "long_name": "Synthetic District",
+          "short_name": "",
+          "types": [
+            "sublocality_level_1"
+          ]
+        },
+        {
+          "long_name": "São Paulo",
+          "short_name": "",
+          "types": [
+            "locality"
+          ]
+        },
+        {
+          "long_name": "São Paulo",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_1"
+          ]
+        },
+        {
+          "long_name": "巴西",
+          "short_name": "BR",
+          "types": [
+            "country"
+          ]
+        }
+      ],
+      "expectedLocation": {
+        "country": "Brazil",
+        "city": "São Paulo",
+        "region": "São Paulo"
+      }
+    },
+    {
+      "code": "AR",
+      "country": "Argentina",
+      "countryInputs": [
+        "Argentina",
+        "阿根廷",
+        "Argentina 1000",
+        "Argentina C1000AAA",
+        "Argentina B1638ABC"
+      ],
+      "addresses": [
+        "41 Calle Ejemplo, Buenos Aires, Argentina C1000AAA",
+        "Argentina; C1000AAA Buenos Aires; 41 Calle Ejemplo"
+      ],
+      "components": [
+        {
+          "long_name": "Synthetic County",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_2"
+          ]
+        },
+        {
+          "long_name": "Buenos Aires",
+          "short_name": "",
+          "types": [
+            "locality"
+          ]
+        },
+        {
+          "long_name": "Ciudad Autónoma de Buenos Aires",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_1"
+          ]
+        },
+        {
+          "long_name": "阿根廷",
+          "short_name": "AR",
+          "types": [
+            "country"
+          ]
+        }
+      ],
+      "expectedLocation": {
+        "country": "Argentina",
+        "city": "Buenos Aires",
+        "region": "Ciudad Autónoma de Buenos Aires"
+      }
+    },
+    {
+      "code": "GB",
+      "country": "United Kingdom",
+      "countryInputs": [
+        "United Kingdom",
+        "UK",
+        "U.K.",
+        "英国",
+        "UK SW1A 1AA",
+        "United Kingdom EC1A1BB"
+      ],
+      "addresses": [
+        "51 Example Lane, London, UK SW1A 1AA",
+        "United Kingdom\nLondon\n51 Example Lane"
+      ],
+      "components": [
+        {
+          "long_name": "Synthetic County",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_2"
+          ]
+        },
+        {
+          "long_name": "Synthetic District",
+          "short_name": "",
+          "types": [
+            "sublocality_level_1"
+          ]
+        },
+        {
+          "long_name": "London",
+          "short_name": "",
+          "types": [
+            "postal_town"
+          ]
+        },
+        {
+          "long_name": "England",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_1"
+          ]
+        },
+        {
+          "long_name": "UK",
+          "short_name": "GB",
+          "types": [
+            "country"
+          ]
+        }
+      ],
+      "expectedLocation": {
+        "country": "United Kingdom",
+        "city": "London",
+        "region": "England"
+      }
+    },
+    {
+      "code": "IE",
+      "country": "Ireland",
+      "countryInputs": [
+        "Ireland",
+        "愛爾蘭",
+        "Ireland D02 X285",
+        "Ireland D02X285"
+      ],
+      "addresses": [
+        "61 Example Road, Dublin, Ireland D02 X285",
+        "Ireland D02 X285; Dublin; 61 Example Road"
+      ],
+      "components": [
+        {
+          "long_name": "Synthetic County",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_2"
+          ]
+        },
+        {
+          "long_name": "Synthetic District",
+          "short_name": "",
+          "types": [
+            "sublocality_level_1"
+          ]
+        },
+        {
+          "long_name": "Dublin",
+          "short_name": "",
+          "types": [
+            "postal_town"
+          ]
+        },
+        {
+          "long_name": "County Dublin",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_1"
+          ]
+        },
+        {
+          "long_name": "愛爾蘭",
+          "short_name": "IE",
+          "types": [
+            "country"
+          ]
+        }
+      ],
+      "expectedLocation": {
+        "country": "Ireland",
+        "city": "Dublin",
+        "region": "County Dublin"
+      }
+    },
+    {
+      "code": "FR",
+      "country": "France",
+      "countryInputs": [
+        "France",
+        "法國",
+        "FRANCE",
+        "France 75001"
+      ],
+      "addresses": [
+        "71 Rue Exemple, Paris, France 75001",
+        "France，Paris，71 Rue Exemple"
+      ],
+      "components": [
+        {
+          "long_name": "Synthetic County",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_2"
+          ]
+        },
+        {
+          "long_name": "Synthetic District",
+          "short_name": "",
+          "types": [
+            "sublocality_level_1"
+          ]
+        },
+        {
+          "long_name": "Paris",
+          "short_name": "",
+          "types": [
+            "locality"
+          ]
+        },
+        {
+          "long_name": "Île-de-France",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_1"
+          ]
+        },
+        {
+          "long_name": "法國",
+          "short_name": "FR",
+          "types": [
+            "country"
+          ]
+        }
+      ],
+      "expectedLocation": {
+        "country": "France",
+        "city": "Paris",
+        "region": "Île-de-France"
+      }
+    },
+    {
+      "code": "DE",
+      "country": "Germany",
+      "countryInputs": [
+        "Germany",
+        "ドイツ",
+        "德国",
+        "Germany 10115"
+      ],
+      "addresses": [
+        "81 Beispielstraße, Berlin, Germany 10115",
+        "Germany; 10115 Berlin; 81 Beispielstraße"
+      ],
+      "components": [
+        {
+          "long_name": "Synthetic County",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_2"
+          ]
+        },
+        {
+          "long_name": "Synthetic District",
+          "short_name": "",
+          "types": [
+            "sublocality_level_1"
+          ]
+        },
+        {
+          "long_name": "Berlin",
+          "short_name": "",
+          "types": [
+            "locality"
+          ]
+        },
+        {
+          "long_name": "Berlin",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_1"
+          ]
+        },
+        {
+          "long_name": "ドイツ",
+          "short_name": "DE",
+          "types": [
+            "country"
+          ]
+        }
+      ],
+      "expectedLocation": {
+        "country": "Germany",
+        "city": "Berlin",
+        "region": "Berlin"
+      }
+    },
+    {
+      "code": "PL",
+      "country": "Poland",
+      "countryInputs": [
+        "Poland",
+        "波蘭",
+        "Poland 00-001"
+      ],
+      "addresses": [
+        "91 Ulica Przykładowa, Warszawa, Poland 00-001",
+        "Poland 00-001; Warszawa; 91 Ulica Przykładowa"
+      ],
+      "components": [
+        {
+          "long_name": "Synthetic County",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_2"
+          ]
+        },
+        {
+          "long_name": "Synthetic District",
+          "short_name": "",
+          "types": [
+            "sublocality_level_1"
+          ]
+        },
+        {
+          "long_name": "Warszawa",
+          "short_name": "",
+          "types": [
+            "locality"
+          ]
+        },
+        {
+          "long_name": "Mazowieckie",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_1"
+          ]
+        },
+        {
+          "long_name": "波蘭",
+          "short_name": "PL",
+          "types": [
+            "country"
+          ]
+        }
+      ],
+      "expectedLocation": {
+        "country": "Poland",
+        "city": "Warszawa",
+        "region": "Mazowieckie"
+      }
+    },
+    {
+      "code": "SE",
+      "country": "Sweden",
+      "countryInputs": [
+        "Sweden",
+        "瑞典",
+        "Sweden 111 22"
+      ],
+      "addresses": [
+        "11 Exempelgatan, Stockholm, Sweden 111 22",
+        "Sweden 111 22\nStockholm\n11 Exempelgatan"
+      ],
+      "components": [
+        {
+          "long_name": "Synthetic County",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_2"
+          ]
+        },
+        {
+          "long_name": "Synthetic District",
+          "short_name": "",
+          "types": [
+            "sublocality_level_1"
+          ]
+        },
+        {
+          "long_name": "Stockholm",
+          "short_name": "",
+          "types": [
+            "postal_town"
+          ]
+        },
+        {
+          "long_name": "Stockholm County",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_1"
+          ]
+        },
+        {
+          "long_name": "瑞典",
+          "short_name": "SE",
+          "types": [
+            "country"
+          ]
+        }
+      ],
+      "expectedLocation": {
+        "country": "Sweden",
+        "city": "Stockholm",
+        "region": "Stockholm County"
+      }
+    },
+    {
+      "code": "CZ",
+      "country": "Czechia",
+      "countryInputs": [
+        "Czechia",
+        "Czech Republic",
+        "捷克",
+        "Czechia 110 00"
+      ],
+      "addresses": [
+        "21 Ukázková, Praha, Czechia 110 00",
+        "Czech Republic, 110 00 Praha, 21 Ukázková"
+      ],
+      "components": [
+        {
+          "long_name": "Synthetic County",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_2"
+          ]
+        },
+        {
+          "long_name": "Synthetic District",
+          "short_name": "",
+          "types": [
+            "sublocality_level_1"
+          ]
+        },
+        {
+          "long_name": "Praha",
+          "short_name": "",
+          "types": [
+            "locality"
+          ]
+        },
+        {
+          "long_name": "Hlavní město Praha",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_1"
+          ]
+        },
+        {
+          "long_name": "Czech Republic",
+          "short_name": "CZ",
+          "types": [
+            "country"
+          ]
+        }
+      ],
+      "expectedLocation": {
+        "country": "Czechia",
+        "city": "Praha",
+        "region": "Hlavní město Praha"
+      }
+    },
+    {
+      "code": "PT",
+      "country": "Portugal",
+      "countryInputs": [
+        "Portugal",
+        "葡萄牙",
+        "Portugal 1100-148"
+      ],
+      "addresses": [
+        "31 Rua Exemplo, Lisboa, Portugal 1100-148",
+        "Portugal 1100-148; Lisboa; 31 Rua Exemplo"
+      ],
+      "components": [
+        {
+          "long_name": "Synthetic County",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_2"
+          ]
+        },
+        {
+          "long_name": "Synthetic District",
+          "short_name": "",
+          "types": [
+            "sublocality_level_1"
+          ]
+        },
+        {
+          "long_name": "Lisboa",
+          "short_name": "",
+          "types": [
+            "locality"
+          ]
+        },
+        {
+          "long_name": "Lisboa",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_1"
+          ]
+        },
+        {
+          "long_name": "葡萄牙",
+          "short_name": "PT",
+          "types": [
+            "country"
+          ]
+        }
+      ],
+      "expectedLocation": {
+        "country": "Portugal",
+        "city": "Lisboa",
+        "region": "Lisboa"
+      }
+    },
+    {
+      "code": "JP",
+      "country": "Japan",
+      "countryInputs": [
+        "Japan",
+        "日本",
+        "JP",
+        "Japan 〒100-0001",
+        "Japan〒100-0001",
+        "Ｊａｐａｎ"
+      ],
+      "addresses": [
+        "41 架空通り, 京都市, 日本",
+        "日本、〒100-0001 東京都、1-2-3 架空ビル 9F"
+      ],
+      "components": [
+        {
+          "long_name": "Synthetic County",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_2"
+          ]
+        },
+        {
+          "long_name": "Synthetic District",
+          "short_name": "",
+          "types": [
+            "sublocality_level_1"
+          ]
+        },
+        {
+          "long_name": "京都市",
+          "short_name": "",
+          "types": [
+            "locality"
+          ]
+        },
+        {
+          "long_name": "京都府",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_1"
+          ]
+        },
+        {
+          "long_name": "日本",
+          "short_name": "JP",
+          "types": [
+            "country"
+          ]
+        }
+      ],
+      "expectedLocation": {
+        "country": "Japan",
+        "city": "京都市",
+        "region": "京都府"
+      }
+    },
+    {
+      "code": "TW",
+      "country": "Taiwan",
+      "countryInputs": [
+        "Taiwan",
+        "台灣",
+        "臺灣",
+        "台湾",
+        "TW",
+        "Taiwan11160",
+        "Taiwan 111"
+      ],
+      "addresses": [
+        "70號B1, 士林區, 臺北市, Taiwan 11160",
+        "臺灣，臺北市，70號B1"
+      ],
+      "components": [
+        {
+          "long_name": "Synthetic District",
+          "short_name": "",
+          "types": [
+            "sublocality_level_1"
+          ]
+        },
+        {
+          "long_name": "臺北市",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_1"
+          ]
+        },
+        {
+          "long_name": "台灣",
+          "short_name": "TW",
+          "types": [
+            "country"
+          ]
+        }
+      ],
+      "expectedLocation": {
+        "country": "Taiwan",
+        "city": "臺北市",
+        "region": null
+      }
+    },
+    {
+      "code": "CN",
+      "country": "China",
+      "countryInputs": [
+        "China",
+        "中国",
+        "中國",
+        "China 100000"
+      ],
+      "addresses": [
+        "41 示例路, 北京市, 中国 100000",
+        "中国，北京市，41 示例路"
+      ],
+      "components": [
+        {
+          "long_name": "Synthetic County",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_2"
+          ]
+        },
+        {
+          "long_name": "Synthetic District",
+          "short_name": "",
+          "types": [
+            "sublocality_level_1"
+          ]
+        },
+        {
+          "long_name": "北京市",
+          "short_name": "",
+          "types": [
+            "locality"
+          ]
+        },
+        {
+          "long_name": "北京市",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_1"
+          ]
+        },
+        {
+          "long_name": "中国",
+          "short_name": "CN",
+          "types": [
+            "country"
+          ]
+        }
+      ],
+      "expectedLocation": {
+        "country": "China",
+        "city": "北京市",
+        "region": "北京市"
+      }
+    },
+    {
+      "code": "HK",
+      "country": "Hong Kong",
+      "countryInputs": [
+        "Hong Kong",
+        "香港",
+        "HK",
+        "Hong Kong SAR China"
+      ],
+      "addresses": [
+        "51 示例道, 九龍, 香港",
+        "香港，九龍，51 示例道 9F"
+      ],
+      "components": [
+        {
+          "long_name": "Synthetic District",
+          "short_name": "",
+          "types": [
+            "sublocality_level_1"
+          ]
+        },
+        {
+          "long_name": "九龍",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_1"
+          ]
+        },
+        {
+          "long_name": "香港",
+          "short_name": "HK",
+          "types": [
+            "country"
+          ]
+        }
+      ],
+      "expectedLocation": {
+        "country": "Hong Kong",
+        "city": "九龍",
+        "region": null
+      }
+    },
+    {
+      "code": "KR",
+      "country": "South Korea",
+      "countryInputs": [
+        "South Korea",
+        "대한민국",
+        "韓国",
+        "South Korea 04524"
+      ],
+      "addresses": [
+        "61 가상길, 서울특별시, South Korea 04524",
+        "대한민국，서울특별시，61 가상길"
+      ],
+      "components": [
+        {
+          "long_name": "Synthetic District",
+          "short_name": "",
+          "types": [
+            "sublocality_level_1"
+          ]
+        },
+        {
+          "long_name": "서울특별시",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_1"
+          ]
+        },
+        {
+          "long_name": "대한민국",
+          "short_name": "KR",
+          "types": [
+            "country"
+          ]
+        }
+      ],
+      "expectedLocation": {
+        "country": "South Korea",
+        "city": "서울특별시",
+        "region": null
+      }
+    },
+    {
+      "code": "IN",
+      "country": "India",
+      "countryInputs": [
+        "India",
+        "印度",
+        "India 110001"
+      ],
+      "addresses": [
+        "71 Example Road, New Delhi, India 110001",
+        "India 110001; New Delhi; 71 Example Road"
+      ],
+      "components": [
+        {
+          "long_name": "Synthetic County",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_2"
+          ]
+        },
+        {
+          "long_name": "Synthetic District",
+          "short_name": "",
+          "types": [
+            "sublocality_level_1"
+          ]
+        },
+        {
+          "long_name": "New Delhi",
+          "short_name": "",
+          "types": [
+            "locality"
+          ]
+        },
+        {
+          "long_name": "Delhi",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_1"
+          ]
+        },
+        {
+          "long_name": "印度",
+          "short_name": "IN",
+          "types": [
+            "country"
+          ]
+        }
+      ],
+      "expectedLocation": {
+        "country": "India",
+        "city": "New Delhi",
+        "region": "Delhi"
+      }
+    },
+    {
+      "code": "VN",
+      "country": "Vietnam",
+      "countryInputs": [
+        "Vietnam",
+        "Việt Nam",
+        "Viet Nam",
+        "VN",
+        "越南",
+        "Vietnam 700000"
+      ],
+      "addresses": [
+        "81 Đường Ví Dụ, Hồ Chí Minh, Việt Nam",
+        "Vietnam 700000; Hồ Chí Minh; 81 Đường Ví Dụ"
+      ],
+      "components": [
+        {
+          "long_name": "Synthetic District",
+          "short_name": "",
+          "types": [
+            "sublocality_level_1"
+          ]
+        },
+        {
+          "long_name": "Hồ Chí Minh",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_1"
+          ]
+        },
+        {
+          "long_name": "Việt Nam",
+          "short_name": "VN",
+          "types": [
+            "country"
+          ]
+        }
+      ],
+      "expectedLocation": {
+        "country": "Vietnam",
+        "city": "Hồ Chí Minh",
+        "region": null
+      }
+    },
+    {
+      "code": "TH",
+      "country": "Thailand",
+      "countryInputs": [
+        "Thailand",
+        "泰國",
+        "タイ",
+        "Thailand 10200"
+      ],
+      "addresses": [
+        "91 Example Road, กรุงเทพมหานคร, Thailand 10200",
+        "Thailand; กรุงเทพมหานคร; 91 Example Road"
+      ],
+      "components": [
+        {
+          "long_name": "Synthetic District",
+          "short_name": "",
+          "types": [
+            "sublocality_level_1"
+          ]
+        },
+        {
+          "long_name": "กรุงเทพมหานคร",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_1"
+          ]
+        },
+        {
+          "long_name": "泰國",
+          "short_name": "TH",
+          "types": [
+            "country"
+          ]
+        }
+      ],
+      "expectedLocation": {
+        "country": "Thailand",
+        "city": "กรุงเทพมหานคร",
+        "region": null
+      }
+    },
+    {
+      "code": "SG",
+      "country": "Singapore",
+      "countryInputs": [
+        "Singapore",
+        "新加坡",
+        "Singapore 018956"
+      ],
+      "addresses": [
+        "11 Example Road, Singapore, Singapore 018956",
+        "Singapore，Singapore，11 Example Road"
+      ],
+      "components": [
+        {
+          "long_name": "Synthetic County",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_2"
+          ]
+        },
+        {
+          "long_name": "Synthetic District",
+          "short_name": "",
+          "types": [
+            "sublocality_level_1"
+          ]
+        },
+        {
+          "long_name": "Singapore",
+          "short_name": "",
+          "types": [
+            "locality"
+          ]
+        },
+        {
+          "long_name": "新加坡",
+          "short_name": "SG",
+          "types": [
+            "country"
+          ]
+        }
+      ],
+      "expectedLocation": {
+        "country": "Singapore",
+        "city": "Singapore",
+        "region": null
+      }
+    },
+    {
+      "code": "AU",
+      "country": "Australia",
+      "countryInputs": [
+        "Australia",
+        "澳洲",
+        "Australia 2000"
+      ],
+      "addresses": [
+        "21 Example Street, Sydney, NSW 2000, Australia",
+        "Australia 2000; Sydney; 21 Example Street"
+      ],
+      "components": [
+        {
+          "long_name": "Synthetic County",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_2"
+          ]
+        },
+        {
+          "long_name": "Synthetic District",
+          "short_name": "",
+          "types": [
+            "sublocality_level_1"
+          ]
+        },
+        {
+          "long_name": "Sydney",
+          "short_name": "",
+          "types": [
+            "locality"
+          ]
+        },
+        {
+          "long_name": "New South Wales",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_1"
+          ]
+        },
+        {
+          "long_name": "澳洲",
+          "short_name": "AU",
+          "types": [
+            "country"
+          ]
+        }
+      ],
+      "expectedLocation": {
+        "country": "Australia",
+        "city": "Sydney",
+        "region": "New South Wales"
+      }
+    },
+    {
+      "code": "NZ",
+      "country": "New Zealand",
+      "countryInputs": [
+        "New Zealand",
+        "紐西蘭",
+        "New Zealand 1010"
+      ],
+      "addresses": [
+        "31 Example Road, Auckland, New Zealand 1010",
+        "New Zealand; Auckland; 31 Example Road"
+      ],
+      "components": [
+        {
+          "long_name": "Synthetic County",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_2"
+          ]
+        },
+        {
+          "long_name": "Synthetic District",
+          "short_name": "",
+          "types": [
+            "sublocality_level_1"
+          ]
+        },
+        {
+          "long_name": "Auckland",
+          "short_name": "",
+          "types": [
+            "locality"
+          ]
+        },
+        {
+          "long_name": "Auckland",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_1"
+          ]
+        },
+        {
+          "long_name": "紐西蘭",
+          "short_name": "NZ",
+          "types": [
+            "country"
+          ]
+        }
+      ],
+      "expectedLocation": {
+        "country": "New Zealand",
+        "city": "Auckland",
+        "region": "Auckland"
+      }
+    },
+    {
+      "code": "ZA",
+      "country": "South Africa",
+      "countryInputs": [
+        "South Africa",
+        "南非",
+        "South Africa 8001"
+      ],
+      "addresses": [
+        "41 Example Road, Cape Town, South Africa 8001",
+        "South Africa; Cape Town; 41 Example Road"
+      ],
+      "components": [
+        {
+          "long_name": "Synthetic County",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_2"
+          ]
+        },
+        {
+          "long_name": "Synthetic District",
+          "short_name": "",
+          "types": [
+            "sublocality_level_1"
+          ]
+        },
+        {
+          "long_name": "Cape Town",
+          "short_name": "",
+          "types": [
+            "locality"
+          ]
+        },
+        {
+          "long_name": "Western Cape",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_1"
+          ]
+        },
+        {
+          "long_name": "南非",
+          "short_name": "ZA",
+          "types": [
+            "country"
+          ]
+        }
+      ],
+      "expectedLocation": {
+        "country": "South Africa",
+        "city": "Cape Town",
+        "region": "Western Cape"
+      }
+    },
+    {
+      "code": "AE",
+      "country": "United Arab Emirates",
+      "countryInputs": [
+        "United Arab Emirates",
+        "UAE",
+        "U.A.E.",
+        "阿拉伯联合酋长国"
+      ],
+      "addresses": [
+        "51 Example Road, دبي, UAE",
+        "United Arab Emirates; دبي; 51 Example Road"
+      ],
+      "components": [
+        {
+          "long_name": "Synthetic County",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_2"
+          ]
+        },
+        {
+          "long_name": "Synthetic District",
+          "short_name": "",
+          "types": [
+            "sublocality_level_1"
+          ]
+        },
+        {
+          "long_name": "دبي",
+          "short_name": "",
+          "types": [
+            "locality"
+          ]
+        },
+        {
+          "long_name": "Dubai",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_1"
+          ]
+        },
+        {
+          "long_name": "UAE",
+          "short_name": "AE",
+          "types": [
+            "country"
+          ]
+        }
+      ],
+      "expectedLocation": {
+        "country": "United Arab Emirates",
+        "city": "دبي",
+        "region": "Dubai"
+      }
+    },
+    {
+      "code": "NL",
+      "country": "Netherlands",
+      "countryInputs": [
+        "Netherlands",
+        "荷蘭",
+        "Netherlands 1012 AB",
+        "Netherlands 1012AB"
+      ],
+      "addresses": [
+        "61 Voorbeeldstraat, Amsterdam, Netherlands 1012 AB",
+        "Netherlands 1012 AB; Amsterdam; 61 Voorbeeldstraat"
+      ],
+      "components": [
+        {
+          "long_name": "Synthetic County",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_2"
+          ]
+        },
+        {
+          "long_name": "Synthetic District",
+          "short_name": "",
+          "types": [
+            "sublocality_level_1"
+          ]
+        },
+        {
+          "long_name": "Amsterdam",
+          "short_name": "",
+          "types": [
+            "locality"
+          ]
+        },
+        {
+          "long_name": "Noord-Holland",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_1"
+          ]
+        },
+        {
+          "long_name": "荷蘭",
+          "short_name": "NL",
+          "types": [
+            "country"
+          ]
+        }
+      ],
+      "expectedLocation": {
+        "country": "Netherlands",
+        "city": "Amsterdam",
+        "region": "Noord-Holland"
+      }
+    },
+    {
+      "code": "SK",
+      "country": "Slovakia",
+      "countryInputs": [
+        "Slovakia",
+        "斯洛伐克",
+        "Slovakia 811 01"
+      ],
+      "addresses": [
+        "71 Ukážková, Bratislava, Slovakia 811 01",
+        "Slovakia 811 01; Bratislava; 71 Ukážková"
+      ],
+      "components": [
+        {
+          "long_name": "Synthetic County",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_2"
+          ]
+        },
+        {
+          "long_name": "Synthetic District",
+          "short_name": "",
+          "types": [
+            "sublocality_level_1"
+          ]
+        },
+        {
+          "long_name": "Bratislava",
+          "short_name": "",
+          "types": [
+            "locality"
+          ]
+        },
+        {
+          "long_name": "Bratislavský kraj",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_1"
+          ]
+        },
+        {
+          "long_name": "斯洛伐克",
+          "short_name": "SK",
+          "types": [
+            "country"
+          ]
+        }
+      ],
+      "expectedLocation": {
+        "country": "Slovakia",
+        "city": "Bratislava",
+        "region": "Bratislavský kraj"
+      }
+    },
+    {
+      "code": "LU",
+      "country": "Luxembourg",
+      "countryInputs": [
+        "Luxembourg",
+        "盧森堡",
+        "Luxembourg 1111"
+      ],
+      "addresses": [
+        "81 Rue Exemple, Luxembourg, Luxembourg 1111",
+        "Luxembourg; Luxembourg; 81 Rue Exemple"
+      ],
+      "components": [
+        {
+          "long_name": "Synthetic County",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_2"
+          ]
+        },
+        {
+          "long_name": "Synthetic District",
+          "short_name": "",
+          "types": [
+            "sublocality_level_1"
+          ]
+        },
+        {
+          "long_name": "Luxembourg",
+          "short_name": "",
+          "types": [
+            "locality"
+          ]
+        },
+        {
+          "long_name": "盧森堡",
+          "short_name": "LU",
+          "types": [
+            "country"
+          ]
+        }
+      ],
+      "expectedLocation": {
+        "country": "Luxembourg",
+        "city": "Luxembourg",
+        "region": null
+      }
+    },
+    {
+      "code": "CI",
+      "country": "Côte d'Ivoire",
+      "countryInputs": [
+        "Côte d'Ivoire",
+        "Côte d’Ivoire",
+        "Ivory Coast",
+        "象牙海岸"
+      ],
+      "addresses": [
+        "91 Rue Exemple, Abidjan, Côte d’Ivoire",
+        "Côte d'Ivoire; Abidjan; 91 Rue Exemple"
+      ],
+      "components": [
+        {
+          "long_name": "Synthetic County",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_2"
+          ]
+        },
+        {
+          "long_name": "Synthetic District",
+          "short_name": "",
+          "types": [
+            "sublocality_level_1"
+          ]
+        },
+        {
+          "long_name": "Abidjan",
+          "short_name": "",
+          "types": [
+            "locality"
+          ]
+        },
+        {
+          "long_name": "Abidjan",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_1"
+          ]
+        },
+        {
+          "long_name": "Côte d’Ivoire",
+          "short_name": "CI",
+          "types": [
+            "country"
+          ]
+        }
+      ],
+      "expectedLocation": {
+        "country": "Côte d'Ivoire",
+        "city": "Abidjan",
+        "region": "Abidjan"
+      }
+    },
+    {
+      "code": "ST",
+      "country": "São Tomé and Príncipe",
+      "countryInputs": [
+        "São Tomé and Príncipe",
+        "São Tomé & Príncipe",
+        "Sao Tome and Principe",
+        "聖多美普林西比"
+      ],
+      "addresses": [
+        "11 Rua Exemplo, São Tomé, São Tomé & Príncipe",
+        "São Tomé and Príncipe; São Tomé; 11 Rua Exemplo"
+      ],
+      "components": [
+        {
+          "long_name": "Synthetic County",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_2"
+          ]
+        },
+        {
+          "long_name": "Synthetic District",
+          "short_name": "",
+          "types": [
+            "sublocality_level_1"
+          ]
+        },
+        {
+          "long_name": "São Tomé",
+          "short_name": "",
+          "types": [
+            "locality"
+          ]
+        },
+        {
+          "long_name": "Água Grande",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_1"
+          ]
+        },
+        {
+          "long_name": "São Tomé & Príncipe",
+          "short_name": "ST",
+          "types": [
+            "country"
+          ]
+        }
+      ],
+      "expectedLocation": {
+        "country": "São Tomé and Príncipe",
+        "city": "São Tomé",
+        "region": "Água Grande"
+      }
+    },
+    {
+      "code": "MM",
+      "country": "Myanmar",
+      "countryInputs": [
+        "Myanmar",
+        "Burma",
+        "Myanmar (Burma)",
+        "緬甸"
+      ],
+      "addresses": [
+        "21 Example Road, Yangon, Burma",
+        "Myanmar; Yangon; 21 Example Road"
+      ],
+      "components": [
+        {
+          "long_name": "Synthetic County",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_2"
+          ]
+        },
+        {
+          "long_name": "Synthetic District",
+          "short_name": "",
+          "types": [
+            "sublocality_level_1"
+          ]
+        },
+        {
+          "long_name": "Yangon",
+          "short_name": "",
+          "types": [
+            "locality"
+          ]
+        },
+        {
+          "long_name": "Yangon Region",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_1"
+          ]
+        },
+        {
+          "long_name": "Burma",
+          "short_name": "MM",
+          "types": [
+            "country"
+          ]
+        }
+      ],
+      "expectedLocation": {
+        "country": "Myanmar",
+        "city": "Yangon",
+        "region": "Yangon Region"
+      }
+    },
+    {
+      "code": "TR",
+      "country": "Türkiye",
+      "countryInputs": [
+        "Türkiye",
+        "Turkey",
+        "土耳其",
+        "Türkiye 34000"
+      ],
+      "addresses": [
+        "31 Örnek Sokak, İstanbul, Turkey",
+        "Türkiye 34000; İstanbul; 31 Örnek Sokak"
+      ],
+      "components": [
+        {
+          "long_name": "Synthetic County",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_2"
+          ]
+        },
+        {
+          "long_name": "Synthetic District",
+          "short_name": "",
+          "types": [
+            "sublocality_level_1"
+          ]
+        },
+        {
+          "long_name": "İstanbul",
+          "short_name": "",
+          "types": [
+            "locality"
+          ]
+        },
+        {
+          "long_name": "İstanbul",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_1"
+          ]
+        },
+        {
+          "long_name": "Turkey",
+          "short_name": "TR",
+          "types": [
+            "country"
+          ]
+        }
+      ],
+      "expectedLocation": {
+        "country": "Türkiye",
+        "city": "İstanbul",
+        "region": "İstanbul"
+      }
+    },
+    {
+      "code": "CD",
+      "country": "Democratic Republic of the Congo",
+      "countryInputs": [
+        "Democratic Republic of the Congo",
+        "DR Congo",
+        "Congo - Kinshasa"
+      ],
+      "addresses": [
+        "41 Rue Exemple, Kinshasa, DR Congo",
+        "Democratic Republic of the Congo; Kinshasa; 41 Rue Exemple"
+      ],
+      "components": [
+        {
+          "long_name": "Synthetic County",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_2"
+          ]
+        },
+        {
+          "long_name": "Synthetic District",
+          "short_name": "",
+          "types": [
+            "sublocality_level_1"
+          ]
+        },
+        {
+          "long_name": "Kinshasa",
+          "short_name": "",
+          "types": [
+            "locality"
+          ]
+        },
+        {
+          "long_name": "DR Congo",
+          "short_name": "CD",
+          "types": [
+            "country"
+          ]
+        }
+      ],
+      "expectedLocation": {
+        "country": "Democratic Republic of the Congo",
+        "city": "Kinshasa",
+        "region": null
+      }
+    },
+    {
+      "code": "CG",
+      "country": "Republic of the Congo",
+      "countryInputs": [
+        "Republic of the Congo",
+        "Congo - Brazzaville"
+      ],
+      "addresses": [
+        "51 Rue Exemple, Brazzaville, Republic of the Congo",
+        "Congo - Brazzaville; Brazzaville; 51 Rue Exemple"
+      ],
+      "components": [
+        {
+          "long_name": "Synthetic County",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_2"
+          ]
+        },
+        {
+          "long_name": "Synthetic District",
+          "short_name": "",
+          "types": [
+            "sublocality_level_1"
+          ]
+        },
+        {
+          "long_name": "Brazzaville",
+          "short_name": "",
+          "types": [
+            "locality"
+          ]
+        },
+        {
+          "long_name": "Congo - Brazzaville",
+          "short_name": "CG",
+          "types": [
+            "country"
+          ]
+        }
+      ],
+      "expectedLocation": {
+        "country": "Republic of the Congo",
+        "city": "Brazzaville",
+        "region": null
+      }
+    },
+    {
+      "code": "VC",
+      "country": "Saint Vincent and the Grenadines",
+      "countryInputs": [
+        "Saint Vincent and the Grenadines",
+        "St. Vincent & Grenadines",
+        "Saint Vincent and Grenadines"
+      ],
+      "addresses": [
+        "61 Example Road, Kingstown, St. Vincent & Grenadines",
+        "Saint Vincent and the Grenadines; Kingstown; 61 Example Road"
+      ],
+      "components": [
+        {
+          "long_name": "Synthetic County",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_2"
+          ]
+        },
+        {
+          "long_name": "Synthetic District",
+          "short_name": "",
+          "types": [
+            "sublocality_level_1"
+          ]
+        },
+        {
+          "long_name": "Kingstown",
+          "short_name": "",
+          "types": [
+            "locality"
+          ]
+        },
+        {
+          "long_name": "Saint George",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_1"
+          ]
+        },
+        {
+          "long_name": "St. Vincent & Grenadines",
+          "short_name": "VC",
+          "types": [
+            "country"
+          ]
+        }
+      ],
+      "expectedLocation": {
+        "country": "Saint Vincent and the Grenadines",
+        "city": "Kingstown",
+        "region": "Saint George"
+      }
+    },
+    {
+      "code": "MO",
+      "country": "Macao",
+      "countryInputs": [
+        "Macao",
+        "Macau",
+        "Macao SAR China",
+        "中國澳門特別行政區"
+      ],
+      "addresses": [
+        "71 示例街, 澳門, Macau",
+        "Macao; 澳門; 71 示例街"
+      ],
+      "components": [
+        {
+          "long_name": "Synthetic County",
+          "short_name": "",
+          "types": [
+            "administrative_area_level_2"
+          ]
+        },
+        {
+          "long_name": "Synthetic District",
+          "short_name": "",
+          "types": [
+            "sublocality_level_1"
+          ]
+        },
+        {
+          "long_name": "澳門",
+          "short_name": "",
+          "types": [
+            "locality"
+          ]
+        },
+        {
+          "long_name": "Macau",
+          "short_name": "MO",
+          "types": [
+            "country"
+          ]
+        }
+      ],
+      "expectedLocation": {
+        "country": "Macao",
+        "city": "澳門",
+        "region": null
+      }
+    }
+  ],
+  "unknownFragments": [
+    "",
+    "   ",
+    "70號B1",
+    "1-2-3 架空ビル 9F",
+    "8-chōme-2-16 Synthetic Tower B1F",
+    "日本料理 1F",
+    "Japan Road",
+    "Japan 1F",
+    "Japan B1F",
+    "Japan 111F",
+    "Taiwan 9F",
+    "France Annex",
+    "Canada H2X 1Y4 9F",
+    "Japan 〒",
+    "Atlantis",
+    "Synthetic County",
+    "Montréal",
+    "北京市",
+    "กรุงเทพมหานคร",
+    "CA 90210",
+    "CA90210",
+    "IN 46077",
+    "constructor",
+    "__proto__",
+    "toString"
+  ],
+  "unknownAddresses": [
+    "41 Example Road, CA",
+    "41 Example Road, CA 90210",
+    "41 Example Road, IN 46077",
+    "41 Example Road, AL 35203",
+    "41 Example Road, MA 02108",
+    "41 Example Road, Georgia",
+    "Georgia, 41 Example Road",
+    "41 Japan Lane, London",
+    "Japan Road, London",
+    "41 Example Road, Japan, Synthetic Warehouse",
+    "Synthetic Warehouse, France, 41 Example Road",
+    "Japan, 41 Example Road, France",
+    "France; 41 Example Road; Japan",
+    "日本，41 示例路，中国",
+    "70號B1, 臺北市",
+    "〒100-0001 東京都、1-2-3 架空ビル 9F",
+    "41 Example Road, Atlantis",
+    "41 Example Road, 日本料理 1F",
+    "41 Example Road, Japan 1F",
+    "41 Example Road, constructor",
+    "41 Example Road, __proto__"
+  ],
+  "ambiguousCodes": [
+    {
+      "code": "CA",
+      "country": "Canada",
+      "state": "California"
+    },
+    {
+      "code": "IN",
+      "country": "India",
+      "state": "Indiana"
+    },
+    {
+      "code": "AL",
+      "country": "Albania",
+      "state": "Alabama"
+    },
+    {
+      "code": "MA",
+      "country": "Morocco",
+      "state": "Massachusetts"
+    },
+    {
+      "code": "CO",
+      "country": "Colombia",
+      "state": "Colorado"
+    },
+    {
+      "code": "AR",
+      "country": "Argentina",
+      "state": "Arkansas"
+    },
+    {
+      "code": "PA",
+      "country": "Panama",
+      "state": "Pennsylvania"
+    },
+    {
+      "code": "DE",
+      "country": "Germany",
+      "state": "Delaware"
+    },
+    {
+      "code": "ID",
+      "country": "Indonesia",
+      "state": "Idaho"
+    },
+    {
+      "code": "LA",
+      "country": "Laos",
+      "state": "Louisiana"
+    },
+    {
+      "code": "MD",
+      "country": "Moldova",
+      "state": "Maryland"
+    },
+    {
+      "code": "ME",
+      "country": "Montenegro",
+      "state": "Maine"
+    },
+    {
+      "code": "MS",
+      "country": "Montserrat",
+      "state": "Mississippi"
+    },
+    {
+      "code": "GA",
+      "country": "Gabon",
+      "state": "Georgia"
+    }
+  ],
+  "unknownCodes": [
+    "",
+    " ",
+    "ZZ",
+    "XX",
+    "USA",
+    "CAN",
+    "JP 100",
+    "Japan",
+    "constructor",
+    "__proto__"
+  ],
+  "obviousFormattedLocations": [
+    {
+      "address": "41 Example Road, Berkeley, CA 94704, USA",
+      "expected": {
+        "country": "United States",
+        "city": "Berkeley",
+        "region": "CA"
+      }
+    },
+    {
+      "address": "41 Example Road, London, UK SW1A 1AA",
+      "expected": {
+        "country": "United Kingdom",
+        "city": "London",
+        "region": null
+      }
+    },
+    {
+      "address": "41 Example Road, Singapore, Singapore 018956",
+      "expected": {
+        "country": "Singapore",
+        "city": "Singapore",
+        "region": null
+      }
+    },
+    {
+      "address": "Luxembourg, Luxembourg",
+      "expected": {
+        "country": "Luxembourg",
+        "city": "Luxembourg",
+        "region": null
+      }
+    },
+    {
+      "address": "Paris, France,",
+      "expected": {
+        "country": "France",
+        "city": "Paris",
+        "region": null
+      }
+    },
+    {
+      "address": ",Paris, France\n",
+      "expected": {
+        "country": "France",
+        "city": "Paris",
+        "region": null
+      }
+    },
+    {
+      "address": "France, Paris,",
+      "expected": {
+        "country": "France",
+        "city": "Paris",
+        "region": null
+      }
+    }
+  ],
+  "placeCases": [
+    {
+      "id": "country-only-search-retains-obvious-formatted-city-and-region",
+      "details": {
+        "formatted_address": "41 Example Road, Berkeley, CA 94704, USA"
+      },
+      "searchResult": {
+        "address_components": [
+          {
+            "long_name": "United States",
+            "short_name": "US",
+            "types": [
+              "country"
+            ]
+          }
+        ]
+      },
+      "expected": {
+        "country": "United States",
+        "city": "Berkeley",
+        "region": "CA"
+      }
+    },
+    {
+      "id": "short-country-code-outranks-conflicting-formatted-country",
+      "details": {
+        "formatted_address": "41 Example Road, Paris, France"
+      },
+      "searchResult": {
+        "address_components": [
+          {
+            "long_name": "",
+            "short_name": "JP",
+            "types": [
+              "country"
+            ]
+          },
+          {
+            "long_name": "京都市",
+            "short_name": "",
+            "types": [
+              "locality"
+            ]
+          }
+        ]
+      },
+      "expected": {
+        "country": "Japan",
+        "city": "京都市",
+        "region": null
+      }
+    },
+    {
+      "id": "partial-details-sublocality-cannot-replace-search-locality",
+      "details": {
+        "address_components": [
+          {
+            "long_name": "Synthetic District",
+            "short_name": "",
+            "types": [
+              "sublocality_level_1"
+            ]
+          }
+        ]
+      },
+      "searchResult": {
+        "address_components": [
+          {
+            "long_name": "台灣",
+            "short_name": "TW",
+            "types": [
+              "country"
+            ]
+          },
+          {
+            "long_name": "臺北市",
+            "short_name": "",
+            "types": [
+              "locality"
+            ]
+          }
+        ]
+      },
+      "expected": {
+        "country": "Taiwan",
+        "city": "臺北市",
+        "region": null
+      }
+    },
+    {
+      "id": "details-locality-wins-when-both-sources-provide-one",
+      "details": {
+        "address_components": [
+          {
+            "long_name": "京都市",
+            "short_name": "",
+            "types": [
+              "locality"
+            ]
+          }
+        ]
+      },
+      "searchResult": {
+        "address_components": [
+          {
+            "long_name": "大阪市",
+            "short_name": "",
+            "types": [
+              "locality"
+            ]
+          },
+          {
+            "long_name": "日本",
+            "short_name": "JP",
+            "types": [
+              "country"
+            ]
+          }
+        ]
+      },
+      "expected": {
+        "country": "Japan",
+        "city": "京都市",
+        "region": null
+      }
+    },
+    {
+      "id": "unknown-country-keeps-authoritative-structured-city",
+      "details": null,
+      "searchResult": {
+        "address_components": [
+          {
+            "long_name": "Atlantis",
+            "short_name": "ZZ",
+            "types": [
+              "country"
+            ]
+          },
+          {
+            "long_name": "Synthetic City",
+            "short_name": "",
+            "types": [
+              "locality"
+            ]
+          }
+        ],
+        "formatted_address": "41 Example Road, Atlantis"
+      },
+      "expected": {
+        "country": null,
+        "city": "Synthetic City",
+        "region": null
+      }
+    },
+    {
+      "id": "missing-geography-stays-null",
+      "details": null,
+      "searchResult": {},
+      "expected": {
+        "country": null,
+        "city": null,
+        "region": null
+      }
+    },
+    {
+      "id": "unrecognized-fragment-is-not-geography",
+      "details": {},
+      "searchResult": {
+        "formatted_address": "70號B1"
+      },
+      "expected": {
+        "country": null,
+        "city": null,
+        "region": null
+      }
+    },
+    {
+      "id": "unlisted-localized-country-name-uses-trusted-short-code",
+      "details": null,
+      "searchResult": {
+        "address_components": [
+          {
+            "long_name": "Allemagne",
+            "short_name": "DE",
+            "types": [
+              "country"
+            ]
+          },
+          {
+            "long_name": "Berlin",
+            "short_name": "",
+            "types": [
+              "locality"
+            ]
+          }
+        ]
+      },
+      "expected": {
+        "country": "Germany",
+        "city": "Berlin",
+        "region": null
+      }
+    }
+  ]
+}
