@@ -18,11 +18,24 @@ test('postal town precedes county; localized names remain intact', () => {
 test('malformed components cannot fail a save', () => {
   expect(extractLocationFromComponents([null,{}, {types:[]},component('Kyoto','locality')]).city).toBe('Kyoto');
 });
-test.each(['Taiwan 111','Taiwan 11160','taiwan 111','TW'])('legacy formatted fallback strips postal suffix: %s', country => {
+test.each(['Taiwan 111','Taiwan 11160','taiwan 111','TW','Taiwan11160'])('legacy formatted fallback strips postal suffix: %s', country => {
   expect(extractLocation(`1 Main Road, Taipei City, ${country}`).country).toBe('Taiwan');
 });
 test('country aliases and postal cleanup do not mutilate real multiword names', () => {
   expect(extractLocation('London, UK SW1A 1AA').country).toBe('United Kingdom');
   expect(extractLocation("Abidjan, Côte d'Ivoire").country).toBe("Côte d'Ivoire");
   expect(extractPlaceLocation(null,{})).toEqual({country:null,region:null,city:null});
+});
+
+test('country-only Search components preserve cached formatted city and region', () => {
+  expect(extractPlaceLocation({formatted_address:'1 Main Street, Berkeley, CA, USA'}, {address_components:[component('United States','country')]}))
+    .toEqual({country:'United States',city:'Berkeley',region:'CA'});
+});
+test('structured city keeps its priority and never acquires a district as its region from printed text', () => {
+  expect(extractPlaceLocation(null,{address_components:taipei,formatted_address:'10 Road, Shilin District, Taipei City, Taiwan 11160'}))
+    .toEqual({country:'Taiwan',city:'Taipei City',region:null});
+});
+
+test.each(['Japan 〒100','Japan〒100','Japan100'])('postal markers remain attached to the code during normalization: %s', country => {
+  expect(extractLocation(`Tokyo, ${country}`).country).toBe('Japan');
 });

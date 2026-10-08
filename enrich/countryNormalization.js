@@ -34,7 +34,8 @@ function normalizeCountry(raw) {
   // A token counts as a postal code if it has at least one digit and no
   // lowercase letters; that keeps real country names with digits (none
   // exist today) and letters (Côte d'Ivoire, São Tomé, etc.) intact.
-  const tokens = trimmed.split(/\s+/);
+  // Some legacy values have no space before the postal suffix.
+  const tokens = trimmed.replace(/(\p{L})(〒?\d[\d-]*)$/u, '$1 $2').split(/\s+/);
   while (
     tokens.length > 1 &&
     /\d/.test(tokens[tokens.length - 1]) &&

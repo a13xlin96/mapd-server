@@ -152,8 +152,15 @@ function extractPlaceLocation(details, searchResult) {
   const components = [details, searchResult].flatMap(place =>
     Array.isArray(place?.address_components) ? place.address_components : []);
   const location = extractLocationFromComponents(components);
-  if (location.country || location.city || location.region) return location;
-  return extractLocation(details?.formatted_address || searchResult?.formatted_address || '');
+  if (location.country && location.city) return location;
+  const fallback = extractLocation(details?.formatted_address || searchResult?.formatted_address || '');
+  return {
+    country: location.country || fallback.country,
+    city: location.city || fallback.city,
+    // A structured city may be a promoted admin area; keep its intentional
+    // null region. Country-only components must not erase cached geography.
+    region: location.city ? location.region : (location.region || fallback.region),
+  };
 }
 
 module.exports = {
