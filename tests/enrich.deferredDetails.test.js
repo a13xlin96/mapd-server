@@ -42,3 +42,25 @@ test('warm rich detail cache builds full candidates without a later paid request
   expect((await db.collection('pinDetailTasks').get()).size).toBe(0);
   expect(places.getPlaceDetails).not.toHaveBeenCalled();
 });
+
+test('deferred Details preserve Search address components through selection and saving without more Google calls', async () => {
+  places.getCachedPlaceDetails.mockResolvedValue(null);
+  const components = [
+    {long_name:'Taiwan',types:['country']},
+    {long_name:'Taipei City',types:['administrative_area_level_1']},
+    {long_name:'Shilin District',types:['sublocality_level_1']},
+    {long_name:'11160',types:['postal_code']},
+  ];
+  source.extractPublicPost.mockResolvedValue({title:'2 cafes in Taipei City',description:'Cafe 0 and Cafe 1 in Taipei City, Taiwan',webpage_url:url});
+  ai.aiExtractPlaces.mockResolvedValue({places:[0,1].map(i=>({name:`Cafe ${i}`,city:'Taipei City',country:'Taiwan',source:'caption'}))});
+  places.searchGooglePlaces.mockImplementation(async query=>[{place_id:query.split(' ').slice(0,2).join('-'),name:query.split(' ').slice(0,2).join(' '),formatted_address:'10 Road, Shilin District, Taipei City, Taiwan 11160',address_components:components,geometry:{location:{lat:25,lng:121}},types:['cafe']}]);
+  await runEnrichment('job',url,'u','');
+  const job=db.read('enrichmentJobs','job');
+  expect(job.status).toBe('needs_selection');
+  expect(job.candidates).toHaveLength(2);
+  for (const candidate of job.candidates) expect(candidate).toMatchObject({country:'Taiwan',city:'Taipei City',region:null});
+  await saveSelectedPlaces('job','u',job.candidates.map(c=>c.placeId));
+  for (const pin of (await db.collection('pins').get()).docs) expect(pin.data()).toMatchObject({country:'Taiwan',city:'Taipei City',region:null});
+  expect(places.getPlaceDetails).not.toHaveBeenCalled();
+  expect(places.searchGooglePlaces).toHaveBeenCalledTimes(2);
+});

@@ -32,8 +32,7 @@ const {
 } = require('./enrich/ogMetadata');
 const {
   extractLocationQuery,
-  extractLocationFromComponents,
-  extractLocation,
+  extractPlaceLocation,
   extractPinMarker,
 } = require('./enrich/locationParser');
 const { calculateConfidence } = require('./enrich/confidence');
@@ -723,9 +722,7 @@ async function handleGoogleMapsUrl(url, userId) {
     unionTypes(top.types, details && details.types),
     (details && details.primary_type) || null,
   );
-  const location = details && details.address_components
-    ? extractLocationFromComponents(details.address_components)
-    : extractLocation((details && details.formatted_address) || top.formatted_address || '');
+  const location = extractPlaceLocation(details, top);
 
   return await buildPinFromDetails({
     url,
@@ -974,9 +971,7 @@ async function runAIPipeline({ jobId, url, userId, captionText }) {
         unionTypes(top.types, details?.types),
         details?.primary_type || null,
       );
-      const location = details?.address_components
-        ? extractLocationFromComponents(details.address_components)
-        : extractLocation(details?.formatted_address || top.formatted_address);
+      const location = extractPlaceLocation(details, top);
       candidates.push(await buildPinFromDetails({
         // Canonical, not the raw share URL — TikTok short URLs carry no
         // content ID, so a pin created with one is invisible to future
@@ -1072,9 +1067,7 @@ async function runOGFallback({ url, userId, captionText, ogData, skipAI=false })
     unionTypes(place.types, details && details.types),
     (details && details.primary_type) || null,
   );
-  const location = details && details.address_components
-    ? extractLocationFromComponents(details.address_components)
-    : extractLocation((details && details.formatted_address) || (place && place.formatted_address) || '');
+  const location = extractPlaceLocation(details, place);
 
   return {
     requiresSelection,

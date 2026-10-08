@@ -1,3 +1,4 @@
+const { normalizeCountry } = require('./countryNormalization');
 const { decodeHtmlEntities, cleanSocialText } = require('./utils');
 
 const LOCATION_PATTERNS = [
@@ -107,34 +108,16 @@ function extractLocationQuery(title, description) {
 }
 
 function extractLocationFromComponents(components) {
-  let country = null;
-  let region = null;
-  let city = null;
-  let district = null;
-
-  for (const c of components) {
-    const types = c.types;
-    if (types.includes('country')) {
-      country = c.long_name;
-    } else if (types.includes('administrative_area_level_1')) {
-      region = c.long_name;
-    } else if (
-      types.includes('locality')
-      || types.includes('postal_town')
-      || types.includes('administrative_area_level_2')
-    ) {
-      if (!city) city = c.long_name;
-    } else if (types.includes('sublocality_level_1') || types.includes('sublocality')) {
-      if (!district) district = c.long_name;
-    }
-  }
-
+  // Component order is not a hierarchy: prefer a real locality to a county.
+  const name = type => components.find(c => c?.types?.includes(type) && typeof c.long_name === 'string' && c.long_name.trim())?.long_name.trim() || null;
+  const country = normalizeCountry(name('country'));
+  let region = name('administrative_area_level_1');
+  let city = name('locality') || name('postal_town') || name('administrative_area_level_2');
   if (!city && region) {
     city = region;
     region = null;
   }
-
-  if (!city && district) city = district;
+  if (!city) city = name('sublocality_level_1') || name('sublocality');
 
   return { country, region, city };
 }
@@ -143,7 +126,7 @@ function extractLocation(formattedAddress) {
   if (!formattedAddress) return { country: null, region: null, city: null };
 
   const parts = formattedAddress.split(',').map((p) => p.trim());
-  const country = parts.length >= 2 ? parts[parts.length - 1] : null;
+  const country = parts.length >= 2 ? normalizeCountry(parts[parts.length - 1]) : null;
 
   let city = null;
   let region = null;
@@ -163,9 +146,20 @@ function extractLocation(formattedAddress) {
   return { country, region, city };
 }
 
+// Search already includes address components. Rich details are optional and
+// deferred; never throw away Search geography when that cache is cold/partial.
+function extractPlaceLocation(details, searchResult) {
+  const components = [details, searchResult].flatMap(place =>
+    Array.isArray(place?.address_components) ? place.address_components : []);
+  const location = extractLocationFromComponents(components);
+  if (location.country || location.city || location.region) return location;
+  return extractLocation(details?.formatted_address || searchResult?.formatted_address || '');
+}
+
 module.exports = {
   extractPinMarker,
   extractLocationQuery,
   extractLocationFromComponents,
+  extractPlaceLocation,
   extractLocation,
 };
