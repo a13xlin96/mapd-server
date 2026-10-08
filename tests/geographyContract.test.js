@@ -150,3 +150,10 @@ describe('unknown and ambiguous geography', () => {
     expect(countryFromAddress('日本，41 Example Road，France')).toBeNull();
   });
 });
+
+
+test('Irish country postal suffixes require an actual routing-code shape', () => {
+  expect(normalizeCountry('Ireland Shannon')).toBeNull();
+  expect(normalizeCountry('Ireland D02 X285')).toBe('Ireland');
+  expect(normalizeCountry('Ireland D6W F209')).toBe('Ireland');
+});

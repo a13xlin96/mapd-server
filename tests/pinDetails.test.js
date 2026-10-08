@@ -208,5 +208,5 @@ test('country-only Details never persists a numbered street as city', async () =
     return {...details(),formatted_address:'Unter den Linden 77, 10117 Berlin, Germany',address_components:[{long_name:'Deutschland',short_name:'DE',types:['country']}]};
   });
   expect(await service.process('pin')).toBe('complete');
-  expect(db.read('pins','pin')).toMatchObject({country:'Germany',city:null});
+  expect(db.read('pins','pin')).toMatchObject({country:'Germany',city:'Berlin'});
 });

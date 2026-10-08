@@ -68,7 +68,7 @@ function normalizeCountryValue(raw, names) {
       || (country === 'Argentina' && /^[A-Z]\d{4}[A-Z]{3}$/i.test(suffix))
       || (country === 'Canada' && /^[A-Z]\d[A-Z]\s?\d[A-Z]\d$/i.test(suffix))
       || (country === 'Netherlands' && /^\d{4}\s?[A-Z]{2}$/i.test(suffix))
-      || (country === 'Ireland' && /^[A-Z\d]{3}\s?[A-Z\d]{4}$/i.test(suffix))) return country;
+      || (country === 'Ireland' && /^(?:[A-Z]\d{2}|D6W)\s?[A-Z\d]{4}$/i.test(suffix))) return country;
   }
   return null;
 }
