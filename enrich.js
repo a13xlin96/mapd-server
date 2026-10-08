@@ -32,11 +32,11 @@ const {
 } = require('./enrich/ogMetadata');
 const {
   extractLocationQuery,
-  extractLocationFromComponents,
-  extractLocation,
+  extractPlaceLocation,
   extractPinMarker,
 } = require('./enrich/locationParser');
 const { calculateConfidence } = require('./enrich/confidence');
+const { resolvePinCountry } = require('./enrich/countryNormalization');
 const { mapToCategory } = require('./enrich/categories');
 
 // Combines (de-duped, string-only) the candidate type arrays from multiple
@@ -463,7 +463,7 @@ async function buildPinFromDetails({ url, userId, ogData, details, topResult, ca
   // return null (no city/country, no homeLocation, transaction failure)
   // — pin construction proceeds with null Phase 1 fields in those cases.
   const city = (location && location.city) || null;
-  const country = (location && location.country) || null;
+  const country = resolvePinCountry(location?.country, details?.formatted_address || topResult?.formatted_address);
   const [tripContext, homeLocation] = await Promise.all([
     serverLookupOrCreateTripSignal({ userId, city, country }),
     getUserHomeLocation(userId),
@@ -633,6 +633,8 @@ async function appendSourceToExistingPin(pinId, source) {
 // when alreadyExists is true.
 async function writePinTransactional(pin, _ogData) {
   if (!firestore) return null;
+  // Cached candidates and every future caller pass the same write guard.
+  pin = { ...pin, country: resolvePinCountry(pin.country, pin.formattedAddress) };
   const source = {
     url: pin.url,
     ogTitle: pin.ogTitle,
@@ -723,9 +725,7 @@ async function handleGoogleMapsUrl(url, userId) {
     unionTypes(top.types, details && details.types),
     (details && details.primary_type) || null,
   );
-  const location = details && details.address_components
-    ? extractLocationFromComponents(details.address_components)
-    : extractLocation((details && details.formatted_address) || top.formatted_address || '');
+  const location = extractPlaceLocation(details, top);
 
   return await buildPinFromDetails({
     url,
@@ -974,9 +974,7 @@ async function runAIPipeline({ jobId, url, userId, captionText }) {
         unionTypes(top.types, details?.types),
         details?.primary_type || null,
       );
-      const location = details?.address_components
-        ? extractLocationFromComponents(details.address_components)
-        : extractLocation(details?.formatted_address || top.formatted_address);
+      const location = extractPlaceLocation(details, top);
       candidates.push(await buildPinFromDetails({
         // Canonical, not the raw share URL — TikTok short URLs carry no
         // content ID, so a pin created with one is invisible to future
@@ -1072,9 +1070,7 @@ async function runOGFallback({ url, userId, captionText, ogData, skipAI=false })
     unionTypes(place.types, details && details.types),
     (details && details.primary_type) || null,
   );
-  const location = details && details.address_components
-    ? extractLocationFromComponents(details.address_components)
-    : extractLocation((details && details.formatted_address) || (place && place.formatted_address) || '');
+  const location = extractPlaceLocation(details, place);
 
   return {
     requiresSelection,

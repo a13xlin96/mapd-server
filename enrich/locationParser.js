@@ -1,3 +1,4 @@
+const { normalizeCountry, normalizeCountryCode, countryFromAddress } = require('./countryNormalization');
 const { decodeHtmlEntities, cleanSocialText } = require('./utils');
 
 const LOCATION_PATTERNS = [
@@ -107,34 +108,18 @@ function extractLocationQuery(title, description) {
 }
 
 function extractLocationFromComponents(components) {
-  let country = null;
-  let region = null;
-  let city = null;
-  let district = null;
-
-  for (const c of components) {
-    const types = c.types;
-    if (types.includes('country')) {
-      country = c.long_name;
-    } else if (types.includes('administrative_area_level_1')) {
-      region = c.long_name;
-    } else if (
-      types.includes('locality')
-      || types.includes('postal_town')
-      || types.includes('administrative_area_level_2')
-    ) {
-      if (!city) city = c.long_name;
-    } else if (types.includes('sublocality_level_1') || types.includes('sublocality')) {
-      if (!district) district = c.long_name;
-    }
-  }
-
+  // Component order is not a hierarchy: prefer a real locality to a county.
+  const name = type => components.find(c => c?.types?.includes(type) && typeof c.long_name === 'string' && c.long_name.trim())?.long_name.trim() || null;
+  const country = normalizeCountry(name('country')) || components
+    .filter(c => c?.types?.includes('country'))
+    .map(c => normalizeCountryCode(c.short_name)).find(Boolean) || null;
+  let region = name('administrative_area_level_1');
+  let city = name('locality') || name('postal_town') || name('administrative_area_level_2');
   if (!city && region) {
     city = region;
     region = null;
   }
-
-  if (!city && district) city = district;
+  if (!city) city = name('sublocality_level_1') || name('sublocality');
 
   return { country, region, city };
 }
@@ -142,13 +127,17 @@ function extractLocationFromComponents(components) {
 function extractLocation(formattedAddress) {
   if (!formattedAddress) return { country: null, region: null, city: null };
 
-  const parts = formattedAddress.split(',').map((p) => p.trim());
-  const country = parts.length >= 2 ? parts[parts.length - 1] : null;
+  const parts = formattedAddress.split(/[,，、;\n]/).map((p) => p.trim()).filter(Boolean);
+  const country = countryFromAddress(formattedAddress);
 
   let city = null;
   let region = null;
 
-  for (let i = 0; i < parts.length - 1; i++) {
+  // Skip only the country boundary, not a same-named city (Singapore,
+  // Luxembourg). Prefer the last boundary when both carry the country name.
+  const countryIndex = country && normalizeCountry(parts[parts.length - 1]) !== country ? 0 : parts.length - 1;
+  for (let i = 0; i < parts.length; i++) {
+    if (i === countryIndex) continue;
     const part = parts[i];
     if (/^\d+/.test(part)) continue;
     if (/^\d{4,}$/.test(part.replace(/\s/g, ''))) continue;
@@ -156,6 +145,10 @@ function extractLocation(formattedAddress) {
       region = part.replace(/\s+\d+.*$/, '');
       continue;
     }
+    // Printed addresses have no universal order. Numbered streets, floors
+    // and postal-address fragments are not reliable city names. This does
+    // not affect structured localities such as District 1.
+    if (/\p{N}/u.test(part)) continue;
     if (!city) city = part;
     else if (!region) region = part;
   }
@@ -163,9 +156,31 @@ function extractLocation(formattedAddress) {
   return { country, region, city };
 }
 
+// Search already includes address components. Rich details are optional and
+// deferred; never throw away Search geography when that cache is cold/partial.
+function extractPlaceLocation(details, searchResult) {
+  const components = [details, searchResult].flatMap(place =>
+    Array.isArray(place?.address_components) ? place.address_components : []);
+  const location = extractLocationFromComponents(components);
+  if (location.country && location.city) return location;
+  const fallbacks = [details, searchResult].map(place => extractLocation(place?.formatted_address || ''));
+  const country = location.country || fallbacks.find(value => value.country)?.country || null;
+  // A partial Details address must not hide complete Search geography. Do
+  // not supplement a known country using an explicitly different country.
+  const compatible = fallbacks.filter(value => !value.country || value.country === country);
+  const cityFallback = compatible.find(value => value.city);
+  return {
+    country,
+    city: location.city || cityFallback?.city || null,
+    // Structured cities can be promoted admin areas with intentional null region.
+    region: location.city ? location.region : (location.region || cityFallback?.region || compatible.find(value => value.region)?.region || null),
+  };
+}
+
 module.exports = {
   extractPinMarker,
   extractLocationQuery,
   extractLocationFromComponents,
+  extractPlaceLocation,
   extractLocation,
 };

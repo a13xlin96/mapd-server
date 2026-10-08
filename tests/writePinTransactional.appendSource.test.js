@@ -136,3 +136,16 @@ describe('writePinTransactional — duplicate place, new video', () => {
     expect(doc.sources[0].url).toBe(VIDEO_B);
   });
 });
+
+
+test.each([
+  ['70號B1','70號B1, Taipei City, Taiwan 11160','Taiwan'],
+  ['CA','1 Main Road, Los Angeles, CA, USA','United States'],
+  ['1F','1 Main Road',null],
+])('new-pin write guard cleans legacy country %s without changing source data', async (country,formattedAddress,expected) => {
+  fs.seed('users',USER,{totalPins:0});
+  const input=makePin({country,formattedAddress});
+  const result=await writePinTransactional(input,{});
+  expect(fs.read('pins',result.pinId)).toMatchObject({country:expected,formattedAddress});
+  expect(input.country).toBe(country);
+});
