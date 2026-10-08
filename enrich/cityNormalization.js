@@ -15,7 +15,10 @@ function normalizeCity(raw, country) {
   // Check separators before collapsing whitespace, so full multiline addresses
   // cannot turn into plausible labels. Keep accents and non-Latin scripts.
   if (typeof raw !== 'string' || /[,，、;\n\r]/u.test(raw)) return null;
-  const text = clean(raw);
+  let text = clean(raw);
+  // A supported Japanese prefecture+municipality can be printed as one
+  // segment. Strip only when the rest is itself an explicit municipality.
+  if (normalizeCountry(country) === 'Japan') text = text.replace(/^(?:北海道|[\p{Script=Han}]{2,3}[府県])(?=[\p{Script=Han}]{2,10}市$)/u, '');
   if (!text || text.length > 100 || !/\p{L}/u.test(text)) return null;
   const canonicalCountry = normalizeCountry(country);
   const countryLabel = normalizeCountry(text);
@@ -29,7 +32,7 @@ function normalizeCity(raw, country) {
   if (/(?:都|府|県|市)[\p{Script=Han}]+(?:区|區)[\p{Script=Han}]+/u.test(text)) return null;
   // Explicit building markers cannot be made into a municipality merely by
   // ending in 区/區. Keep this before the native municipality exception.
-  if (/(?:ビル|建物|樓|楼|大廈|大厦|빌딩)/u.test(text)) return null;
+  if (/(?:ビル|建物|大樓|大楼|大廈|大厦|빌딩)/u.test(text)) return null;
   // Municipality suffixes disambiguate names such as 姫路市 (Himeji): 路
   // inside a city name is not itself evidence of a street.
   if (/^[\p{Script=Han}]{2,10}(?:市|区|區|縣|县|都|府|県)$/u.test(text)) return text;
@@ -91,8 +94,9 @@ function cityFromAddress(address, country) {
     if (i > 0 || countryIndex === 0) part = stripPostalCode(part, canonicalCountry);
     // East Asian native addresses can concatenate city, district and street.
     // Recover only an explicitly delimited municipality at the segment start.
+    if (canonicalCountry === 'Japan') part = part.replace(/^(?:北海道|[\p{Script=Han}]{2,3}[府県])(?=[\p{Script=Han}]{2,10}市)/u, '');
     if (['Taiwan','China','Japan'].includes(canonicalCountry) && !normalizeCity(part, canonicalCountry)) {
-      const local = canonicalCountry === 'Japan' ? part.replace(/^[\p{Script=Han}]{2,3}[府県]/u, '') : part;
+      const local = part;
       const boundaries = [...local.matchAll(/[市縣县]/gu)]
         .map(match => local.slice(0, (match.index || 0) + 1))
         .filter(value => /^[\p{Script=Han}]{2,10}[市縣县]$/u.test(value));

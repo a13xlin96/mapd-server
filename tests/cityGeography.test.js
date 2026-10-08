@@ -154,3 +154,12 @@ describe('adversarial city regressions', () => {
     expect(cityFromAddress('四日市市, Japan').city).toBe('四日市市');
   });
 });
+
+
+test.each([['京都府京都市','京都市'],['千葉県市川市','市川市'],['北海道札幌市','札幌市']])('separates a Japanese prefecture from municipality %s', (label,city) => {
+  expect(normalizeCity(label,'Japan')).toBe(city);
+  expect(cityFromAddress(`日本、${label}`,'Japan').city).toBe(city);
+});
+test.each(['鼓楼区','鼓樓區'])('a valid district %s is not rejected as a building', city => {
+  expect(normalizeCity(city,'China')).toBe(city);
+});
