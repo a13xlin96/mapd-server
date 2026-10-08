@@ -87,3 +87,31 @@ test('decomposed Vietnamese floor labels retain floor conflicts',()=>{
   expect(result.place).toBeNull();
   expect(result.ranked[0].evidence.addressReasons).toContain('unit_conflict');
 });
+test('a full street mislabeled as subpremise cannot be discarded',()=>{
+  const row={...usRow('45 Other Street, 44 Main Street, Example City, USA'),address_components:[
+    component('45 Other Street','subpremise'),component('45','street_number'),component('Other Street','route'),
+    component('Example City','locality'),component('USA','country','US')]};
+  expect(usMatch(row,'44 Main Street, Example City, USA').place).toBeNull();
+});
+test('missing route metadata cannot turn a route number into building evidence',()=>{
+  const row={...usRow('2, Route 5, Example City, USA'),address_components:[
+    component('2','subpremise'),component('Example City','locality'),component('USA','country','US')]};
+  expect(usMatch(row,'Route 5, Example City, USA').place).toBeNull();
+});
+test('numeric route aliases do not erase a valid building number',()=>{
+  const row={...usRow('Floor 2, 5 Route 5, Example City, USA'),address_components:[
+    component('5','street_number'),component('Route 5','route','5'),component('Example City','locality'),component('USA','country','US')]};
+  expect(usMatch(row,'5 Route 5, Example City, USA')).toMatchObject({place:row,requiresSelection:true});
+});
+test.each([
+  ['2樓','floor','中山路44號','中山路'],
+  ['Local 2','subpremise','No. 44 Main Street','Main Street'],
+  ['2號室','room','44 Main Street','Main Street'],
+])('typed unit %s preserves supported house notation in %s', (unit,kind,address,route)=>{
+  const row={...recorded,name:'Test Venue',formatted_address:`${unit}, ${address}, 臺北市, Taiwan`,
+    address_components:[component(unit,kind),component('44','street_number'),component(route,'route'),
+      component('臺北市','locality'),component('Taiwan','country','TW')]};
+  const clue={name:row.name,city:'臺北市',country:'Taiwan',address:`${address}, 臺北市, Taiwan`,source:'caption'};
+  expect(match(row,clue)).toMatchObject({place:row,requiresSelection:true});
+  expect(match(row,{...clue,address:clue.address.replace('44','45')}).place).toBeNull();
+});

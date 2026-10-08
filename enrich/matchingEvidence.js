@@ -273,6 +273,7 @@ function vietnamLowerAreaRecovery(regions,unmatched,profile,street) {
 }
 function addressUnits(value,profile) {
   const details={unit:[],floor:[]};
+  let extendedUnit=false;
   // Remove only explicit labels, before normalizing punctuation. A bare 5,
   // a house suffix/range, or a CJK block number is not assumed to be a unit.
   const identifier='\\d+[a-z]?(?:[/-]\\d+[a-z]?)*';
@@ -302,6 +303,11 @@ function addressUnits(value,profile) {
     const typed=units.find(c=>[c.long_name,c.short_name].some(v=>exact(v) && exact(v)===exact(part)));
     const found=tagged || floor || localFloor;
     if (!found && !typed) return part;
+    // A complete street or a leading known house number wins over an
+    // inconsistent subpremise label. Do not consume the building itself.
+    const typedRoom=typed && /^\d+[a-z]?\s*(?:號室|号室)$/iu.test(exact(part));
+    if(!found && ((STREET_MARKER.test(part) && !typedRoom) || houseNumbers.some(number=>
+      exact(part).startsWith(number+' ')))) return part;
     const prefix=found ? part.slice(0,found.index).trim() : '';
     // Do not eat a numbered route ("Unit 5 Road", or a typed "Unit 5").
     if (routes.some(route=>hasPhrase(normalize(part),route) && hasPhrase(route,normalize(found?.[0] || part)))) return part;
@@ -311,14 +317,28 @@ function addressUnits(value,profile) {
     // must still conflict with Unit 6). Opaque typed labels retain their text.
     const kind=tagged ? (/^(?:floor|fl)$/i.test(tagged[1])?'floor':'unit')
       : floor || localFloor || typed?.types.includes('floor')?'floor':'unit';
+    extendedUnit ||= !tagged && !floor;
     details[kind].push(floor?floor[1]:localFloor?localFloor[1].toLowerCase():tagged?tagged[2].toLowerCase():exact(part));
     return prefix;
   }).filter(Boolean).join(', ');
   // A unit-only fragment has no independent building address. Keep its
   // digits intact rather than inventing a street match from the city alone.
-  let building=streetText(street,profile);
-  for(const route of routes) building=removePhrase(building,route);
-  if (!/\d/.test(building)) return {street:String(value || ''),unit:[],floor:[]};
+  // New structured/native-label recovery requires independent typed house
+  // evidence in the remaining street. A digit in Route 5 is not house 5;
+  // stripping route aliases globally would also destroy house 5 in 5 Route 5.
+  const building=streetText(street,profile);
+  const hasHouse=!extendedUnit || street.split(/[,，;\n]/).some(part=>{
+    const segment=normalize(part);
+    if(routes.includes(segment))return false;
+    return houseNumbers.some(number=>{
+      const house=normalize(number);
+      return segment===house || segment.startsWith(house+' ') ||
+        new RegExp(`^no\\s+${escape(house)}(?:\\s|$)`,'u').test(segment) || routes.some(route=>
+          /\p{L}/u.test(route) && (segment===`${route} ${house}` ||
+            new RegExp(`^${escape(route)}\\s*${escape(house)}\\s*(?:號|号|番地|番|번지)$`,'u').test(segment)));
+    });
+  });
+  if (!/\d/.test(building) || !hasHouse) return {street:String(value || ''),unit:[],floor:[]};
   return {street,unit:unique(details.unit).sort(),floor:unique(details.floor).sort()};
 }
 function addressEvidence(hint,profile) {
