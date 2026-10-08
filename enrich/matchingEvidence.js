@@ -278,25 +278,47 @@ function addressUnits(value,profile) {
   const identifier='\\d+[a-z]?(?:[/-]\\d+[a-z]?)*';
   const labeled=new RegExp(`(?:^|\\s)(suite|ste|unit|shop|apt|apartment|room|floor|fl)\\.?\\s*#?\\s*(${identifier})$`,'i');
   const ordinal=/(?:^|\s)(\d+)(?:st|nd|rd|th)?\s+floor$/i;
+  const nativeFloor=profile.countryCode==='VN'
+    ? new RegExp(`^(?:tầng|tang|lầu|lau)\\s+(${identifier})$`,'iu') : null;
+  // Google labels subpremises independently of streets. Match entire address
+  // segments only, preserving punctuation (unit 1/2 is not unit 1-2). This
+  // handles localized labels without guessing that every extra digit is a unit.
+  const exact=v=>typeof v==='string'?v.normalize('NFKC').toLowerCase().replace(/\s+/gu,' ').trim():'';
+  const actualParts=String(profile.rawAddress || '').split(/[,，;\n]/).map(exact);
+  const units=profile.components.filter(c=>Array.isArray(c?.types) &&
+    c.types.some(type=>['subpremise','floor','room'].includes(type)) &&
+    [c.long_name,c.short_name].some(v=>exact(v) && actualParts.includes(exact(v))));
+  const houseNumbers=profile.components.filter(c=>Array.isArray(c?.types) && c.types.includes('street_number'))
+    .flatMap(c=>[c.long_name,c.short_name]).map(exact).filter(Boolean);
   const routes=profile.components.filter(c=>Array.isArray(c?.types) && c.types.includes('route'))
     .flatMap(c=>[c.long_name,c.short_name]).map(normalize).filter(Boolean);
   const street=String(value || '').split(/[,，;\n]/).map(part=>{
     part=part.trim();
+    // Unit metadata cannot erase a country/locality or an independently typed
+    // house number, including malformed components with conflicting types.
+    if(countryCode(part) || houseNumbers.includes(exact(part)) || matchesGeography(normalize(part),profile.groups)) return part;
     const tagged=part.match(labeled),floor=tagged?null:part.match(ordinal);
-    const found=tagged || floor;
-    if (!found) return part;
-    const prefix=part.slice(0,found.index).trim();
+    const localFloor=!tagged && !floor && nativeFloor ? part.normalize('NFC').match(nativeFloor) : null;
+    const typed=units.find(c=>[c.long_name,c.short_name].some(v=>exact(v) && exact(v)===exact(part)));
+    const found=tagged || floor || localFloor;
+    if (!found && !typed) return part;
+    const prefix=found ? part.slice(0,found.index).trim() : '';
     // Do not eat a numbered route ("Unit 5 Road", or a typed "Unit 5").
-    if (routes.some(route=>hasPhrase(normalize(part),route) && hasPhrase(route,normalize(found[0])))) return part;
+    if (routes.some(route=>hasPhrase(normalize(part),route) && hasPhrase(route,normalize(found?.[0] || part)))) return part;
     if (prefix && !(/\d/.test(prefix) && /\p{L}/u.test(prefix) &&
       (STREET_MARKER.test(prefix) || routes.some(route=>hasPhrase(normalize(prefix),route))))) return part;
-    const kind=floor || /^(?:floor|fl)$/i.test(tagged[1])?'floor':'unit';
-    details[kind].push((floor?floor[1]:tagged[2]).toLowerCase());
+    // Literal labels outrank contradictory metadata (Unit 5 typed as floor
+    // must still conflict with Unit 6). Opaque typed labels retain their text.
+    const kind=tagged ? (/^(?:floor|fl)$/i.test(tagged[1])?'floor':'unit')
+      : floor || localFloor || typed?.types.includes('floor')?'floor':'unit';
+    details[kind].push(floor?floor[1]:localFloor?localFloor[1].toLowerCase():tagged?tagged[2].toLowerCase():exact(part));
     return prefix;
   }).filter(Boolean).join(', ');
   // A unit-only fragment has no independent building address. Keep its
   // digits intact rather than inventing a street match from the city alone.
-  if (!/\d/.test(streetText(street,profile))) return {street:String(value || ''),unit:[],floor:[]};
+  let building=streetText(street,profile);
+  for(const route of routes) building=removePhrase(building,route);
+  if (!/\d/.test(building)) return {street:String(value || ''),unit:[],floor:[]};
   return {street,unit:unique(details.unit).sort(),floor:unique(details.floor).sort()};
 }
 function addressEvidence(hint,profile) {

@@ -17,6 +17,7 @@ const ai=require('../enrich/ai'),places=require('../enrich/places'),source=requi
 const fixtures=require('./engine/matching-google-results.json');
 const localizedChicken=require('./engine/matching-localized-google.json');
 const incidentGoogle=require('./engine/incident-google-responses.json');
+const kumaGoogle=require('./engine/kuma-google-response.json').result;
 const url='https://www.instagram.com/reel/MatchingRegression/';
 const run=()=>runEnrichment('job',url,'u','');
 const ogPlace={place_id:'tai-sushi',name:'Tai Sushi',formatted_address:'1 Main Street, Kyoto, Japan',geometry:{location:{lat:35,lng:135}},types:['restaurant']};
@@ -53,6 +54,35 @@ test.each([
   await saveSelectedPlaces('job','u',[job.candidates[0].placeId]);
   expect(db.read('enrichmentJobs','job')).toMatchObject({status:'complete',progress:{saved:1,total:1}});
   expect((await db.collection('pins').get()).size).toBe(1);
+});
+
+test.each([false,true])('Kuma floor detail yields one choice and one save (retry: %s)',async retry=>{
+  const clues=[
+    {name:'Kuma Omakase',city:'Ho Chi Minh City',address:'44 Dang Thi Nhu, Ben Thanh Ward, HCMC, Vietnam',source:'caption'},
+    {name:'Kuma Omakase',city:'HCMC',country:'Vietnam',address:'44 Dang Thi Nhu, Ben Thanh Ward',source:'caption'},
+  ];
+  if(retry) {
+    db.seed('enrichmentJobs','parent',{userId:'u',url,status:'failed',outcomes:clues.map(p=>({...p,status:'unresolved',
+      failure:{code:'no_verified_match',stage:'matching',provider:'engine'},ranking:{score:0,candidates:[{placeId:kumaGoogle.place_id,score:0}]}}))});
+    db.seed('enrichmentJobs','job',{userId:'u',url,status:'processing',retryOf:'parent'});
+  }
+  source.extractPublicPost.mockResolvedValue({title:'Kuma Omakase',description:'Kuma Omakase at '+clues[0].address,webpage_url:url});
+  ai.aiExtractPlaces.mockResolvedValue({places:clues});
+  places.searchGooglePlaces.mockResolvedValue([kumaGoogle]);
+  await run();
+  const job=db.read('enrichmentJobs','job');
+  expect(job.status).toBe('needs_selection');
+  expect(job.candidates.map(p=>p.placeId)).toEqual([kumaGoogle.place_id]);
+  expect(job.outcomes).toHaveLength(1);
+  expect(job.outcomes[0]).toMatchObject({name:'Kuma Omakase',status:'candidate',requiresSelection:true});
+  expect(places.searchGooglePlaces).toHaveBeenCalledTimes(2); // one per existing query; no language fallback
+  expect((await db.collection('pins').get()).size).toBe(0);
+  await saveSelectedPlaces('job','u',[kumaGoogle.place_id]);
+  await saveSelectedPlaces('job','u',[kumaGoogle.place_id]);
+  expect(db.read('enrichmentJobs','job')).toMatchObject({status:'complete',progress:{saved:1,total:1}});
+  const saved=await db.collection('pins').get();
+  expect(saved.size).toBe(1);
+  expect(saved.docs[0].data().formattedAddress).toBe(kumaGoogle.formatted_address);
 });
 
 test('reported Tokyo names reach selection, English/Japanese aliases count once, with no new Google-language calls',async()=>{

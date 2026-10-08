@@ -1,0 +1,77 @@
+{
+  "checkedAt": "2026-10-08T23:05:54.481Z",
+  "provenance": "One fresh authorized Places Text Search on 2026-10-08; not the original failed request. Only the target public venue is retained.",
+  "result": {
+    "place_id": "ChIJOWn_fBMpdTERtsqHP24NjtU",
+    "name": "Kuma Omakase",
+    "formatted_address": "Tầng 2, 44 Đặng Thị Nhu, Bến Thành, Hồ Chí Minh 700000, Vietnam",
+    "address_components": [
+      {
+        "long_name": "Tầng 2",
+        "short_name": "Tầng 2",
+        "types": [
+          "subpremise"
+        ]
+      },
+      {
+        "long_name": "44",
+        "short_name": "44",
+        "types": [
+          "street_number"
+        ]
+      },
+      {
+        "long_name": "Đường Đặng Thị Nhu",
+        "short_name": "Đặng Thị Nhu",
+        "types": [
+          "route"
+        ]
+      },
+      {
+        "long_name": "Thành phố Hồ Chí Minh",
+        "short_name": "Thành phố Hồ Chí Minh",
+        "types": [
+          "locality",
+          "political"
+        ]
+      },
+      {
+        "long_name": "Hồ Chí Minh",
+        "short_name": "Hồ Chí Minh",
+        "types": [
+          "administrative_area_level_1",
+          "political"
+        ]
+      },
+      {
+        "long_name": "Vietnam",
+        "short_name": "VN",
+        "types": [
+          "country",
+          "political"
+        ]
+      },
+      {
+        "long_name": "700000",
+        "short_name": "700000",
+        "types": [
+          "postal_code"
+        ]
+      }
+    ],
+    "geometry": {
+      "location": {
+        "lat": 10.7692859,
+        "lng": 106.6970336
+      }
+    },
+    "types": [
+      "sushi_restaurant",
+      "japanese_restaurant",
+      "restaurant",
+      "food",
+      "point_of_interest",
+      "establishment"
+    ]
+  }
+}
