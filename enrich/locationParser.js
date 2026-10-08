@@ -1,4 +1,4 @@
-const { normalizeCountry } = require('./countryNormalization');
+const { normalizeCountry, normalizeCountryCode, countryFromAddress } = require('./countryNormalization');
 const { decodeHtmlEntities, cleanSocialText } = require('./utils');
 
 const LOCATION_PATTERNS = [
@@ -110,7 +110,9 @@ function extractLocationQuery(title, description) {
 function extractLocationFromComponents(components) {
   // Component order is not a hierarchy: prefer a real locality to a county.
   const name = type => components.find(c => c?.types?.includes(type) && typeof c.long_name === 'string' && c.long_name.trim())?.long_name.trim() || null;
-  const country = normalizeCountry(name('country'));
+  const country = normalizeCountry(name('country')) || components
+    .filter(c => c?.types?.includes('country'))
+    .map(c => normalizeCountryCode(c.short_name)).find(Boolean) || null;
   let region = name('administrative_area_level_1');
   let city = name('locality') || name('postal_town') || name('administrative_area_level_2');
   if (!city && region) {
@@ -125,13 +127,17 @@ function extractLocationFromComponents(components) {
 function extractLocation(formattedAddress) {
   if (!formattedAddress) return { country: null, region: null, city: null };
 
-  const parts = formattedAddress.split(',').map((p) => p.trim());
-  const country = parts.length >= 2 ? normalizeCountry(parts[parts.length - 1]) : null;
+  const parts = formattedAddress.split(/[,，、;\n]/).map((p) => p.trim()).filter(Boolean);
+  const country = countryFromAddress(formattedAddress);
 
   let city = null;
   let region = null;
 
-  for (let i = 0; i < parts.length - 1; i++) {
+  // Skip only the country boundary, not a same-named city (Singapore,
+  // Luxembourg). Prefer the last boundary when both carry the country name.
+  const countryIndex = country && normalizeCountry(parts[parts.length - 1]) !== country ? 0 : parts.length - 1;
+  for (let i = 0; i < parts.length; i++) {
+    if (i === countryIndex) continue;
     const part = parts[i];
     if (/^\d+/.test(part)) continue;
     if (/^\d{4,}$/.test(part.replace(/\s/g, ''))) continue;
