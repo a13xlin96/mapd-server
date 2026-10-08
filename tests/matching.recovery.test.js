@@ -201,3 +201,105 @@ test.each(['44 Saigon Street, Hồ Chí Minh, Vietnam','44 Saigon, Hồ Chí Min
   expect(result.place).toBe(row);expect(result.requiresSelection).toBe(true);
   expect(result.ranked[0].evidence).toMatchObject({addressMatches:false,addressStatus:'unknown'});
 });
+
+describe('New York City and optional unit details',()=>{
+  const parts=[component('12','street_number'),component('Main Street','route'),
+    component('New York','locality'),component('New York','administrative_area_level_1','NY'),
+    component('United States','country','US'),component('10001','postal_code')];
+  const row=(street='12 Main Street',extra=[],typed=true)=>candidate(
+    `${street}, New York, NY 10001, USA`,typed?[...parts,...extra]:undefined);
+  const assess=(place,address='12 Main Street, New York, NY, USA',city='New York')=>
+    match(place,{address,city,country:'US'},'Lumina Cafe in New York City, USA');
+
+  test.each([true,false])('full city spelling recovers typed/cached geography: %s',typed=>{
+    const place=row(undefined,[],typed);
+    const result=assess(place,'12 Main Street, New York City, NY, USA','New York City, USA');
+    expect(result.place).toBe(place);
+    expect(result.requiresSelection).toBe(true);
+    expect(result.ranked[0].evidence).toMatchObject({cityMatches:true,addressConflict:false});
+  });
+  test.each(['New York','NYC'])('full Google city spelling also supports %s',city=>{
+    const place=candidate('12 Main Street, New York City, NY, USA',[
+      ...parts.filter(p=>!p.types.includes('locality')),component('New York City','locality')]);
+    expect(assess(place,'',city).place).toBe(place);
+  });
+  test.each(['New York City, California','New York City, Brooklyn','York','Yorkshire'])
+  ('city spelling recovery cannot discard unmatched geography: %s',city=>{
+    expect(assess(row(),'',city).place).toBeNull();
+  });
+  test.each([true,false])('New York state cannot stand in for New York City: %s',typed=>{
+    const place=candidate('12 Main Street, Albany, New York, USA',typed?[
+      ...parts.filter(p=>!p.types.includes('locality')),component('Albany','locality')]:undefined);
+    expect(assess(place,'','New York City').place).toBeNull();
+  });
+  test('country-first cached addresses do not turn a state into the city',()=>{
+    const place=candidate('USA, New York, Albany, 12 Main Street');
+    expect(assess(place,'','New York City').place).toBeNull();
+  });
+  test('the city alias is country-scoped and excludes routes',()=>{
+    const foreign=candidate('12 Main Street, New York, United Kingdom',[
+      component('New York','locality'),component('United Kingdom','country','GB')]);
+    expect(match(foreign,{city:'New York City',country:'GB',address:''},'Lumina Cafe in New York City').place).toBeNull();
+    const road=candidate('12 New York City Road, Albany, NY, USA',[
+      component('New York City Road','route'),component('Albany','locality'),parts[3],parts[4]]);
+    expect(assess(road,'','New York City').place).toBeNull();
+  });
+
+  test.each([
+    '12 Main Street, Suite 5','Suite 5, 12 Main Street','12 Main Street, Unit 5A',
+    'Shop 17, 12 Main Street','12 Main Street, Floor 2','12 Main Street, 2nd Floor',
+    '12 Main Street Suite 5','12 Main Street, Suite 5, Floor 2',
+  ])('extra explicit detail remains selectable, not a house-number conflict: %s',street=>{
+    for (const typed of [true,false]) {
+      const place=row(street,[],typed);
+      const result=assess(place);
+      expect(result.place).toBe(place);expect(result.requiresSelection).toBe(true);
+      expect(result.ranked[0].evidence).toMatchObject({addressConflict:false,addressStatus:'unknown',
+        addressReasons:expect.arrayContaining(['unit_unverified'])});
+      const reverse=assess(row(),`${street}, New York, NY, USA`);
+      expect(reverse.place).not.toBeNull();expect(reverse.requiresSelection).toBe(true);
+    }
+  });
+  test('matching unit and floor values are compared by type, not digit order',()=>{
+    const result=assess(row('12 Main Street, Suite 5, Floor 2'),
+      'Floor 2, Unit 5, 12 Main Street, New York, NY, USA');
+    expect(result.place).not.toBeNull();
+    expect(result.ranked[0].evidence).toMatchObject({addressConflict:false,addressStatus:'match'});
+    expect(result.requiresSelection).toBe(true);
+  });
+  test.each([
+    ['13 Main Street, Suite 5','12 Main Street','street_number_conflict'],
+    ['12A Main Street, Suite 5','12B Main Street','street_number_conflict'],
+    ['12/1 Main Street, Suite 5','12/2 Main Street','street_number_conflict'],
+    ['12-14 Main Street, Suite 5','12-16 Main Street','street_number_conflict'],
+    ['12 Main Street, Suite 5','12 Main Street, Suite 6','unit_conflict'],
+    ['12 Main Street, Unit 5A','12 Main Street, Unit 5B','unit_conflict'],
+    ['12 Main Street, Unit 5/1','12 Main Street, Unit 5-1','unit_conflict'],
+    ['12 Main Street, Floor 2','12 Main Street, Floor 3','unit_conflict'],
+  ])('different buildings or units still veto: %s vs %s',(actual,hint,reason)=>{
+    const result=assess(row(actual),`${hint}, New York, NY, USA`);
+    expect(result.place).toBeNull();
+    expect(result.ranked[0].evidence.addressReasons).toContain(reason);
+  });
+  test.each(['13 Main Street, New York, USA','12 Main Street, Albany, NY, USA',
+    '12 Main Street, New York, Japan'])('unit recovery cannot mask another contradiction: %s',hint=>{
+    expect(assess(row('12 Main Street, Suite 5'),hint).place).toBeNull();
+  });
+  test('unit recovery does not authorize a different street or business',()=>{
+    const result=assess(row('12 Main Street, Suite 5'),'12 Other Street, New York, NY, USA');
+    expect(result.requiresSelection).toBe(true);
+    expect(result.ranked[0].evidence.addressMatches).toBe(false);
+    expect(assess({...row('12 Main Street, Suite 5'),name:'Another Venue'}).place).toBeNull();
+  });
+  test('a numbered route is not a unit and its number remains significant',()=>{
+    const place=row('12 Unit 5 Road, Suite 8');
+    expect(assess(place,'12 Unit 6 Road, New York, NY, USA').place).toBeNull();
+  });
+  test('structured route and unmarked numbers are not discarded as unit details',()=>{
+    const place=row('12 Main Street, 5',[component('5','subpremise')]);
+    expect(assess(place).place).toBeNull();
+    const routeOnly=candidate('Unit 5, New York, USA',[
+      component('Unit 5','route'),parts[2],parts[3],parts[4]]);
+    expect(assess(routeOnly,'Unit 6, New York, USA').place).toBeNull();
+  });
+});
