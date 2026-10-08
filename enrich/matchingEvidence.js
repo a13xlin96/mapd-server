@@ -81,7 +81,7 @@ function stripPostal(value,country,components=[]) {
     return text;
   }).join('');
 }
-function areaAliases(values,kind,country) {
+function areaAliases(values,kind,country,isLocality=kind==='locality') {
   const aliases = unique(values.map(normalize));
   // 台 / 臺 are alternative spellings in Taiwan's administrative names.
   // Scope this equivalence to geography; do not rewrite business identities.
@@ -93,6 +93,10 @@ function areaAliases(values,kind,country) {
       if (aliases.includes(short) || aliases.includes(long)) aliases.push(short,long);
     }
   }
+  // New York is also a state. Extend this spelling only for a US locality,
+  // never an administrative component or a later cached address region.
+  const newYork=['new york','nyc','new york city'];
+  if (country==='US' && isLocality && newYork.some(name=>aliases.includes(name))) aliases.push(...newYork);
   // These are locality spellings, never venue-name translations. Require
   // Google's country evidence so "HCM" elsewhere cannot borrow Vietnam's city.
   if (country==='VN') {
@@ -109,10 +113,10 @@ function areaAliases(values,kind,country) {
   }
   return unique(aliases);
 }
-function areaGroup(values,kind,country) {
+function areaGroup(values,kind,country,isLocality) {
   // Preserve the pre-existing NYC/SF/LA policy. Confirmation is new only for
-  // the additional Vietnam equivalences, not a change to those mature paths.
-  return {kind,aliases:areaAliases(values,kind,country),originalAliases:areaAliases(values,kind)};
+  // the additional equivalences, not a change to those mature paths.
+  return {kind,aliases:areaAliases(values,kind,country,isLocality),originalAliases:areaAliases(values,kind)};
 }
 function fallbackGeography(value,name,country,components=[]) {
   const rawParts=String(value || '').split(/[,，;\n]/).map(p=>p.trim()).filter(Boolean);
@@ -135,7 +139,7 @@ function fallbackGeography(value,name,country,components=[]) {
       break;
     }
   }
-  for (const part of parts) {
+  for (const [index,part] of parts.entries()) {
     if (!part || (name && hasPhrase(part,normalize(name)))) continue;
     // Retain CJK administrative prefixes before the street begins.
     const prefix = part.match(/^(?:[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]+?[市縣県都府區区郡里])+/u)?.[0];
@@ -144,7 +148,11 @@ function fallbackGeography(value,name,country,components=[]) {
       continue;
     }
     if (/\d/.test(part) || STREET_MARKER.test(part)) continue;
-    groups.push(areaGroup([part],'fallback',country));
+    // A cached US city-first address may follow New York with NY. Other
+    // trailing regions (e.g. country-first New York, Albany) are ambiguous.
+    const cityPosition=!groups.some(g=>g.kind!=='country') &&
+      parts.slice(index+1).filter(Boolean).every(p=>p==='ny' || p==='new york');
+    groups.push(areaGroup([part],'fallback',country,cityPosition));
   }
   return groups;
 }
@@ -263,9 +271,43 @@ function vietnamLowerAreaRecovery(regions,unmatched,profile,street) {
   return unmatched.every(g=>g!==regions.at(-1) && g.aliases.some(lowerArea)) &&
     profile.groups.some(g=>/^(?:sublocality(?:_level_\d+)?|administrative_area_level_[2345])$/.test(g.kind));
 }
+function addressUnits(value,profile) {
+  const details={unit:[],floor:[]};
+  // Remove only explicit labels, before normalizing punctuation. A bare 5,
+  // a house suffix/range, or a CJK block number is not assumed to be a unit.
+  const identifier='\\d+[a-z]?(?:[/-]\\d+[a-z]?)*';
+  const labeled=new RegExp(`(?:^|\\s)(suite|ste|unit|shop|apt|apartment|room|floor|fl)\\.?\\s*#?\\s*(${identifier})$`,'i');
+  const ordinal=/(?:^|\s)(\d+)(?:st|nd|rd|th)?\s+floor$/i;
+  const routes=profile.components.filter(c=>Array.isArray(c?.types) && c.types.includes('route'))
+    .flatMap(c=>[c.long_name,c.short_name]).map(normalize).filter(Boolean);
+  const street=String(value || '').split(/[,，;\n]/).map(part=>{
+    part=part.trim();
+    const tagged=part.match(labeled),floor=tagged?null:part.match(ordinal);
+    const found=tagged || floor;
+    if (!found) return part;
+    const prefix=part.slice(0,found.index).trim();
+    // Do not eat a numbered route ("Unit 5 Road", or a typed "Unit 5").
+    if (routes.some(route=>hasPhrase(normalize(part),route) && hasPhrase(route,normalize(found[0])))) return part;
+    if (prefix && !(/\d/.test(prefix) && /\p{L}/u.test(prefix) &&
+      (STREET_MARKER.test(prefix) || routes.some(route=>hasPhrase(normalize(prefix),route))))) return part;
+    const kind=floor || /^(?:floor|fl)$/i.test(tagged[1])?'floor':'unit';
+    details[kind].push((floor?floor[1]:tagged[2]).toLowerCase());
+    return prefix;
+  }).filter(Boolean).join(', ');
+  // A unit-only fragment has no independent building address. Keep its
+  // digits intact rather than inventing a street match from the city alone.
+  if (!/\d/.test(streetText(street,profile))) return {street:String(value || ''),unit:[],floor:[]};
+  return {street,unit:unique(details.unit).sort(),floor:unique(details.floor).sort()};
+}
 function addressEvidence(hint,profile) {
   if (!hint) return {matches:false,conflict:false,status:'not_provided',reasons:[],requiresSelection:false};
-  const hintGroups = fallbackGeography(hint,undefined,profile.countryCode,profile.components);
+  const wantedUnits=addressUnits(hint,profile),actualUnits=addressUnits(profile.rawAddress,profile);
+  const unitConflict=['unit','floor'].some(kind=>wantedUnits[kind].length && actualUnits[kind].length &&
+    wantedUnits[kind].join('|')!==actualUnits[kind].join('|'));
+  const unitUnknown=['unit','floor'].some(kind=>!!wantedUnits[kind].length!==!!actualUnits[kind].length);
+  const unitRecovery=['unit','floor'].some(kind=>wantedUnits[kind].length || actualUnits[kind].length) &&
+    normalize(hint)!==normalize(profile.rawAddress);
+  const hintGroups = fallbackGeography(wantedUnits.street,undefined,profile.countryCode,profile.components);
   const countryHint=hintGroups.find(g=>g.kind==='country');
   const countryConflict=!!(countryHint && profile.country && !countryHint.aliases.some(a=>profile.country.aliases.includes(a)));
   const regions=hintGroups.filter(g=>g.kind!=='country');
@@ -295,28 +337,31 @@ function addressEvidence(hint,profile) {
     if (anchor>=0) {actualIndex=anchor-1;anchored=true;}
     else if (uncorroborated.includes(group) && anchored && actualIndex>=0 && !lowerAreaRecovery) regionConflict=true;
   }
-  const wanted = streetText(hint,profile), actual = streetText(profile.rawAddress,profile);
+  const wanted = streetText(wantedUnits.street,profile), actual = streetText(actualUnits.street,profile);
   const numbers = text => text.match(/\d+[a-z]?(?![a-z])/g) || [];
   const wantedNumbers = numbers(wanted), actualNumbers = numbers(actual);
   const numberConflict = wantedNumbers.length>0 && actualNumbers.length>0 &&
     wantedNumbers.join('|')!==actualNumbers.join('|');
   const compact = text => text.replace(/\s/g,'');
   const meaningful = /\p{L}/u.test(wanted) && wanted.length>=3;
-  const conflict=countryConflict || regionConflict || numberConflict;
+  const conflict=countryConflict || regionConflict || numberConflict || unitConflict;
   const matches = !conflict && meaningful &&
     (lowerAreaRecovery || compact(wanted)===compact(actual) || hasPhrase(profile.address,normalize(hint)));
   const reasons=[];
   if (countryConflict) reasons.push('country_conflict');
   if (regionConflict) reasons.push('address_region_conflict');
   if (numberConflict) reasons.push('street_number_conflict');
+  if (unitConflict) reasons.push('unit_conflict');
+  if (unitUnknown) reasons.push('unit_unverified');
+  if (unitRecovery) reasons.push('unit_format_recovered');
   if (unmatched.length) reasons.push('geography_components_missing');
   if (lowerAreaRecovery) reasons.push('lower_area_unverified');
   if (aliasRecovery) reasons.push('locality_alias');
   if (countryHint && !profile.country) reasons.push('country_unverified');
   if (!matches && !conflict) reasons.push('street_unverified');
-  const unknown=unmatched.length>0 || !!(countryHint && !profile.country) || !matches;
+  const unknown=unitUnknown || unmatched.length>0 || !!(countryHint && !profile.country) || !matches;
   return {matches:!!matches,conflict:!!conflict,status:conflict?'conflict':unknown?'unknown':'match',
-    reasons,aliasRecovery,requiresSelection:!conflict && (unknown || aliasRecovery)};
+    reasons,aliasRecovery,requiresSelection:!conflict && (unknown || aliasRecovery || unitRecovery)};
 }
 
 const GENERIC_NAME = new Set('the and of a an at in restaurant cafe coffee bar kitchen sushi ramen chicken house grill shop food bakery bistro dining blue red green golden new old best good great little big'.split(' '));

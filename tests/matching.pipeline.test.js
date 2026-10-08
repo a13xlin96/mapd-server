@@ -235,6 +235,33 @@ test.each([false,true])('caption-only HCMC alias waits for approval before any p
   expect(saved[0].data().sources.filter(s=>s.url===url)).toHaveLength(1);
 });
 
+test.each([
+  ['city spelling',false],['city spelling',true],['extra suite',false],['extra suite',true],
+])('%s recovery waits for selection and saves once without extra lookups (existing: %s)',async(kind,existing)=>{
+  const city=kind==='city spelling'?'New York City':'Kyoto';
+  const p={name:ogPlace.name,city,address:`1 Main Street, ${city}`,source:'caption'};
+  const place={...ogPlace,formatted_address:kind==='city spelling'
+    ? '1 Main Street, New York, NY, USA':'1 Main Street, Suite 5, Kyoto, Japan'};
+  source.extractPublicPost.mockResolvedValue({title:p.name,description:`${p.name}, ${p.address}`,webpage_url:url});
+  ai.aiExtractPlaces.mockResolvedValue({places:[p]});
+  places.searchGooglePlaces.mockResolvedValue([place]);
+  const prior=existing?seedExisting(place):null;
+  await run();
+  expect(db.read('enrichmentJobs','job')).toMatchObject({status:'needs_selection',candidates:[{placeId:place.place_id}]});
+  expect((await db.collection('pins').get()).size).toBe(existing?1:0);
+  if(existing)expect(db.read('pins','prior')).toEqual(prior);
+  expect((await db.collection('pinContentIndex').get()).size).toBe(0);
+  await saveSelectedPlaces('job','u',[place.place_id]);
+  await saveSelectedPlaces('job','u',[place.place_id]);
+  expect(db.read('enrichmentJobs','job')).toMatchObject({status:'complete',progress:{saved:1,total:1}});
+  const saved=(await db.collection('pins').get()).docs;
+  expect(saved).toHaveLength(1);
+  expect(saved[0].data().sources.filter(s=>s.url===url)).toHaveLength(1);
+  if(existing)expect(saved[0].id).toBe('prior');
+  expect(places.searchGooglePlaces).toHaveBeenCalledTimes(1);
+  expect(ai.aiVerifyPlace).not.toHaveBeenCalled();
+});
+
 describe('matching failure stages',()=>{
   test.each([
     ['invalid query',{name:'x'},[]],
