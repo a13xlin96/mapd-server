@@ -295,11 +295,16 @@ describe('New York City and optional unit details',()=>{
     const place=row('12 Unit 5 Road, Suite 8');
     expect(assess(place,'12 Unit 6 Road, New York, NY, USA').place).toBeNull();
   });
-  test('structured route and unmarked numbers are not discarded as unit details',()=>{
-    const place=row('12 Main Street, 5',[component('5','subpremise')]);
+  test('structured route and untyped numbers are not discarded as unit details',()=>{
+    const place=row('12 Main Street, 5');
     expect(assess(place).place).toBeNull();
     const routeOnly=candidate('Unit 5, New York, USA',[
       component('Unit 5','route'),parts[2],parts[3],parts[4]]);
     expect(assess(routeOnly,'Unit 6, New York, USA').place).toBeNull();
+  });
+  test('an explicitly typed numeric subpremise requires confirmation, while another unit conflicts',()=>{
+    const place=row('12 Main Street, 5',[component('5','subpremise')]);
+    expect(assess(place)).toMatchObject({place,requiresSelection:true});
+    expect(assess(place,'12 Main Street, Unit 6, New York, NY, USA').place).toBeNull();
   });
 });
