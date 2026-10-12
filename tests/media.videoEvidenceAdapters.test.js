@@ -23,9 +23,10 @@ const region=[0.1,0.1,0.8,0.5];
 const ref=(evidenceId,quote,supports='name',extra={})=>({evidenceId,quote,supports,...extra});
 const rawVideo=(f=base.frames[0])=>({observations:[{evidenceId:frameId(f),quote:'鯛寿司',region}],places:[{name:'鯛寿司',evidenceRefs:[ref(frameId(f),'鯛寿司','name',{region})]}]});
 const message=data=>({stop_reason:'end_turn',content:[{type:'text',text:JSON.stringify(data)}],usage:{input_tokens:120,output_tokens:50}});
-function setup({raw=rawVideo(),sharedOperation}={}){
+function setup({raw=rawVideo(),sharedOperation,durable=false}={}){
   const cache=new Map(),writes=[];
-  const operations=createSharedAiOperations({allowLocal:true,cache:{getCached:async k=>cache.get(k),setCache:async(k,v)=>{writes.push(v);cache.set(k,v);}}});
+  const operations=createSharedAiOperations({allowLocal:true,...(durable?{firestore:new (require('./helpers/fakeFirestore').FakeFirestore)()} : {}),
+    cache:{getCached:async k=>cache.get(k),setCache:async(k,v)=>{writes.push(v);cache.set(k,v);}}});
   const run=jest.fn(sharedOperation || operations.runSharedAiOperation);
   const createMessage=jest.fn(async()=>message(raw));
   const providerCall=jest.fn(async(_p,work)=>{await jobContext.current()?.sharedOperation?.authorizeDispatch();return work();});
@@ -124,8 +125,6 @@ test.each([
 test.each([
   ()=>({places:[],extra:true}), ()=>({contradictions:[]}),
   ()=>({places:[{...fusionData().places[0],city:12}]}),
-  ()=>({places:[{name:'ngâm CAFE',evidenceRefs:[ref('unknown:1','ngâm CAFE')]}]}),
-  ()=>({places:[{name:'ngâm CAFE',evidenceRefs:[ref('audio:1','invented quote')]}]}),
   ()=>({places:[],contradictions:[{name:'Unknown baseline',evidenceRefs:[{evidenceId:'audio:1',quote:'ngâm CAFE'}]}]}),
 ])('audio-only tool data still passes through strict schema/references %#',async make=>{
   const f=setup();f.createMessage.mockResolvedValue(toolMessage(make()));
@@ -224,7 +223,7 @@ test('geography may be supported by literal public caption quote',async()=>{
 test.each(['vision','fusion'])('%s drops unsupported geography, preserves the grounded name, and reuses partial artifacts',async method=>{
   const raw=method==='vision'?rawVideo():{places:[{name:'ngâm CAFE',evidenceRefs:[ref('audio:1','ngâm CAFE')]}]};
   raw.places[0].country='Vietnam';raw.places[0].city='An invented city';
-  const f=setup({raw}),input={...base,textEvidence:[audio]};
+  const f=setup({raw,durable:true}),input={...base,textEvidence:[audio]};
   const [one,two]=await Promise.all([f[method](input,opts),f[method](input,opts)]);
   expect(one).toEqual(two);expect(await f[method](input,opts)).toEqual(one);
   expect(one.places).toHaveLength(1);
@@ -362,9 +361,10 @@ test('fusion extracts additional audio venues with exact references and honest e
   expect(JSON.stringify(result)).not.toContain('timestamp');
   expect(createMessage.mock.calls[0][1].maxRetries).toBe(0);
 });
-test('fusion rejects hallucinated quotes and unsupported cities',async()=>{
+test('fusion discards hallucinated quotes and unsupported cities without claiming complete evidence',async()=>{
   const {fusion}=setup({raw:{places:[{name:'Cafe',city:'Tokyo',evidenceRefs:[ref('audio:1','Cafe')]}]}});
-  await expect(fusion({...base,textEvidence:[audio]},opts)).rejects.toMatchObject({code:'invalid_response'});
+  await expect(fusion({...base,textEvidence:[audio]},opts)).resolves.toEqual({places:[],contradictions:[],
+    grounding:{omittedClaims:2,omittedCandidates:1}});
 });
 test('private context remains isolated across users and never changes frame prompt source authority',async()=>{
   const {fusion,createMessage}=setup({raw:{places:[]}});
@@ -471,7 +471,8 @@ test('baseline context alone supplies neither positive evidence nor contradictio
   const input={...base,baselinePlaces:[{name:'Tai Sushi',city:'Kyoto'}]};
   await expect(f.fusion({...input,textEvidence:[]},opts)).resolves.toEqual({places:[],contradictions:[]});
   expect(f.createMessage).not.toHaveBeenCalled();
-  await expect(f.fusion({...input,textEvidence:[caption]},opts)).rejects.toMatchObject({code:'invalid_response'});
+  await expect(f.fusion({...input,textEvidence:[caption]},opts)).resolves.toEqual({places:[],contradictions:[],
+    grounding:{omittedClaims:2,omittedCandidates:1}});
 });
 
 test('name evidence controls source, independently of the geography modality',async()=>{
@@ -489,7 +490,7 @@ test('baseline identity and geography partition fusion cache; legacy missing con
     expect(await f.fusion({...input,baselinePlaces:baseline},opts)).toEqual({places:[],contradictions:[],grounding:{omittedClaims:0,omittedCandidates:0}});
   }
   expect(f.createMessage).toHaveBeenCalledTimes(3);
-  expect(f.run.mock.calls[0][0]).toMatchObject({schemaVersion:4,promptVersion:'grounded-crossmodal-v3',
+  expect(f.run.mock.calls[0][0]).toMatchObject({schemaVersion:5,promptVersion:'grounded-crossmodal-v3',
     input:{baselinePlaces:[{name:'Tai Sushi',city:'Kyoto',country:'',address:''}]}});
   expect(f.createMessage.mock.calls[0][0].messages[0].content).toContain('Baseline context (not evidence):');
 });

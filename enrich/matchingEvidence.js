@@ -1,4 +1,5 @@
 const {normalizePlaceName: normalize} = require('../lib/placeNameNormalize');
+const {bilingualNameEvidence} = require('./nameAliases');
 
 const CJK = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
 const WORD = /[\p{L}\p{N}]/u;
@@ -406,8 +407,8 @@ function addressEvidence(hint,profile) {
     reasons,aliasRecovery,requiresSelection:!conflict && (unknown || aliasRecovery || unitRecovery)};
 }
 
-const GENERIC_NAME = new Set('the and of a an at in restaurant cafe coffee bar kitchen sushi ramen chicken house grill shop food bakery bistro dining blue red green golden new old best good great little big'.split(' '));
-function nameEvidence(wanted,actual,profile,similarity) {
+const GENERIC_NAME = new Set('the and of a an at in restaurant cafe coffee bar kitchen sushi ramen chicken rice house grill shop food bakery bistro dining blue red green golden new old best good great little big'.split(' '));
+function singleNameEvidence(wanted,actual,profile,similarity) {
   const a=normalize(wanted), b=normalize(actual);
   if (!a || !b) return {score:0,partial:false};
   if (a===b) return {score:1,partial:false};
@@ -424,7 +425,7 @@ function nameEvidence(wanted,actual,profile,similarity) {
           !profile.groups.some(g=>g.aliases.some(alias=>hasPhrase(alias,word))));
         return {score:distinctive?0.9:0,partial:distinctive};
       }
-      return nameEvidence(left,right,profile,similarity);
+      return singleNameEvidence(left,right,profile,similarity);
     }
   }
   // A contiguous CJK suffix may describe a branch or venue type. It is never
@@ -440,6 +441,17 @@ function nameEvidence(wanted,actual,profile,similarity) {
     (aa.length<=2 && bb.length<=2 && distinctive.some(word=>word.length>=4)) ||
     (distinctive.length>0 && short.split(' ').length>=2 && hasPhrase(long,short));
   return {score,partial:score>=0.5 && meaningful};
+}
+function nameEvidence(wanted,actual,profile,similarity) {
+  const compare=(a,b)=>singleNameEvidence(a,b,profile,similarity);
+  const whole=compare(wanted,actual);
+  if (whole.score===1) return whole;
+  const distinctive=value=>value.split(' ').some(word=>word.length>=3 && !GENERIC_NAME.has(word) &&
+    !profile.groups.some(g=>g.aliases.some(alias=>hasPhrase(alias,word))));
+  // A locality on only one arm may be a branch, even without "branch"/店.
+  const geographic=value=>value.split(' ').some(word=>word.length>=3 && !GENERIC_NAME.has(word) &&
+    profile.groups.some(g=>g.aliases.some(alias=>hasPhrase(alias,word))));
+  return bilingualNameEvidence(wanted,actual,compare,distinctive,geographic,word=>GENERIC_NAME.has(word)) || whole;
 }
 function compatibleVariants(base,variant) {
   const a=geography(base),b=geography(variant);

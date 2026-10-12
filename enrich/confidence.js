@@ -32,7 +32,9 @@ function rankPlaces(results, evidence={}, extractedPlace) {
     // not combine a localized name with another row's more convenient city.
     const assessed=variants.map(variant=>{
       const profile=geography(variant), name=normalize(variant.name);
-      const nameMatch=extractedPlace ? nameEvidence(extractedPlace.name,name,profile,similarity) : {score:hasPhrase(ordinaryText,name)?1:0,partial:false};
+      // Alias boundaries belong to the raw Google name; normalization erases
+      // pipes/parentheses and makes independent bilingual names one token bag.
+      const nameMatch=extractedPlace ? nameEvidence(extractedPlace.name,variant.name,profile,similarity) : {score:hasPhrase(ordinaryText,name)?1:0,partial:false};
       const nameScore=nameMatch.score;
       const cityMatches=matchesGeography(city,profile.groups) && matchesCountry(country,profile);
       const captionCityMatches=captionCity ? matchesGeography(captionCity,profile.groups) : null;
