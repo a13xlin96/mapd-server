@@ -14,6 +14,15 @@ function genericNative(value) {
   for (const term of [...GENERIC_NATIVE].sort((a,b)=>b.length-a.length)) remainder=remainder.split(term).join('');
   return !remainder;
 }
+function shortNativeVenue(value) {
+  const ending=[...GENERIC_NATIVE].sort((a,b)=>b.length-a.length).find(term=>value.endsWith(term));
+  if (!ending) return false;
+  const brand=value.slice(0,-ending.length).replace(/\s/gu,'');
+  // This optional boost is deliberately limited to a short brand + venue type.
+  // Longer compounds can prepend an untranslated locality as well as append
+  // one; they retain whole-name matching or the existing localized lookup.
+  return brand.length>=2 && brand.length<=3;
+}
 
 function aliases(value) {
   if (typeof value!=='string' || value.length>200 || /[\r\n]/u.test(value)) return null;
@@ -36,7 +45,7 @@ function safeName(value,isDistinctive,hasGeography) {
     // Only a recognizable venue-type ending is eligible for dropping this
     // unmatched arm. Extra native suffixes may encode an untranslated branch.
     // Other names keep their original whole-name evidence without a boost.
-    ? normalized.length>=3 && [...GENERIC_NATIVE].some(term=>normalized.endsWith(term)) &&
+    ? shortNativeVenue(normalized) &&
       !genericNative(normalized) && isDistinctive(normalized)
     : isDistinctive(normalized);
 }

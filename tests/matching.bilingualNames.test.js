@@ -172,6 +172,7 @@ describe('alias safety and generic descriptors',()=>{
   test.each([
     ['上好雞肉 | Shang Hao Banqiao','上好雞肉'],
     ['上好雞肉板橋 | Shang Hao Chicken Rice','Shang Hao'],
+    ['板橋上好雞肉 | Shang Hao Chicken Rice','Shang Hao'],
     ['上好雞肉 | Shang Hao Banqiao','Shang Hao'],
     ['上好雞肉 | Shang Hao','Shang Hao XY'],
     ['雞肉飯餐廳 | Shang Hao Chicken Rice','雞肉飯餐廳'],
@@ -182,6 +183,13 @@ describe('alias safety and generic descriptors',()=>{
       const result=assess(google({name:actual}),{name:wanted});
       expect(names(wanted,actual).score).toBe(wholeSimilarity(wanted,actual));
       if(result.place) expect(result.requiresSelection).toBe(true);
+    }
+  });
+
+  test('a leading untranslated locality cannot acquire a name boost from a city alone',()=>{
+    for(const [wanted,actual] of [['板橋上好雞肉 | Shang Hao Chicken Rice','Shang Hao'],
+      ['Shang Hao','板橋上好雞肉 | Shang Hao Chicken Rice']]) {
+      expect(assess(google({name:actual}),{name:wanted,address:''}).place).toBeNull();
     }
   });
 
