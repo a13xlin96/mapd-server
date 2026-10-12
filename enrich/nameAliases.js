@@ -33,7 +33,11 @@ function safeName(value,isDistinctive,hasGeography) {
   const normalized=normalize(value);
   if (hasGeography(normalized)) return false;
   return script(value)==='native'
-    ? normalized.length>=3 && !genericNative(normalized) && isDistinctive(normalized)
+    // Only a recognizable venue-type ending is eligible for dropping this
+    // unmatched arm. Extra native suffixes may encode an untranslated branch.
+    // Other names keep their original whole-name evidence without a boost.
+    ? normalized.length>=3 && [...GENERIC_NATIVE].some(term=>normalized.endsWith(term)) &&
+      !genericNative(normalized) && isDistinctive(normalized)
     : isDistinctive(normalized);
 }
 
@@ -58,7 +62,12 @@ function bilingualNameEvidence(wanted,actual,compare,isDistinctive,hasGeography,
   // When both sides explicitly supply both scripts, neither can contradict
   // the other. Never choose the convenient English arm over a different CJK
   // business name (or vice versa), and never infer a translation.
-  if (!comparisons.length || comparisons.some(m=>m.score!==1 && !m.partial)) return none;
+  if (!comparisons.length) return null;
+  const conflicts=comparisons.filter(m=>m.score!==1 && !m.partial);
+  // Latin descriptor-only differences are weak similarity, not an identity
+  // contradiction. A differing native identity on two explicit pairs is.
+  if (conflicts.length) return pairs.some(([x,y])=>x.script==='native' &&
+    compare(x.name,y.name).score!==1 && !compare(x.name,y.name).partial) ? none : null;
   return {score:Math.min(0.9,...comparisons.map(m=>m.score)),partial:true};
 }
 

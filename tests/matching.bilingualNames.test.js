@@ -81,6 +81,7 @@ describe('explicit bilingual venue names',()=>{
     ['上好雞肉店 | Shang Hao Chicken Rice','Shang Hao Chicken Rice',55],
     ['上好雞肉 | Shang Hao East Branch','Shang Hao East Branch',55],
     ['王品 | Wang Steak','Wang Steak',53],
+    ['上好雞肉 | Shang Hao Chicken Rice Restaurant','上好雞肉 | Shang Hao',50],
   ])('unavailable alias evidence preserves prior whole-name selection: %s', (a,b,score)=>{
     for (const [wanted,actual] of [[a,b],[b,a]]) {
       const result=assess(google({name:actual}),{name:wanted});
@@ -170,6 +171,7 @@ describe('alias safety and generic descriptors',()=>{
 
   test.each([
     ['上好雞肉 | Shang Hao Banqiao','上好雞肉'],
+    ['上好雞肉板橋 | Shang Hao Chicken Rice','Shang Hao'],
     ['上好雞肉 | Shang Hao Banqiao','Shang Hao'],
     ['上好雞肉 | Shang Hao','Shang Hao XY'],
     ['雞肉飯餐廳 | Shang Hao Chicken Rice','雞肉飯餐廳'],
