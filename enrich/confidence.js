@@ -1,5 +1,5 @@
 const {normalizePlaceName:normalize} = require('../lib/placeNameNormalize');
-const {hasPhrase,removePhrase,geography,matchesGeography,matchesCountry,geographyMention,addressEvidence,nameEvidence,compatibleVariants} = require('./matchingEvidence');
+const {hasPhrase,removePhrase,geography,matchesGeography,matchesCountry,locationEvidence,geographyMention,addressEvidence,nameEvidence,compatibleVariants} = require('./matchingEvidence');
 function validCoordinates(top) {
   const lat=top?.geometry?.location?.lat ?? top?.lat, lng=top?.geometry?.location?.lng ?? top?.lng;
   return Number.isFinite(lat) && Number.isFinite(lng) && Math.abs(lat)<=90 && Math.abs(lng)<=180;
@@ -36,10 +36,11 @@ function rankPlaces(results, evidence={}, extractedPlace) {
       // pipes/parentheses and makes independent bilingual names one token bag.
       const nameMatch=extractedPlace ? nameEvidence(extractedPlace.name,variant.name,profile,similarity) : {score:hasPhrase(ordinaryText,name)?1:0,partial:false};
       const nameScore=nameMatch.score;
-      const cityMatches=matchesGeography(city,profile.groups) && matchesCountry(country,profile);
+      const cityLocation=locationEvidence(city,profile);
+      const cityMatches=cityLocation.matches && matchesCountry(country,profile);
       const captionCityMatches=captionCity ? matchesGeography(captionCity,profile.groups) : null;
       const originalGroups=profile.groups.map(g=>({...g,aliases:g.originalAliases || g.aliases}));
-      const cityAliasRecovery=!!(city && cityMatches && !matchesGeography(city,originalGroups));
+      const cityAliasRecovery=!!(city && cityMatches && (cityLocation.recovered || !matchesGeography(city,originalGroups)));
       let locationText=ordinaryText;
       for (const venueName of [normalize(extractedPlace?.name),...variants.map(v=>normalize(v.name))].filter(Boolean).sort((a,b)=>b.length-a.length)) locationText=removePhrase(locationText,venueName);
       const geoMention=geographyMention(locationText,profile);
@@ -64,7 +65,7 @@ function rankPlaces(results, evidence={}, extractedPlace) {
         if(handle.includes(name.replace(/\s/g,'')) && cityMatches) score=45;
       }
       const mediaOnly=['vision','transcript','subtitle','audio','media'].includes(extractedPlace?.source);
-      return {top,score,requiresSelection:!extractedPlace?.confirmedPlaceId && (handleOnly || unsupportedName || missingGeography || mediaOnly || variant!==top || nameMatch.partial || aliasRecovery || address.requiresSelection || captionCityMatches===false || extractedPlace?.requiresSelection===true),
+      return {top,score,requiresSelection:!extractedPlace?.confirmedPlaceId && (handleOnly || unsupportedName || missingGeography || mediaOnly || variant!==top || nameMatch.partial || aliasRecovery || cityLocation.requiresSelection || address.requiresSelection || captionCityMatches===false || extractedPlace?.requiresSelection===true),
         evidence:{nameScore,cityMatches,geoMention:!!geoMention,addressMatches:!!addressMatches,
           cityHintSource,captionCityMatches,aliasRecovery:aliasRecovery || !!address.aliasRecovery,addressStatus:address.status,addressConflict:address.conflict,addressReasons:address.reasons}};
     });

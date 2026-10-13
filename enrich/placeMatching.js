@@ -1,7 +1,7 @@
 const {rankPlaces, validCoordinates} = require('./confidence');
 const {distanceKm} = require('../lib/geo');
 const context = require('../lib/jobContext');
-const {geography, matchesGeography, matchesCountry, addressEvidence} = require('./matchingEvidence');
+const {geography, matchesGeography, matchesCountry, addressEvidence,hasPhrase} = require('./matchingEvidence');
 const {normalizePlaceName} = require('../lib/placeNameNormalize');
 
 // Horn vowels and Vietnamese tone combinations are stronger signals than
@@ -123,9 +123,10 @@ function hasVietnameseNameRecovery(place, results) {
   });
 }
 
-function createPlaceMatcher(search, {maxLocalizedLookups = 6} = {}) {
+function createPlaceMatcher(search, {maxLocalizedLookups = 6,maxQueryLookups=2} = {}) {
   const localizedSearches = new Map();
-  return async function matchPlace(results, evidence, extractedPlace, query) {
+  const querySearches = new Map();
+  async function localizedMatch(results, evidence, extractedPlace, query) {
     const primary = rankPlaces(results, evidence, extractedPlace);
     if (primary.place || !results.length) return primary;
     const vietnameseNameRecovery=hasVietnameseNameRecovery(extractedPlace,results);
@@ -147,6 +148,30 @@ function createPlaceMatcher(search, {maxLocalizedLookups = 6} = {}) {
     } catch (error) {
       if (error.code === 'attempt_stopped' || context.current()?.signal?.aborted) throw error;
       return {...primary, localizationFailure: error};
+    }
+  }
+  return async function matchPlace(results,evidence,extractedPlace,query) {
+    const primary=await localizedMatch(results,evidence,extractedPlace,query);
+    if(primary.place || primary.localizationFailure)return primary;
+    const p=extractedPlace || {},caption=normalizePlaceName(evidence?.description || '');
+    // A noisy full address may over-constrain discovery. Simplify retrieval
+    // only when the name and city are literal caption evidence; validation
+    // still uses the ORIGINAL complete address/country/branch constraints.
+    const full=[p.name,p.address,p.city].filter(Boolean).join(' ');
+    const simpler=[p.name,p.city,p.country].filter(Boolean).join(' ');
+    if(p.source!=='caption' || !p.address || !p.city || query!==full || simpler===query ||
+      !hasPhrase(caption,normalizePlaceName(p.name)) || !hasPhrase(caption,normalizePlaceName(p.city)))return primary;
+    if(!querySearches.has(simpler)) {
+      if(querySearches.size>=maxQueryLookups)return primary;
+      await context.assertActive();querySearches.set(simpler,search(simpler));
+    }
+    try {
+      const alternate=await querySearches.get(simpler);await context.assertActive();
+      const ranked=rankPlaces(mergeLocalizedResults(results,alternate),evidence,p);
+      return ranked.place?{...ranked,requiresSelection:true}:ranked;
+    } catch(error) {
+      if(error.code==='attempt_stopped' || context.current()?.signal?.aborted)throw error;
+      return {...primary,localizationFailure:error};
     }
   };
 }

@@ -1,0 +1,42 @@
+[
+  {
+    "id":"caption-urayama-native-name",
+    "kind":"incident_matching",
+    "split":"regression",
+    "provenance":"Reconstructed from reported caption and public Google listing; not an archived API response.",
+    "post":"Dd4TtrnTLCX",
+    "caption":"📍 鮨 うら山 本店 (Sushi Urayama Honten)\nSakae, Nagoya, Aichi",
+    "place":{"name":"鮨 うら山 本店","city":"Nagoya","address":"Sakae, Nagoya, Aichi","source":"caption"},
+    "google":{"place_id":"fixture-urayama","name":"Sushi Ura Yama Honten","formatted_address":"Japan, Aichi, Nagoya, Naka Ward, Sakae, 5 Chome−1−33 平子ビル 1階","geometry":{"location":{"lat":35.165464,"lng":136.909735}},"types":["restaurant"]},
+    "localizedName":"鮨 うら山 本店",
+    "expectedPlaceId":"fixture-urayama",
+    "expectedRequiresSelection":true,
+    "maxExtraQueries":1
+  },
+  {
+    "id":"caption-sun-kwai-unit",
+    "kind":"incident_matching",
+    "split":"regression",
+    "provenance":"Reconstructed from reported caption and public Google listing; not an archived API response.",
+    "post":"DeEmgW0S6e9",
+    "caption":"📍 sun kwai heung 新桂香燒臘\n345 chai wan road, chai wan, Hong Kong",
+    "place":{"name":"sun kwai heung 新桂香燒臘","city":"Chai Wan","address":"345 Chai Wan Road, Chai Wan","source":"caption"},
+    "google":{"place_id":"fixture-sun-kwai","name":"Sun Kwai Heung","formatted_address":"Hong Kong, Hong Kong Island, Chai Wan, Chai Wan Rd, 345號地下17號舖","geometry":{"location":{"lat":22.2645782,"lng":114.2402797}},"types":["restaurant"],"address_components":[{"long_name":"345","short_name":"345","types":["street_number"]},{"long_name":"Chai Wan Road","short_name":"Chai Wan Rd","types":["route"]},{"long_name":"Chai Wan","short_name":"Chai Wan","types":["locality"]},{"long_name":"Hong Kong","short_name":"HK","types":["country"]}]},
+    "expectedPlaceId":"fixture-sun-kwai",
+    "expectedRequiresSelection":true,
+    "maxExtraQueries":0
+  },
+  {
+    "id":"caption-txispa-region",
+    "kind":"incident_matching",
+    "split":"regression",
+    "provenance":"Reconstructed public restaurant address and reported caption; coordinates are illustrative, not a verified Google API response.",
+    "post":"DeXNDArMcsR",
+    "caption":"Txispa @txispa_restaurant in the Spanish Basque Country",
+    "place":{"name":"Txispa","city":"Spanish Basque Country","source":"caption","handle":"txispa_restaurant"},
+    "google":{"place_id":"fixture-txispa","name":"Txispa","formatted_address":"Barrio San Juan 45, Atxondo, Bizkaia, Spain","geometry":{"location":{"lat":43.1,"lng":-2.6}},"types":["restaurant"],"address_components":[{"long_name":"Atxondo","short_name":"Atxondo","types":["locality"]},{"long_name":"Bizkaia","short_name":"BI","types":["administrative_area_level_2"]},{"long_name":"Spain","short_name":"ES","types":["country"]}]},
+    "expectedPlaceId":"fixture-txispa",
+    "expectedRequiresSelection":true,
+    "maxExtraQueries":0
+  }
+]

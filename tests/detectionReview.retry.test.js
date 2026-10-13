@@ -120,14 +120,16 @@ test('completed detection review retains independent analysis retry context', as
   expect(db.read('enrichmentJobs','child')).toMatchObject({status:'complete',progress:{saved:1,total:1},analysisRecovery:null,failure:null});
 });
 
-test('failed text analysis cannot use the all-reviewed success path when media succeeds', async () => {
+test('failed text analysis retains explicit recovery after saved pins and reviewed clues, even when media succeeds', async () => {
   const dismissal = await reviewed({analysis:true}); child('child','parent',{retryKind:'analysis'});
   aiExtractPlaces.mockRejectedValue(new EngineError('dependency_timeout',{stage:'ai'}));
   await run('child',media);
   const j=db.read('enrichmentJobs','child');
-  expect(j).toMatchObject({status:'failed',progress:{saved:1,total:1},analysisRecovery:null});
+  // The known pin is saved, but interpretation is unfinished. Preserve the
+  // retry action instead of reporting a fully processed post or a failed save.
+  expect(j).toMatchObject({status:'complete',progress:{saved:1,total:1},analysisRecovery:RECOVERY,captionAnalysisIncomplete:true});
   expect(j.outcomes).toContainEqual(dismissal);
-  expect(j.failure).toBeTruthy();
+  expect(j.failure).toBeNull();
   expect(searchGooglePlaces).not.toHaveBeenCalled();
 });
 

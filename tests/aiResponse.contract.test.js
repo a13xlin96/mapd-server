@@ -19,6 +19,7 @@ const {runSharedAiOperation, createSharedAiOperations} = require('../lib/sharedA
 const {identity} = require('../lib/sharedAiIdentity');
 const {COLLECTION} = require('../lib/sharedAiStore');
 const VERSION = require('../lib/engineVersion');
+const {CAPTION_OUTPUT_VERSION} = require('../lib/captionResponse');
 const response = text => ({stop_reason:'end_turn',content:[{type:'text',text}]});
 const empty = '{"places":[],"count":0}';
 const input = {description:'PRIVATE CAPTION 東京'};
@@ -87,18 +88,19 @@ test('valid optional fields and existing single-place API projections remain com
 test('request contract retains model, token cap, single dispatch and zero SDK retries', async () => {
   await aiExtractPlaces(input,options);
   const [request, transport] = anthropic.messages.create.mock.calls[0];
-  expect(Object.keys(request).sort()).toEqual(['max_tokens','messages','model']);
+  expect(Object.keys(request).sort()).toEqual(['max_tokens','messages','model','tool_choice','tools']);
   expect(request).toMatchObject({model:'claude-haiku-4-5-20251001',max_tokens:2400});
   expect(transport).toMatchObject({timeout:30000,maxRetries:0});
-  expect(request.messages[0].content).toContain('exactly one complete JSON object');
+  expect(request.messages[0].content).toContain('exactly one submit_caption_places declaration');
   expect(request.messages[0].content).toContain('count must equal the array length');
   expect(request.messages[0].content).toContain('"$5 Michelin pho" with #saigon');
   expect(request.messages[0].content).toContain('unless other evidence identifies it');
   expect(request.messages[0].content).toContain('Real venue names can contain common food words');
   const config = runSharedAiOperation.mock.calls[0][0];
-  expect(config.promptVersion).toBe(VERSION.prompt + ':places:2');
-  expect(config.optionsVersion).toBe('bounded-ai-2');
-  expect(identity(config).key).not.toBe(identity({...config,promptVersion:VERSION.prompt + ':places:1',optionsVersion:'bounded-ai-1'}).key);
+  expect(config.promptVersion).toBe(VERSION.prompt + ':places:2:' + CAPTION_OUTPUT_VERSION);
+  expect(config.optionsVersion).toBe('bounded-ai-2:' + CAPTION_OUTPUT_VERSION);
+  expect(config.schemaVersion).toBe(VERSION.schema + ':' + CAPTION_OUTPUT_VERSION);
+  expect(identity(config).key).not.toBe(identity({...config,promptVersion:VERSION.prompt + ':places:2',schemaVersion:VERSION.schema,optionsVersion:'bounded-ai-2'}).key);
   expect(VERSION.prompt).toBe('places-5'); // Global source/media identities are untouched.
 });
 
@@ -156,7 +158,7 @@ test.each([
 
 test.each([
   {}, {count:0}, {places:null}, {places:{}}, [],
-  {places:[{name:'Cafe'},null],count:2}, {places:[{name:' '}],count:1},
+  {places:[null],count:1}, {places:[{name:' '}],count:1},
   {places:[{name:12}],count:1}, {places:[{name:'x'.repeat(301)}],count:1},
   {places:[{name:'Cafe',city:42}],count:1}, {places:[{name:'Cafe',address:'x'.repeat(501)}],count:1},
   {places:[{name:'Cafe',source:'vision'}],count:1},
@@ -189,8 +191,13 @@ describe.each([[], [{name:'  Cafe  ',city:'Kyoto'}]].map(places => [places.lengt
   });
 });
 
-test.each([undefined,'PRIVATE count',{confirmedPlaceId:'PRIVATE'}])('count normalization cannot hide malformed venues or unrelated fields %#', async count => {
-  await rejectedResponse(response(JSON.stringify({places:[{name:'Cafe'},{name:'Other',city:42}],count})),'schema_places');
+test.each([undefined,'PRIVATE count',{confirmedPlaceId:'PRIVATE'}])('partial recovery derives count and signals a rejected sibling %#', async count => {
+  anthropic.messages.create.mockResolvedValue(response(JSON.stringify({places:[{name:'Cafe'},{name:'Other',city:42}],count})));
+  await expect(aiExtractPlaces(input,options)).resolves.toEqual({places:[{name:'Cafe'}],count:1,incomplete:true});
+  expect(cache.setCache).toHaveBeenCalledWith(expect.any(String),{places:[{name:'Cafe'}],count:1,incomplete:true},300);
+  const records=[...firestore.collections.get(COLLECTION).values()];
+  expect(JSON.stringify(records)).not.toContain('PRIVATE');
+  expect(JSON.stringify(records)).not.toContain('confirmedPlaceId');
 });
 
 test('ignoring count does not permit unrelated response fields', async () => {
