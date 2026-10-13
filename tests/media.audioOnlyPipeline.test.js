@@ -28,10 +28,10 @@ jest.mock('../lib/media/mediaSource', () => ({
 jest.mock('../lib/media/publicMediaDownload', () => ({acquireMedia: jest.fn(), acquireSeparateAudio: jest.fn()}));
 jest.mock('../lib/media/mediaProcess', () => ({processMedia: jest.fn()}));
 jest.mock('../lib/media/audioDecode', () => ({prepareAudioChunks: jest.fn()}));
-jest.mock('../lib/media/transcriptionService', () => ({transcribeAudio: jest.fn()}));
+jest.mock('../lib/media/transcriptionService', () => ({...jest.requireActual('../lib/media/transcriptionService'),transcribeAudio: jest.fn()}));
 jest.mock('../lib/media/fuseEvidence', () => ({fuseEvidence: jest.fn()}));
 jest.mock('../lib/media/frameSelector', () => ({selectFrames: jest.fn()}));
-jest.mock('../lib/media/videoVision', () => ({analyzeVideoFrames: jest.fn()}));
+jest.mock('../lib/media/videoVision', () => ({...jest.requireActual('../lib/media/videoVision'),analyzeVideoFrames: jest.fn()}));
 
 const {firestore: db} = require('../lib/firestore');
 const {getCached, setCache} = require('../lib/cache');
@@ -177,6 +177,32 @@ test('real audio-only collection requires selection, never pins automatically, a
   expectNoVisualWork();
   expect(acquireSeparateAudio).not.toHaveBeenCalled();
   expect(dispose).toHaveBeenCalledTimes(1);
+});
+
+test('a bad fusion geography citation preserves a selectable venue and honest partial coverage through the real pipeline',async()=>{
+  const createMessage=jest.fn(async()=>({stop_reason:'tool_use',content:[{type:'tool_use',id:'toolu_test',name:'submit_places',
+    input:{places:[{name:'Tai Sushi',city:'Kyoto',country:'Japan',evidenceRefs:[
+      {evidenceId,quote:'Tai Sushi',supports:'name'},{evidenceId,quote:'Kyoto',supports:'city'},
+      {evidenceId:'missing:source',quote:'Japan',supports:'country'}]}]}}]}));
+  const shared=jest.requireActual('../lib/sharedAiOperation').createSharedAiOperations({firestore:db});
+  const fusion=jest.requireActual('../lib/media/fuseEvidence').createEvidenceFusion({createMessage,
+    sharedOperation:shared.runSharedAiOperation,providerCall:async(_provider,work)=>{
+      await require('../lib/jobContext').current().sharedOperation.authorizeDispatch();return work();}});
+  fuseEvidence.mockImplementation(fusion);
+  await run();
+  const job=db.read('enrichmentJobs','job');
+  expect(job).toMatchObject({status:'needs_selection',analysisRecovery:RECOVERY,
+    evidenceCoverage:{fusion:{status:'partial',reason:'literal_claims_omitted'}}});
+  expect(job.candidates).toHaveLength(1);
+  expect(job.candidates[0]).toMatchObject({placeId:google.place_id,placeName:'Tai Sushi'});
+  expect(job.mediaRetryOperations).toEqual([{kind:'media_fusion',retryKey:expect.any(String),generation:1}]);
+  expect((await db.collection('pins').get()).empty).toBe(true);
+  expect(createMessage).toHaveBeenCalledTimes(1);
+  expect(searchGooglePlaces).toHaveBeenCalledTimes(1);
+  expect(transcribeAudio).toHaveBeenCalledTimes(1);
+  expect(setCache).not.toHaveBeenCalled();
+  expectNoPrivateEvidence({job,pushes:sendPushForJob.mock.calls});
+  expectNoVisualWork();
 });
 
 test.each([
