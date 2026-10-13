@@ -20,7 +20,10 @@ for (let a=65; a<=90; a++) for (let b=65; b<=90; b++) {
 }
 // Add only the needed Vietnam spelling. Importing every Vietnamese country
 // name would collide with ISO AO/BI and turn cuisine words into geography.
-for (const [name,code] of Object.entries({usa:'US',us:'US','united states of america':'US',uk:'GB','great britain':'GB','viet nam':'VN'})) countryCodes.set(name,code);
+// Cached Maps addresses also use the short territory names without Intl's
+// "SAR China" qualifier; keep their ISO identity distinct from mainland China.
+for (const [name,code] of Object.entries({usa:'US',us:'US','united states of america':'US',uk:'GB','great britain':'GB','viet nam':'VN',
+  'hong kong':'HK','hong kong sar':'HK','香港':'HK',macau:'MO',macao:'MO','澳門':'MO','澳门':'MO'})) countryCodes.set(name,code);
 const countryNames = [...countryCodes.keys()].sort((a,b)=>b.length-a.length);
 const countryCode = value => countryCodes.get(normalize(value)) || (/^[a-z]{2}$/i.test(value || '') && regions.of(value.toUpperCase()) ? value.toUpperCase() : '');
 function countryAliases(values) {
@@ -193,6 +196,45 @@ function matchesCountry(hint,profile) {
   if (!hint) return true;
   return !!profile.country?.aliases.includes(normalize(hint));
 }
+// Administrative equivalences are scoped to a country and a known level in
+// Google's hierarchy. Never drop an unfamiliar city word or infer geography
+// from a restaurant/account name. Children are provinces, not venue aliases.
+const REGION_HINTS = [{
+  country:'ES',
+  names:['basque country','spanish basque country','pais vasco','euskadi'],
+  regions:['basque country','pais vasco','euskadi'],
+  provinces:['bizkaia','biscay','vizcaya','gipuzkoa','guipuzcoa','araba','alava','araba alava'],
+}];
+function locationEvidence(hint,profile) {
+  const value=normalize(hint);
+  const region=REGION_HINTS.find(entry=>entry.names.includes(value));
+  if (region) {
+    // Region prose supplied in the city slot is less precise than a city.
+    // Require a real country and region/province anchor, and confirmation even
+    // when the venue name is exact. Conflicting typed parents always win over
+    // a convenient formatted-address suffix or province.
+    const parent=profile.groups.filter(g=>g.kind==='administrative_area_level_1');
+    const province=profile.groups.filter(g=>g.kind==='administrative_area_level_2');
+    const inRegion=g=>g.aliases.some(alias=>region.regions.includes(alias));
+    const inProvince=g=>g.aliases.some(alias=>region.provinces.includes(alias));
+    const cachedOuter=profile.fallback.filter(g=>g.kind!=='country').at(-1);
+    const parentAgrees=!parent.length || parent.every(inRegion);
+    const provinceAgrees=!province.length || province.every(inProvince);
+    const formattedCountry=profile.fallback.find(g=>g.kind==='country');
+    const countryAgrees=!formattedCountry || formattedCountry.aliases.includes(normalize(region.country));
+    const anchored=parent.some(inRegion) || province.some(inProvince) ||
+      (!parent.length && !province.length && !!cachedOuter && (inRegion(cachedOuter) || inProvince(cachedOuter)));
+    return {matches:profile.countryCode===region.country && countryAgrees && parentAgrees && provinceAgrees && anchored,
+      requiresSelection:true,recovered:true};
+  }
+  const matches=matchesGeography(value,profile.groups);
+  // A literal typed state/region is valid evidence, but not a city-level
+  // location. Preserve that distinction without changing the extraction schema.
+  const broad=!!value && matches && profile.groups.some(g=>g.kind==='administrative_area_level_1' && g.aliases.includes(value)) &&
+    profile.groups.some(g=>g.kind==='locality' || g.kind==='postal_town') &&
+    !profile.groups.some(g=>/^(?:locality|postal_town|sublocality(?:_level_\d+)?)$/.test(g.kind) && g.aliases.includes(value));
+  return {matches,requiresSelection:broad,recovered:false};
+}
 function geographyMention(text,profile) {
   // The added spelling can describe cuisine ("món Việt Nam"). Keep it for
   // explicit country/address matching, but never let it alone prove where a
@@ -274,7 +316,7 @@ function vietnamLowerAreaRecovery(regions,unmatched,profile,street) {
 }
 function addressUnits(value,profile) {
   const details={unit:[],floor:[]};
-  let extendedUnit=false;
+  let extendedUnit=false, chineseUnit=false;
   // Remove only explicit labels, before normalizing punctuation. A bare 5,
   // a house suffix/range, or a CJK block number is not assumed to be a unit.
   const identifier='\\d+[a-z]?(?:[/-]\\d+[a-z]?)*';
@@ -294,11 +336,34 @@ function addressUnits(value,profile) {
     .flatMap(c=>[c.long_name,c.short_name]).map(exact).filter(Boolean);
   const routes=profile.components.filter(c=>Array.isArray(c?.types) && c.types.includes('route'))
     .flatMap(c=>[c.long_name,c.short_name]).map(normalize).filter(Boolean);
+  // Chinese shop/floor suffixes often share a segment with the house number:
+  // 345號地下17號舖. Require explicit suffix labels, a suffix boundary and an
+  // independent house below; a bare 號, route/lane or block number is not a unit.
+  const chineseSuffix=['HK','TW','CN','MO'].includes(profile.countryCode)
+    ? new RegExp(`(?:(地下|地面|\\d+(?:樓|楼|層|层))\\s*)?(${identifier})\\s*(?:號|号)?(?:舖|铺|室)$|`+
+      '(地下|地面|\\d+(?:樓|楼|層|层))$','iu') : null;
   const street=String(value || '').split(/[,，;\n]/).map(part=>{
     part=part.trim();
     // Unit metadata cannot erase a country/locality or an independently typed
     // house number, including malformed components with conflicting types.
     if(countryCode(part) || houseNumbers.includes(exact(part)) || matchesGeography(normalize(part),profile.groups)) return part;
+    const native=chineseSuffix && part.normalize('NFKC').match(chineseSuffix);
+    if (native) {
+      const prefix=part.normalize('NFKC').slice(0,native.index).trim();
+      const labels=unique([native[0],native[1] || native[3],native[2] && native[0].slice((native[1] || '').length)].map(normalize));
+      const boundary=!prefix || /\s$/u.test(part.normalize('NFKC').slice(0,native.index)) || /\d+[a-z]?[號号]$/iu.test(prefix);
+      const protectedLabel=labels.some(label=>routes.some(route=>hasPhrase(route,label) || hasPhrase(label,route)) ||
+        profile.groups.some(g=>g.aliases.some(alias=>hasPhrase(alias,label) || hasPhrase(label,alias))) ||
+        houseNumbers.some(number=>label===normalize(number)));
+      if (boundary && !protectedLabel) {
+        if (native[2]) details.unit.push(native[2].toLowerCase());
+        const floor=native[1] || native[3];
+        if (floor) details.floor.push(floor==='地面'?'ground':floor==='地下'
+          ? (['HK','MO'].includes(profile.countryCode)?'ground':'basement_unspecified') : floor.match(/^\d+/)[0]);
+        extendedUnit=true;chineseUnit=true;
+        return prefix;
+      }
+    }
     const tagged=part.match(labeled),floor=tagged?null:part.match(ordinal);
     const localFloor=!tagged && !floor && nativeFloor ? part.normalize('NFC').match(nativeFloor) : null;
     const typed=units.find(c=>[c.long_name,c.short_name].some(v=>exact(v) && exact(v)===exact(part)));
@@ -331,6 +396,12 @@ function addressUnits(value,profile) {
   const hasHouse=!extendedUnit || street.split(/[,，;\n]/).some(part=>{
     const segment=normalize(part);
     if(routes.includes(segment))return false;
+    // Cached Chinese addresses can omit typed components. A number explicitly
+    // labeled as a house is still independent evidence. If Google supplied
+    // house metadata, it must agree; never replace it with a guessed number.
+    const nativeHouse=chineseUnit && part.normalize('NFKC').match(/(?:^|[^\dA-Za-z/-])(\d+[a-z]?(?:[/-]\d+[a-z]?)*)(?:號|号)$/iu)?.[1];
+    if (nativeHouse && (!houseNumbers.length || houseNumbers.some(number=>
+      number.replace(/[號号]$/u,'').trim()===nativeHouse.toLowerCase()))) return true;
     return houseNumbers.some(number=>{
       const house=normalize(number);
       return segment===house || segment.startsWith(house+' ') ||
@@ -472,4 +543,4 @@ function compatibleVariants(base,variant) {
   return true;
 }
 
-module.exports={hasPhrase,removePhrase,geography,matchesGeography,matchesCountry,geographyMention,addressEvidence,nameEvidence,compatibleVariants};
+module.exports={hasPhrase,removePhrase,geography,matchesGeography,matchesCountry,locationEvidence,geographyMention,addressEvidence,nameEvidence,compatibleVariants};

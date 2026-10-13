@@ -4,7 +4,7 @@ const fs = require('fs');
 const vm = require('vm');
 const path = require('path');
 const { createRequire } = require('module');
-const fixtures = require('./fixtures.json');
+const fixtures = require('./fixtures.json').concat(require('./caption-incidents.json'));
 const root = path.resolve(__dirname, '../..');
 function load(relative, overrides = {}) {
   const filename = path.join(root, relative);
@@ -19,6 +19,19 @@ function load(relative, overrides = {}) {
   return module.exports;
 }
 async function evaluate(fixture) {
+  if(fixture.kind==='incident_matching') {
+    const {createPlaceMatcher}=require('../../enrich/placeMatching');
+    let calls=0;
+    const match=createPlaceMatcher(async(_q,_bias,_restrict,options)=>{
+      calls++;
+      return fixture.localizedName && options?.languageCode==='ja'
+        ? [{...fixture.google,name:fixture.localizedName}] : [];
+    });
+    const query=[fixture.place.name,fixture.place.address,fixture.place.city].filter(Boolean).join(' ');
+    const result=await match([fixture.google],{description:fixture.caption},fixture.place,query);
+    return result.place?.place_id===fixture.expectedPlaceId && result.requiresSelection===fixture.expectedRequiresSelection
+      && calls<=fixture.maxExtraQueries;
+  }
   if (fixture.kind === 'metadata') {
     const parser = load('enrich/ogMetadata.js', {'../lib/publicFetch':{fetchPublic:async()=>({data:fixture.html})}});
     const result = await parser.fetchOGMetadata('https://example.com/post');

@@ -807,6 +807,7 @@ async function runAIPipeline({ jobId, url, userId, captionText }) {
   // AI extract places (multi) — text signals only
   let aiResult;
   let aiError;
+  const captionAttempted = !resumeOnly && !unreadableSource;
   try {aiResult = resumeOnly ? {places:retry.resumePlaces} : unreadableSource ? {places:[]} : await aiExtractPlaces({
     title: ogData.title,
     description: ogData.description,
@@ -820,6 +821,10 @@ async function runAIPipeline({ jobId, url, userId, captionText }) {
     accountTagCoverage:extracted?.accountTagCoverage || 'unavailable',
     collaborators: extracted?.collaborators || [],
   }, {scope:shareText || !isSocial ? `user:${userId}` : SERVER_PUBLIC_SCOPE,bypassCache:retry.bypassCache});
+    if(aiResult?.incomplete) {
+      aiError=new EngineError('invalid_response',{stage:'ai',provider:'anthropic'});
+      await recordStageFailure(jobId,{stage:'ai',kind:aiError.code,message:aiError.message});
+    }
   } catch(error) {aiError = asEngineError(error,{stage:'ai',provider:'anthropic'}); aiResult = {places:[]}; await recordStageFailure(jobId,{stage:'ai',kind:aiError.code,message:aiError.message});}
 
   // Vision pass for photo carousels. Fires whenever we have 2+ slide
@@ -827,6 +832,9 @@ async function runAIPipeline({ jobId, url, userId, captionText }) {
   // carousels name one venue in caption and more on later slides. Vision
   // failure is swallowed so text-AI candidates still land as pins.
   const textPlaces = (aiResult && Array.isArray(aiResult.places)) ? aiResult.places : [];
+  // Partial caption interpretation can still present independently verified
+  // venues, but cannot claim every venue in the post has been processed.
+  if(aiResult?.incomplete)for(const place of textPlaces)place.requiresSelection=true;
   let visionPlaces = [];
   let visionError;
   if (extracted && extracted.is_carousel && Array.isArray(extracted.slide_thumbnails) && extracted.slide_thumbnails.length >= 2) {
@@ -887,7 +895,8 @@ async function runAIPipeline({ jobId, url, userId, captionText }) {
       ctx.mediaRetryOperations=mediaResult.retryOperations;}
   };
   const eligibility=()=>mediaEligibility({features:jobContext.current()?.features,url:canonicalUrl,
-    extracted,ogData,places:allCandidates,attempted:!!mediaResult,analysisRetry:retry.analysisRetry});
+    extracted,ogData,places:allCandidates,attempted:!!mediaResult,analysisRetry:retry.analysisRetry,
+    extractionFailed:!!(sourceError || aiError || visionError)});
   const before=eligibility();
   if(before.run && !resumeOnly)await escalate(before.reason);
   if(!allCandidates.length && !mediaResult) {
@@ -899,6 +908,7 @@ async function runAIPipeline({ jobId, url, userId, captionText }) {
   const matchCandidates=async()=>{
   const candidates = [];
   const resolvedMatches = new Map();
+  const resolvedAliases = [];
   const existingMatches = [];
   // AI-extracted places that fell out of the loop WITHOUT being proven
   // already-pinned (bad query, no search results, missing details). The
@@ -941,6 +951,11 @@ async function runAIPipeline({ jobId, url, userId, captionText }) {
       // confirmation just because another name for this ID appeared first.
       const previous = resolvedMatches.get(top.place_id);
       if (previous) {
+        // Keep the matched clue for retry reconciliation without counting
+        // another candidate/save for the same ID. An incomplete analysis
+        // must not revive this alias as an unresolved prior place.
+        const {name,city,country,address}=p;
+        resolvedAliases.push({name,city,country,address,placeId:top.place_id});
         if(!previous.p.confirmedPlaceId)previous.match.requiresSelection ||= match.requiresSelection;
         continue;
       }
@@ -992,12 +1007,24 @@ async function runAIPipeline({ jobId, url, userId, captionText }) {
     }
   }
 
-  return {candidates,existingMatches,unresolvedCount,outcomes,requiresSelection};
+  const captionVerified=allCandidates.length===1 && resolvedMatches.size===1 && !unresolvedCount && !requiresSelection
+    && [...resolvedMatches.values()].every(({match})=>match.score>=75);
+  return {candidates,existingMatches,unresolvedCount,outcomes,resolvedAliases,requiresSelection,captionVerified};
   };
   let matches=await matchCandidates();
   const after=mediaEligibility({features:jobContext.current()?.features,url:canonicalUrl,extracted,ogData,
-    places:allCandidates,matches,attempted:!!mediaResult,analysisRetry:retry.analysisRetry});
+    places:allCandidates,matches,attempted:!!mediaResult,analysisRetry:retry.analysisRetry,
+    extractionFailed:!!(sourceError || aiError || visionError)});
   if(after.run && !resumeOnly) {await escalate(after.reason);matches=await matchCandidates();}
+  const ctx=jobContext.current();
+  if(ctx) {
+    if(aiError)ctx.captionIncomplete=true;
+    else if(captionAttempted && retry.captionAnalysisIncomplete)ctx.captionIncomplete=false;
+    // A successful caption refresh can clear its own recovery marker without
+    // claiming that an earlier failed media pass was also repaired. Resuming
+    // selected saves (or failing to read the source) is not a caption refresh.
+    if(retry.captionAnalysisIncomplete && captionAttempted && !aiError && !mediaResult && !retry.mediaAnalysisIncomplete)ctx.analysisRecovery=null;
+  }
   const base=retry.baseOutcomes || [];
   const seen=new Set(matches.outcomes.map(o=>o.placeId || o.pinId).filter(Boolean));
   const freshDeferred=[...(retry.deferredOutcomes || []),...deferredCandidates.map(({name,city,country,address,source})=>({name,city:city || '',country:country || '',address:address || '',source:source || 'media',requiresSelection:true,status:'unresolved',failure:failureOf(new EngineError('input_too_large',{stage:'matching'}))}))];
@@ -1005,13 +1032,14 @@ async function runAIPipeline({ jobId, url, userId, captionText }) {
   // A successful explicit reanalysis may replace old unverified hypotheses.
   const previousUnresolved=retry.priorUnresolvedOutcomes || (retry.initialOutcomes || []).filter(o=>o.status==='unresolved'
     && (retainedIdentity(o) || (retry.reanalyzeIdentity && (sourceError || aiError || visionError || mediaResult?.incomplete))));
-  const prior=retainUnresolved(previousUnresolved,[...base,...matches.outcomes,...freshDeferred]);
+  const prior=retainUnresolved(previousUnresolved,[...base,...matches.outcomes,...matches.resolvedAliases,...freshDeferred]);
   const deferred=[...prior,...freshDeferred].filter(o=>!base.some(d=>reviewedClueMatches(d,o)));
   if(jobContext.current())jobContext.current().outcomes=[...base.filter(o=>isReviewedDismissal(o) || !seen.has(o.placeId || o.pinId)),...matches.outcomes,...deferred];
   matches.unresolvedCount+=deferred.length;
   return {duplicate:null,...matches,outcomes:[...matches.outcomes,...deferred],ogData,canonicalUrl,mediaAttempted:!!mediaResult,
     analysisSucceeded:!sourceError && !aiError && !visionError && !mediaResult?.incomplete,
-    sourceError:mediaResult?.incomplete ? mediaResult.error || new EngineError('dependency_timeout',{stage:'media'}) : sourceError};
+    sourceError:sourceError || aiError || visionError || (mediaResult?.incomplete
+      ? mediaResult.error || new EngineError('dependency_timeout',{stage:'media'}) : null)};
 }
 
 /** OG-first fallback pipeline (port of client processUrl) — used when AI returns no places. */
@@ -1138,6 +1166,8 @@ async function runEnrichmentInner(jobId, url, userId, captionText) {
     context.retry = await getRetryContext(firestore,jobId,userId,url);
     context.outcomes=context.retry.initialOutcomes || context.retry.baseOutcomes || [];
     if(context.retry.analysisRecovery) {context.analysisRecovery=context.retry.analysisRecovery;context.mediaRetryOperations=context.retry.mediaRetryOperations || [];}
+    if(context.retry.captionAnalysisIncomplete)context.captionIncomplete=true;
+    if(context.retry.mediaAnalysisIncomplete)context.mediaIncomplete=true;
     // A stopped process loses memory before the sweeper marks its receipt
     // failed. Checkpoint outcomes and candidate authority together, including
     // inherited dismissals/recovery, before any fallible analysis begins.
@@ -1146,7 +1176,7 @@ async function runEnrichmentInner(jobId, url, userId, captionText) {
       progress:{saved:context.outcomes.filter(o=>['saved','existing'].includes(o.status)).length,
         total:context.outcomes.filter(o=>o.status!=='dismissed').length},
     });
-    if(context.retry.analysisRetry && !videoEligible({features:context.features,url})) {
+    if(context.retry.analysisRetry && !videoEligible({features:context.features,url}) && !context.retry.captionAnalysisIncomplete) {
       context.mediaIncomplete=true;context.mediaRetryOperations=context.retry.mediaRetryOperations || [];
       throw new EngineError('dependency_error',{stage:'media_disabled'});
     }
@@ -1310,8 +1340,7 @@ async function runEnrichmentInner(jobId, url, userId, captionText) {
     // resolved. No new place is not a save failure when committed places and
     // reviewed dismissals account for all work. Failed analysis cannot take
     // this path; incomplete media retains the separate recovery contract.
-    if (ai.analysisSucceeded && context.outcomes?.some(isReviewedDismissal) &&
-        context.outcomes.some(o=>['saved','existing'].includes(o.status)) &&
+    if (ai.analysisSucceeded && context.outcomes?.some(o=>['saved','existing'].includes(o.status)) &&
         context.outcomes.every(o=>['saved','existing','dismissed'].includes(o.status))) {
       await updateJob(jobId,{status:'complete',failure:null,error:null,unresolvedCount:0,completedAt:ts()});
       await sendPushForJob(jobId,userId,'complete');
@@ -1325,7 +1354,7 @@ async function runEnrichmentInner(jobId, url, userId, captionText) {
     // Do not undo that decision through a weaker single-place fallback.
     // A retry's tracked outcomes are authoritative. A weaker whole-post
     // fallback cannot replace a selected ID or resurrect a dismissed place.
-    const fallback = ai.mediaAttempted || context.retry.initialOutcomes?.length ? null : await runOGFallback({ url: ai.canonicalUrl || url, userId, captionText, ogData: ai.ogData, skipAI:true });
+    const fallback = ai.mediaAttempted || ai.sourceError || context.retry.initialOutcomes?.length ? null : await runOGFallback({ url: ai.canonicalUrl || url, userId, captionText, ogData: ai.ogData, skipAI:true });
     if (fallback && fallback.duplicate) {
       const added = await appendSourceToExistingPin(
         fallback.duplicate.id,
@@ -1423,10 +1452,12 @@ async function saveSelectedPlacesInner(jobId,userId,selectedIds) {
   return jobContext.run({jobId,userId,leaseOwner:owner,deadline,allowMultiplePlaces:true,outcomes:[]},async()=>{
     const context=jobContext.current();
     context.analysisRecovery=claimed.data.analysisRecovery || null;
+    context.captionIncomplete=claimed.data.captionAnalysisIncomplete===true;
+    context.mediaIncomplete=claimed.data.mediaAnalysisIncomplete===true;
     context.mediaRetryOperations=claimed.data.mediaRetryOperations || [];
     const original=Array.isArray(claimed.data.outcomes)?claimed.data.outcomes:[];
     context.outcomes=original.filter(o=>o.status!=='candidate').concat(original.filter(o=>o.status==='candidate' && !selectedIds.includes(o.placeId)).map(o=>({...o,status:'dismissed'})));
-    if(!selectedIds.length)context.analysisRecovery=null;
+    if(!selectedIds.length) {context.analysisRecovery=null;context.captionIncomplete=false;context.mediaIncomplete=false;}
     const stop=startJobHeartbeat(jobId);
     try {
       for(const pin of claimed.candidates) {

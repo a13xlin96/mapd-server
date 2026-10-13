@@ -83,6 +83,7 @@ test('text requests provide bounded observation descriptors without raw prompt d
   const descriptor=withProvider.mock.calls[0][3];
   const request=anthropic.messages.create.mock.calls[0][0];
   expect(descriptor).toMatchObject({stage:'ai',rateKey:'haiku',descriptor:{model:request.model,maxImageTokens:0,maxOutputTokens:2400,cacheEnabled:false}});
-  expect(descriptor.descriptor.maxInputTokens).toBe(Buffer.byteLength(JSON.stringify(request.messages),'utf8')+1024);
+  expect(descriptor.descriptor.maxInputTokens).toBe(Buffer.byteLength(JSON.stringify(request.messages),'utf8')
+    +Buffer.byteLength(JSON.stringify({tools:request.tools,tool_choice:request.tool_choice}),'utf8')+1024);
   expect(JSON.stringify(descriptor)).not.toContain('京都');
 });

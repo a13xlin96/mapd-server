@@ -88,8 +88,20 @@ test('audio-only requires a policy-reader fence while old modes retain the origi
   const db={collection:()=>({doc:()=>({})})};
   const base={schemaVersion:1,writersEnabled:true,minimumReaderVersion:2};
   const txn=control=>({get:async()=>({data:()=>control})});
-  for(const marker of [undefined,1,'2',3])await expect(assertMediaFleet(txn({...base,minimumMediaPolicyVersion:marker}),db,a)).rejects.toMatchObject({code:'dependency_error',stage:'media_configuration'});
+  for(const marker of [undefined,1,'2',4])await expect(assertMediaFleet(txn({...base,minimumMediaPolicyVersion:marker}),db,a)).rejects.toMatchObject({code:'dependency_error',stage:'media_configuration'});
   await expect(assertMediaFleet(txn({...base,minimumMediaPolicyVersion:2}),db,a)).resolves.toBeUndefined();
+  await expect(assertMediaFleet(txn({...base,minimumMediaPolicyVersion:3}),db,a)).resolves.toBeUndefined();
   await expect(assertMediaFleet(txn(base),db,b)).resolves.toBeUndefined();
   await expect(assertMediaFleet(txn({...base,minimumMediaPolicyVersion:2}),db,b)).resolves.toBeUndefined();
+});
+
+test('caption-first v3 requires upgraded fleet acknowledgement and preserves recorded policies',async()=>{
+ const old=createEngineFeatures({...options,mediaPolicy:audioPolicy});
+ const next=createEngineFeatures({...options,mediaPolicy:{policyVersion:'media-v3',analysisMode:'audio-only'}});
+ const prior=old.forJob('staff',undefined,['mediaRecoveryV1']),fresh=next.forJob('staff',undefined,['mediaRecoveryV1']);
+ expect(next.forJob('staff',prior)).toEqual(prior);expect(old.forJob('staff',fresh)).toEqual(fresh);
+ const db={collection:()=>({doc:()=>({})})};
+ const txn=marker=>({get:async()=>({data:()=>({schemaVersion:1,writersEnabled:true,minimumReaderVersion:2,minimumMediaPolicyVersion:marker})})});
+ for(const marker of [undefined,1,2,'3',4])await expect(assertMediaFleet(txn(marker),db,fresh)).rejects.toMatchObject({code:'dependency_error',stage:'media_configuration'});
+ await expect(assertMediaFleet(txn(3),db,fresh)).resolves.toBeUndefined();
 });
