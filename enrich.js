@@ -908,6 +908,7 @@ async function runAIPipeline({ jobId, url, userId, captionText }) {
   const matchCandidates=async()=>{
   const candidates = [];
   const resolvedMatches = new Map();
+  const resolvedAliases = [];
   const existingMatches = [];
   // AI-extracted places that fell out of the loop WITHOUT being proven
   // already-pinned (bad query, no search results, missing details). The
@@ -950,6 +951,11 @@ async function runAIPipeline({ jobId, url, userId, captionText }) {
       // confirmation just because another name for this ID appeared first.
       const previous = resolvedMatches.get(top.place_id);
       if (previous) {
+        // Keep the matched clue for retry reconciliation without counting
+        // another candidate/save for the same ID. An incomplete analysis
+        // must not revive this alias as an unresolved prior place.
+        const {name,city,country,address}=p;
+        resolvedAliases.push({name,city,country,address,placeId:top.place_id});
         if(!previous.p.confirmedPlaceId)previous.match.requiresSelection ||= match.requiresSelection;
         continue;
       }
@@ -1003,7 +1009,7 @@ async function runAIPipeline({ jobId, url, userId, captionText }) {
 
   const captionVerified=allCandidates.length===1 && resolvedMatches.size===1 && !unresolvedCount && !requiresSelection
     && [...resolvedMatches.values()].every(({match})=>match.score>=75);
-  return {candidates,existingMatches,unresolvedCount,outcomes,requiresSelection,captionVerified};
+  return {candidates,existingMatches,unresolvedCount,outcomes,resolvedAliases,requiresSelection,captionVerified};
   };
   let matches=await matchCandidates();
   const after=mediaEligibility({features:jobContext.current()?.features,url:canonicalUrl,extracted,ogData,
@@ -1026,7 +1032,7 @@ async function runAIPipeline({ jobId, url, userId, captionText }) {
   // A successful explicit reanalysis may replace old unverified hypotheses.
   const previousUnresolved=retry.priorUnresolvedOutcomes || (retry.initialOutcomes || []).filter(o=>o.status==='unresolved'
     && (retainedIdentity(o) || (retry.reanalyzeIdentity && (sourceError || aiError || visionError || mediaResult?.incomplete))));
-  const prior=retainUnresolved(previousUnresolved,[...base,...matches.outcomes,...freshDeferred]);
+  const prior=retainUnresolved(previousUnresolved,[...base,...matches.outcomes,...matches.resolvedAliases,...freshDeferred]);
   const deferred=[...prior,...freshDeferred].filter(o=>!base.some(d=>reviewedClueMatches(d,o)));
   if(jobContext.current())jobContext.current().outcomes=[...base.filter(o=>isReviewedDismissal(o) || !seen.has(o.placeId || o.pinId)),...matches.outcomes,...deferred];
   matches.unresolvedCount+=deferred.length;

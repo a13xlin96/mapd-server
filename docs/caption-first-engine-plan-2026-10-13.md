@@ -109,3 +109,36 @@ are no new automatic model retries or spending caps.
 Implementation validation did not access credentials, call live providers,
 modify production data/configuration, or deploy a release. Record deployment,
 live qualification and rollout separately from these offline results.
+
+## Additional historical replay checks
+
+Expanded coverage on 2026-10-13 adds 35 tests spanning seven venue scenarios and
+11 unique Places IDs: 清河鵝肉, Tầm Vị, Bánh Cuốn Hong Kong 189, Rue Miche, Kuma
+Omakase, Shang Hao Chicken Rice, and five Tokyo ramen venues. The Google response
+fixtures were captured in earlier investigations; captions and model output are
+reconstructed, four fixture URLs are synthetic, and Tokyo coordinates retain the
+original fixture's documented synthetic values. These are not seven freshly
+processed social videos. Both baseline and updated matchers recover these same
+11 identities without additional simulated Google requests or missing fixtures.
+
+The fresh-share/retry and v2/v3 matrix also exposed a distinct accounting bug:
+an incomplete retry could forget a successfully matched alias after deduplicating
+its Places ID, then count the old alias as another unsaved venue. Preserve the
+matched clue-to-ID association solely for reconciliation; keep candidates and
+saves deduplicated. Only verified aliases participate. Conflicting exact IDs,
+unverified names, confirmation requirements and unfinished analysis are retained.
+The two failing regressions now finish at 1/1 and 5/5 instead of 1/2 and 5/6.
+
+Controls preserve a truly unresolved prior venue, an outstanding different
+Places ID, and the original pin/source on already-partly-saved retries. That last
+case also passed before this correction. The historical live Kuma record included
+an address conflict; this new accounting regression does not establish that it
+caused the older live failure.
+
+All 3,972 root tests pass, with 34 environment-specific skips; the 35/35 existing
+offline engine benchmark also passes. The new replay explicitly isolates Redis
+and fails on unrecorded lookups even if engine recovery catches their exceptions.
+These tests do not measure fresh caption extraction, audio accuracy, live cost,
+or Instagram/TikTok access. No new automatic retries or production changes.
+An independent adversarial reviewer approved the correction and new replay
+coverage with no actionable findings and independently reran all 35 replay tests.
