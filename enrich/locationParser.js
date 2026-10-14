@@ -1,3 +1,4 @@
+const { cityFromAddress } = require('./cityNormalization');
 const { normalizeCountry, normalizeCountryCode, countryFromAddress } = require('./countryNormalization');
 const { decodeHtmlEntities, cleanSocialText } = require('./utils');
 
@@ -125,35 +126,8 @@ function extractLocationFromComponents(components) {
 }
 
 function extractLocation(formattedAddress) {
-  if (!formattedAddress) return { country: null, region: null, city: null };
-
-  const parts = formattedAddress.split(/[,，、;\n]/).map((p) => p.trim()).filter(Boolean);
   const country = countryFromAddress(formattedAddress);
-
-  let city = null;
-  let region = null;
-
-  // Skip only the country boundary, not a same-named city (Singapore,
-  // Luxembourg). Prefer the last boundary when both carry the country name.
-  const countryIndex = country && normalizeCountry(parts[parts.length - 1]) !== country ? 0 : parts.length - 1;
-  for (let i = 0; i < parts.length; i++) {
-    if (i === countryIndex) continue;
-    const part = parts[i];
-    if (/^\d+/.test(part)) continue;
-    if (/^\d{4,}$/.test(part.replace(/\s/g, ''))) continue;
-    if (/^[A-Z]{2}\s+\d{4,}/.test(part)) {
-      region = part.replace(/\s+\d+.*$/, '');
-      continue;
-    }
-    // Printed addresses have no universal order. Numbered streets, floors
-    // and postal-address fragments are not reliable city names. This does
-    // not affect structured localities such as District 1.
-    if (/\p{N}/u.test(part)) continue;
-    if (!city) city = part;
-    else if (!region) region = part;
-  }
-
-  return { country, region, city };
+  return { country, ...cityFromAddress(formattedAddress, country) };
 }
 
 // Search already includes address components. Rich details are optional and
@@ -163,7 +137,13 @@ function extractPlaceLocation(details, searchResult) {
     Array.isArray(place?.address_components) ? place.address_components : []);
   const location = extractLocationFromComponents(components);
   if (location.country && location.city) return location;
-  const fallbacks = [details, searchResult].map(place => extractLocation(place?.formatted_address || ''));
+  const fallbacks = [details, searchResult].map(place => {
+    const address = place?.formatted_address || '';
+    const parsed = extractLocation(address);
+    // A labeled country component also supports addresses which omit the
+    // printed country. Conflicting printed countries remain incompatible.
+    return { ...parsed, ...cityFromAddress(address, location.country || parsed.country) };
+  });
   const country = location.country || fallbacks.find(value => value.country)?.country || null;
   // A partial Details address must not hide complete Search geography. Do
   // not supplement a known country using an explicitly different country.

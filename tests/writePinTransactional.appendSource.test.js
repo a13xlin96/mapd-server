@@ -149,3 +149,11 @@ test.each([
   expect(fs.read('pins',result.pinId)).toMatchObject({country:expected,formattedAddress});
   expect(input.country).toBe(country);
 });
+
+test.each(['Street', '姫路市', '9 de Julio', 'Phố Châu'])('final save preserves authoritative city %s', async city => {
+  fs.seed('users',USER,{totalPins:0});
+  const input=makePin({city,formattedAddress:'',country:null});
+  const result=await writePinTransactional(input,{});
+  expect(fs.read('pins',result.pinId)).toMatchObject({city});
+  expect(input.city).toBe(city);
+});
